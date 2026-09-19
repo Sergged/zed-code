@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fast local macOS .app bundle.
+#
+# One build (zed + cli) followed by `cargo bundle` WITHOUT its own rebuild.
+# The full-featured script/bundle-mac additionally produces the remote_server
+# binary, bundled git, provisioning profile, ad-hoc signature and DMG, but
+# builds three times and takes ~1.5 h locally. This one takes one build.
+#
+# Run from the repository root. The release channel is read from
+# crates/zed/RELEASE_CHANNEL (dev -> "Zed Dev.app", stable -> "Zed.app", ...).
+# Limit parallelism with CARGO_BUILD_JOBS (e.g. CARGO_BUILD_JOBS=4).
+
+channel="$(cat crates/zed/RELEASE_CHANNEL)"
+target_triple="$(rustc -vV | awk '/^host/ {print $2}')"
+
+build_jobs=()
+if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
+    build_jobs=(-j "${CARGO_BUILD_JOBS}")
+fi
+
+echo "==> Channel: ${channel}"
+echo "==> Building zed + cli for ${target_triple}..."
+ZED_BUNDLE=true cargo build --release --package zed --package cli --target "${target_triple}" "${build_jobs[@]}"
+
+echo "==> Bundling..."
+cp crates/zed/Cargo.toml crates/zed/Cargo.toml.backup
+restore_cargo_toml() { mv -f crates/zed/Cargo.toml.backup crates/zed/Cargo.toml; }
+trap restore_cargo_toml EXIT
+sed -i '' "s/package.metadata.bundle-${channel}/package.metadata.bundle/" crates/zed/Cargo.toml
+ZED_BUNDLE=true CARGO_BUNDLE_SKIP_BUILD=true cargo bundle --release --target "${target_triple}" --select-workspace-root
+restore_cargo_toml
+trap - EXIT
+
+echo "==> Done: target/${target_triple}/release/bundle/osx/"

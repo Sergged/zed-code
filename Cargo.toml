@@ -1002,9 +1002,23 @@ scratch = { path = "corgi-patches/scratch" }
 
 [profile.dev]
 split-debuginfo = "unpacked"
-incremental = true
+incremental = false
 codegen-units = 16
 debug = "limited"
+
+# Local tweak: keep incremental only for the crates in the main edit-rebuild
+# loop, otherwise a full workspace build writes gigabytes of incremental data.
+[profile.dev.package.zed]
+incremental = true
+
+[profile.dev.package.editor]
+incremental = true
+
+[profile.dev.package.workspace]
+incremental = true
+
+[profile.dev.package.project]
+incremental = true
 
 # mirror configuration for crates compiled for the build platform
 # (without this cargo will compile ~400 crates twice)
