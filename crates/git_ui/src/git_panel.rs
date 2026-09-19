@@ -48,10 +48,10 @@ use git::{
 };
 use gpui::{
     AbsoluteLength, Action, Anchor, AnyElement, AsyncApp, AsyncWindowContext, ClickEvent,
-    ClipboardItem, DismissEvent, Empty, Entity, EventEmitter, FocusHandle, Focusable, KeyContext,
-    MouseButton, MouseDownEvent, Pixels, Point, PromptLevel, ScrollStrategy, Subscription, Task,
-    TaskExt, TextStyle, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
-    uniform_list,
+    ClipboardItem, DismissEvent, Empty, Entity, EventEmitter, ExternalDragPayload, FileDragPaths,
+    FocusHandle, Focusable, KeyContext, MouseButton, MouseDownEvent, Pixels, Point, PromptLevel,
+    ScrollStrategy, Subscription, Task, TaskExt, TextStyle, UniformListScrollHandle, WeakEntity,
+    actions, anchored, deferred, uniform_list,
 };
 use itertools::Itertools;
 use language::{Buffer, BufferEvent, File};
@@ -97,7 +97,7 @@ use util::paths::PathStyle;
 use util::{ResultExt, TryFutureExt, markdown::MarkdownInlineCode, maybe, rel_path::RelPath};
 use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
-    Item, ModalView, Workspace,
+    DraggedSelection, Item, ModalView, SelectedEntry, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
     notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
 };
@@ -114,6 +114,8 @@ const TREE_INDENT: f32 = 16.0;
 const MAX_HISTORY_TAG_CHIPS: usize = 3;
 // Horizontal offset that aligns the tree indent guides with the row icon column.
 const INDENT_GUIDE_LEFT_OFFSET: gpui::Pixels = gpui::px(19.);
+// Hover group shared by all status entries, so per-entry action buttons can be revealed on row hover.
+const STATUS_ENTRY_HOVER_GROUP: &str = "git-panel-status-entry";
 
 actions!(
     git_panel,
@@ -599,6 +601,40 @@ enum Section {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct GitHeaderEntry {
     header: Section,
+}
+
+/// Drag preview shown while dragging a `GitStatusEntry` out of the git panel,
+/// mirroring what the project panel renders for `DraggedSelection` drags.
+struct DraggedGitEntryView {
+    filename: String,
+    click_offset: Point<Pixels>,
+    count: usize,
+}
+
+impl Render for DraggedGitEntryView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
+        let label = if self.count > 1 {
+            format!("{} entries", self.count)
+        } else {
+            self.filename.clone()
+        };
+        h_flex()
+            .font(ui_font)
+            .pl(self.click_offset.x + px(12.))
+            .pt(self.click_offset.y + px(12.))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .items_center()
+                    .py_1()
+                    .px_2()
+                    .rounded_lg()
+                    .bg(cx.theme().colors().background)
+                    .child(Label::new(label)),
+            )
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -1551,6 +1587,70 @@ impl GitPanel {
         }
         self.selected_entry = Some(ix);
         cx.notify();
+    }
+
+    /// Maps a git status entry to the worktree entry the git panel can drag,
+    /// mirroring how the project panel builds `DraggedSelection`s. Returns
+    /// `None` for entries that no longer exist in the worktree (e.g. deleted
+    /// files), since those cannot be opened or referenced by a project path.
+    fn dragged_selection_for_status_entry(
+        &self,
+        entry: &GitStatusEntry,
+        repo: &Repository,
+        cx: &Context<Self>,
+    ) -> Option<DraggedSelection> {
+        let active_selection = self.selected_entry_for_repo_path(repo, &entry.repo_path, cx)?;
+        let marked_selections = if self.marked_entries.contains(&entry.repo_path) {
+            Arc::from(
+                self.marked_entries
+                    .iter()
+                    .filter_map(|path| self.selected_entry_for_repo_path(repo, path, cx))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            Arc::from([active_selection])
+        };
+        Some(DraggedSelection {
+            active_selection,
+            marked_selections,
+        })
+    }
+
+    fn selected_entry_for_repo_path(
+        &self,
+        repo: &Repository,
+        repo_path: &RepoPath,
+        cx: &App,
+    ) -> Option<SelectedEntry> {
+        let project_path = repo.repo_path_to_project_path(repo_path, cx)?;
+        let entry_id = self.project.read(cx).entry_for_path(&project_path, cx)?.id;
+        Some(SelectedEntry {
+            worktree_id: project_path.worktree_id,
+            entry_id,
+        })
+    }
+
+    /// Resolves a set of selected entries to real on-disk paths, for offering
+    /// the drag to external applications once it leaves the window.
+    fn file_drag_paths_for_selected_entries(
+        project: &Entity<Project>,
+        selections: impl IntoIterator<Item = SelectedEntry>,
+        cx: &App,
+    ) -> Option<FileDragPaths> {
+        let project = project.read(cx);
+        let paths = selections
+            .into_iter()
+            .filter_map(|selection| {
+                let worktree = project.worktree_for_id(selection.worktree_id, cx)?.read(cx);
+                if !worktree.is_local() {
+                    return None;
+                }
+                let entry = worktree.entry_for_id(selection.entry_id)?;
+                Some((worktree.absolutize(&entry.path), entry.is_dir()))
+            })
+            .collect::<SmallVec<[_; 2]>>();
+
+        (!paths.is_empty()).then(|| FileDragPaths::new(paths))
     }
 
     fn mark_range(&mut self, anchor_ix: usize, target_ix: usize) {
@@ -8193,6 +8293,7 @@ impl GitPanel {
         let path_style = self.project.read(cx).path_style(cx);
         let git_path_style = ProjectSettings::get_global(cx).git.path_style;
         let display_name = entry.display_name(path_style);
+        let display_name_for_drag = display_name.clone();
 
         let selected = self.selected_entry == Some(ix);
         let marked = self.marked_entries.contains(&entry.repo_path);
@@ -8237,6 +8338,9 @@ impl GitPanel {
             ElementId::Name(format!("entry_{}_{}_checkbox_wrapper", display_name, ix).into());
         let checkbox_id: ElementId =
             ElementId::Name(format!("entry_{}_{}_checkbox", display_name, ix).into());
+        let open_file_button_id: ElementId =
+            ElementId::Name(format!("entry_{}_{}_open_file", display_name, ix).into());
+        let open_file_aria_label = format!("View {}", display_name);
 
         let stage_status = GitPanel::stage_status_for_entry(entry, &repo);
         let stage_intent = self.stage_intent_for_entry_index(ix);
@@ -8337,6 +8441,7 @@ impl GitPanel {
 
         h_flex()
             .id(id)
+            .group(STATUS_ENTRY_HOVER_GROUP)
             .h(self.list_item_height())
             .w_full()
             .pl_2p5()
@@ -8361,6 +8466,19 @@ impl GitPanel {
                     ))
                 })
             })
+            .child(
+                IconButton::new(open_file_button_id, IconName::ArrowRight)
+                    .icon_size(IconSize::Small)
+                    .style(ButtonStyle::Filled)
+                    .layer(ElevationIndex::Background)
+                    .aria_label(open_file_aria_label)
+                    .visible_on_hover(STATUS_ENTRY_HOVER_GROUP)
+                    .tooltip(Tooltip::text("View File"))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.clear_marks_and_select(ix, cx);
+                        this.view_file(&Default::default(), window, cx);
+                    })),
+            )
             .child(
                 div()
                     .id(checkbox_wrapper_id)
@@ -8450,6 +8568,39 @@ impl GitPanel {
                     cx.stop_propagation();
                 },
             )
+            .when_some(self.dragged_selection_for_status_entry(entry, repo, cx), {
+                let filename = display_name_for_drag.clone();
+                let project = self.project.clone();
+                move |this, dragged_selection| {
+                    this.on_drag(
+                        dragged_selection,
+                        move |selection: &DraggedSelection, click_offset, _window, cx| {
+                            let active = selection.active_selection;
+                            let selections = selection.marked_selections.clone();
+                            cx.new(|_| DraggedGitEntryView {
+                                filename: filename.clone(),
+                                click_offset,
+                                count: if selections.contains(&active) {
+                                    selections.len()
+                                } else {
+                                    1
+                                },
+                            })
+                        },
+                    )
+                    .external_drag_payload({
+                        let project = project.clone();
+                        move |selection: &DraggedSelection, _window, cx| {
+                            GitPanel::file_drag_paths_for_selected_entries(
+                                &project,
+                                selection.items().copied(),
+                                cx,
+                            )
+                            .map(ExternalDragPayload::Files)
+                        }
+                    })
+                }
+            })
             .into_any_element()
     }
 
@@ -9700,13 +9851,14 @@ mod tests {
         repository::repo_path,
         status::{StatusCode, TrackedStatus, UnmergedStatus, UnmergedStatusCode},
     };
-    use gpui::{Modifiers, TestAppContext, UpdateGlobal, VisualTestContext, px};
+    use gpui::{Modifiers, MouseButton, TestAppContext, UpdateGlobal, VisualTestContext, px};
     use indoc::indoc;
     use project::FakeFs;
     use search::{BufferSearchBar, buffer_search::Deploy};
     use serde_json::json;
     use settings::SettingsStore;
     use std::any::TypeId;
+    use std::path::PathBuf;
     use theme::LoadThemes;
     use util::path;
     use util::rel_path::rel_path;
@@ -9951,6 +10103,118 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_dragged_status_entry_maps_to_worktree_entry(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, project, _, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "modified.txt": "modified\n",
+            }),
+            &[("modified.txt", StatusCode::Modified)],
+        )
+        .await;
+
+        let dragged = panel.update_in(&mut cx, |panel, _window, cx| {
+            let repo = panel.active_repository.clone().expect("a repository");
+            let repo = repo.read(cx);
+            let index = entry_index_for_repo_path(panel, &repo_path("modified.txt"))
+                .expect("modified.txt entry");
+            let GitListEntry::Status(entry) = &panel.entries[index] else {
+                unreachable!()
+            };
+            panel
+                .dragged_selection_for_status_entry(entry, repo, cx)
+                .expect("dragged selection")
+        });
+
+        assert_eq!(dragged.items().count(), 1);
+        let active = dragged.active_selection;
+        let project_path = project.read_with(&cx, |project, cx| {
+            project.path_for_entry(active.entry_id, cx)
+        });
+        assert_eq!(
+            project_path,
+            Some(ProjectPath {
+                worktree_id: active.worktree_id,
+                path: rel_path("modified.txt").into(),
+            })
+        );
+
+        let paths = cx.read(|cx| {
+            GitPanel::file_drag_paths_for_selected_entries(&project, dragged.items().copied(), cx)
+        });
+        assert_eq!(
+            paths.expect("file drag paths").entries(),
+            &[(PathBuf::from("/project/modified.txt"), false)]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_dragged_marked_status_entries_include_all_marks(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, project, _, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "a.txt": "modified a\n",
+                "b.txt": "modified b\n",
+            }),
+            &[
+                ("a.txt", StatusCode::Modified),
+                ("b.txt", StatusCode::Modified),
+            ],
+        )
+        .await;
+
+        panel.update_in(&mut cx, |panel, _window, cx| {
+            let a_index = panel
+                .entry_by_path_in_section(&repo_path("a.txt"), Section::Tracked)
+                .expect("a.txt entry");
+            let b_index = panel
+                .entry_by_path_in_section(&repo_path("b.txt"), Section::Tracked)
+                .expect("b.txt entry");
+            panel.toggle_mark(a_index, cx);
+            panel.toggle_mark(b_index, cx);
+        });
+
+        let dragged = panel.update_in(&mut cx, |panel, _window, cx| {
+            let repo = panel.active_repository.clone().expect("a repository");
+            let repo = repo.read(cx);
+            let index = entry_index_for_repo_path(panel, &repo_path("a.txt")).expect("a.txt entry");
+            let GitListEntry::Status(entry) = &panel.entries[index] else {
+                unreachable!()
+            };
+            panel
+                .dragged_selection_for_status_entry(entry, repo, cx)
+                .expect("dragged selection")
+        });
+
+        assert_eq!(dragged.marked_selections.len(), 2);
+        assert_eq!(dragged.items().count(), 2);
+
+        let mut paths = cx
+            .read(|cx| {
+                GitPanel::file_drag_paths_for_selected_entries(
+                    &project,
+                    dragged.items().copied(),
+                    cx,
+                )
+            })
+            .expect("file drag paths")
+            .entries()
+            .to_vec();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                (PathBuf::from("/project/a.txt"), false),
+                (PathBuf::from("/project/b.txt"), false),
+            ]
+        );
+    }
+
+    #[gpui::test]
     async fn test_skip_hooks_remains_enabled_after_failed_commit(cx: &mut TestAppContext) {
         init_test(cx);
         let (fs, _, _, panel, mut cx) = setup_git_panel_with_changes(
@@ -10163,6 +10427,43 @@ mod tests {
         cx.run_until_parked();
 
         assert_editor_opened_with_path(&workspace, Path::new("src/a/foo.rs"), &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_open_file_button_on_entry_hover(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "tracked.rs": "fn tracked() {}",
+            }),
+            &[("tracked.rs", StatusCode::Modified)],
+        )
+        .await;
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.open_panel::<GitPanel>(window, cx);
+        });
+        cx.update(|window, _| window.refresh());
+
+        // The open-file arrow is revealed on row hover, so hover the entry first.
+        let open_file_button_bounds = cx
+            .debug_bounds("ICON-ArrowRight")
+            .expect("the open file button should be rendered");
+        cx.simulate_mouse_move(
+            open_file_button_bounds.center(),
+            None::<MouseButton>,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+
+        cx.simulate_click(open_file_button_bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert_editor_opened_with_path(&workspace, Path::new("tracked.rs"), &mut cx);
     }
 
     #[gpui::test]
