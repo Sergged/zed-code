@@ -14871,6 +14871,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "references_panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "file_icons",
+ "gpui",
+ "indoc",
+ "language",
+ "log",
+ "lsp",
+ "lsp_locations",
+ "menu",
+ "project",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "referencing"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22827,6 +22847,7 @@ dependencies = [
  "proto",
  "rayon",
  "recent_projects",
+ "references_panel",
  "release_channel",
  "remote",
  "remote_server",

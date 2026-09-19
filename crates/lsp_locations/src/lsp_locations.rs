@@ -2,9 +2,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use collections::HashMap;
-use editor::actions::{
-    FindAllReferences, GoToDeclaration, GoToDefinition, GoToImplementation, GoToTypeDefinition,
-};
+use editor::actions::{GoToDeclaration, GoToDefinition, GoToImplementation, GoToTypeDefinition};
 use editor::{Editor, EditorSettings, GotoDefinitionKind, OpenResultsIn};
 use file_icons::FileIcons;
 use fuzzy::StringMatchCandidate;
@@ -30,9 +28,13 @@ pub fn init(cx: &mut App) {
     cx.observe_new(register).detach();
 }
 
-/// Registers handlers for the navigation actions on each full editor. When the
-/// action resolves to [`OpenResultsIn::Picker`], we open the filterable picker;
-/// otherwise we `cx.propagate()` so the editor's own handler runs and builds a
+/// Registers handlers for the definition/declaration/implementation navigation
+/// actions on each full editor. When the action resolves to
+/// [`OpenResultsIn::Picker`], we open the filterable picker; otherwise we
+/// `cx.propagate()` so the editor's own handler runs and builds a multibuffer.
+///
+/// [`FindAllReferences`] is deliberately not handled here: the references panel
+/// owns that action so the results open in a dock panel instead of a
 /// multibuffer.
 fn register(editor: &mut Editor, _window: Option<&mut Window>, cx: &mut Context<Editor>) {
     if !editor.mode().is_full() {
@@ -93,17 +95,6 @@ fn register(editor: &mut Editor, _window: Option<&mut Window>, cx: &mut Context<
                     cx,
                 );
             }
-        })
-        .detach();
-    editor
-        .register_action(move |action: &FindAllReferences, window, cx| {
-            handle_nav_action(
-                action.open_results_in,
-                LspPickerKind::References,
-                &handle,
-                window,
-                cx,
-            );
         })
         .detach();
 }
@@ -380,15 +371,15 @@ impl Render for LspLocationsPicker {
     }
 }
 
-struct LocationMatch {
-    path: ProjectPath,
-    buffer: Entity<Buffer>,
-    anchor_range: Range<Anchor>,
-    range: Range<usize>,
-    display_text: String,
-    syntax_highlights: Vec<(Range<usize>, HighlightId)>,
-    match_range: Range<usize>,
-    line_number: u32,
+pub struct LocationMatch {
+    pub path: ProjectPath,
+    pub buffer: Entity<Buffer>,
+    pub anchor_range: Range<Anchor>,
+    pub range: Range<usize>,
+    pub display_text: String,
+    pub syntax_highlights: Vec<(Range<usize>, HighlightId)>,
+    pub match_range: Range<usize>,
+    pub line_number: u32,
 }
 
 /// A row in the grouped display list: a non-selectable file header, a match, or
@@ -507,7 +498,7 @@ impl LspLocationsDelegate {
     }
 }
 
-fn build_location_matches(locations: &[Location], cx: &App) -> Vec<LocationMatch> {
+pub fn build_location_matches(locations: &[Location], cx: &App) -> Vec<LocationMatch> {
     use gpui::EntityId;
     let mut snapshots: HashMap<EntityId, language::BufferSnapshot> = HashMap::default();
     let mut matches = Vec::with_capacity(locations.len());
@@ -782,7 +773,7 @@ impl PickerDelegate for LspLocationsDelegate {
 /// Renders the precomputed displayed line, resolving the stored syntax highlight
 /// ids against the current theme and overlaying the match with a highlighted
 /// background and bold weight.
-fn render_matched_line(location_match: &LocationMatch, cx: &App) -> StyledText {
+pub fn render_matched_line(location_match: &LocationMatch, cx: &App) -> StyledText {
     let settings = ThemeSettings::get_global(cx);
     let text_style = TextStyle {
         color: cx.theme().colors().text,
@@ -1014,7 +1005,10 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_cmd_click_fallback_honors_lsp_results_location(cx: &mut TestAppContext) {
+    async fn test_cmd_click_fallback_no_longer_opens_references_picker(cx: &mut TestAppContext) {
+        // The references panel owns the `FindAllReferences` action, so the
+        // cmd-click go-to-definition fallback no longer routes through the
+        // picker even when `lsp_results_location` is `picker`.
         cx.update(crate::init);
         let mut cx = rust_cx(
             lsp::ServerCapabilities {
@@ -1050,8 +1044,9 @@ mod tests {
         cx.run_until_parked();
 
         assert!(
-            active_picker(&mut cx).is_some(),
-            "the cmd-click go-to-definition fallback should open the references picker when lsp_results_location is picker"
+            active_picker(&mut cx).is_none(),
+            "the cmd-click go-to-definition fallback should not open the references picker: \
+             FindAllReferences is handled by the references panel"
         );
     }
 
