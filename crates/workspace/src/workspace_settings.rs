@@ -222,6 +222,7 @@ pub struct StatusBarSettings {
     pub line_endings_button: bool,
     pub active_encoding_button: EncodingDisplayOptions,
     pub pending_keystrokes_indicator: bool,
+    pub icon_scale: f32,
 }
 
 impl Settings for StatusBarSettings {
@@ -235,6 +236,7 @@ impl Settings for StatusBarSettings {
             line_endings_button: status_bar.line_endings_button.unwrap(),
             active_encoding_button: status_bar.active_encoding_button.unwrap(),
             pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
+            icon_scale: status_bar.icon_scale.unwrap(),
         }
     }
 }

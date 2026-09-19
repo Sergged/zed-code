@@ -554,7 +554,7 @@ pub struct TabBarSettingsContent {
 }
 
 #[with_fallible_options]
-#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
 pub struct StatusBarSettingsContent {
     /// Whether to show the status bar.
     ///
@@ -587,6 +587,12 @@ pub struct StatusBarSettingsContent {
     ///
     /// Default: true
     pub pending_keystrokes_indicator: Option<bool>,
+    /// Multiplier for the panel button icons in the vertical status strips
+    /// on the left and right edges of the workspace (1.0 = the same size as
+    /// the bottom status bar's icons).
+    ///
+    /// Default: 1.0
+    pub icon_scale: Option<f32>,
 }
 
 #[derive(

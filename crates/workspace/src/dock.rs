@@ -389,6 +389,7 @@ struct PanelEntry {
 
 pub struct PanelButtons {
     dock: Entity<Dock>,
+    vertical: bool,
     _settings_subscription: Subscription,
 }
 
@@ -1378,10 +1379,21 @@ impl Render for Dock {
 
 impl PanelButtons {
     pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+        Self::new_internal(dock, false, cx)
+    }
+
+    /// Creates a panel buttons view that stacks its buttons vertically, as
+    /// used by the vertical status strips flanking the workspace.
+    pub fn new_vertical(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
+        Self::new_internal(dock, true, cx)
+    }
+
+    fn new_internal(dock: Entity<Dock>, vertical: bool, cx: &mut Context<Self>) -> Self {
         cx.observe(&dock, |_, _, cx| cx.notify()).detach();
         let settings_subscription = cx.observe_global::<SettingsStore>(|_, cx| cx.notify());
         Self {
             dock,
+            vertical,
             _settings_subscription: settings_subscription,
         }
     }
@@ -1433,6 +1445,12 @@ impl Render for PanelButtons {
                     let action = entry.panel.toggle_action(window, cx);
 
                     (action, icon_tooltip.into())
+                };
+
+                let icon_size = if self.vertical {
+                    crate::status_bar::status_bar_icon_size(cx)
+                } else {
+                    IconSize::Small
                 };
 
                 let focus_handle = dock.focus_handle(cx);
@@ -1534,7 +1552,7 @@ impl Render for PanelButtons {
                             // Include active state in element ID to invalidate the cached
                             // tooltip when panel state changes (e.g., via keyboard shortcut)
                             let button = IconButton::new((name, is_active_button as u64), icon)
-                                .icon_size(IconSize::Small)
+                                .icon_size(icon_size)
                                 .toggle_state(is_active_button)
                                 .tab_index(0isize)
                                 .aria_label(icon_tooltip)
@@ -1569,18 +1587,22 @@ impl Render for PanelButtons {
 
         let has_buttons = !buttons.is_empty();
 
-        h_flex()
+        let buttons_container = if self.vertical { v_flex() } else { h_flex() };
+        buttons_container
             .gap_1()
+            .when(self.vertical, |this| this.items_center())
             .when(
-                has_buttons
+                !self.vertical
+                    && has_buttons
                     && (dock.position == DockPosition::Bottom
                         || dock.position == DockPosition::Right),
                 |this| this.child(Divider::vertical().color(DividerColor::Border)),
             )
             .children(buttons)
-            .when(has_buttons && dock.position == DockPosition::Left, |this| {
-                this.child(Divider::vertical().color(DividerColor::Border))
-            })
+            .when(
+                !self.vertical && has_buttons && dock.position == DockPosition::Left,
+                |this| this.child(Divider::vertical().color(DividerColor::Border)),
+            )
     }
 }
 

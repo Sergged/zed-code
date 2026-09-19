@@ -1,3 +1,5 @@
+use crate::dock::PanelButtons;
+use crate::workspace_settings::StatusBarSettings;
 use crate::{
     ItemHandle, MultiWorkspace, Pane, SidebarSide, ToggleWorkspaceSidebar,
     sidebar_side_context_menu,
@@ -6,7 +8,7 @@ use gpui::{
     Anchor, AnyView, App, Context, Decorations, Entity, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, Role, SharedString, Styled, Subscription, WeakEntity, Window,
 };
-use settings::{SettingsContent, update_settings_file};
+use settings::{Settings, SettingsContent, update_settings_file};
 use std::{any::TypeId, sync::Arc};
 use theme::CLIENT_SIDE_DECORATION_ROUNDING;
 use ui::{ContextMenu, Divider, IconPosition, Indicator, Tooltip, prelude::*, right_click_menu};
@@ -189,25 +191,19 @@ impl Render for StatusBar {
 impl StatusBar {
     fn render_left_tools(
         &self,
-        sidebar: &SidebarStatus,
+        _sidebar: &SidebarStatus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        h_flex()
-            .gap_1()
-            .min_w_0()
-            .overflow_x_hidden()
-            .when(
-                sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Left,
-                |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
-            )
-            .children(self.left_items.iter().enumerate().map(|(index, item)| {
+        h_flex().gap_1().min_w_0().overflow_x_hidden().children(
+            self.left_items.iter().enumerate().map(|(index, item)| {
                 render_hideable_item("status-bar-left", index, item.as_ref(), cx)
-            }))
+            }),
+        )
     }
 
     fn render_right_tools(
         &self,
-        sidebar: &SidebarStatus,
+        _sidebar: &SidebarStatus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
@@ -223,69 +219,6 @@ impl StatusBar {
                         render_hideable_item("status-bar-right", index, item.as_ref(), cx)
                     }),
             )
-            .when(
-                sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Right,
-                |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
-            )
-    }
-
-    fn render_sidebar_toggle(
-        &self,
-        sidebar: &SidebarStatus,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let on_right = sidebar.side == SidebarSide::Right;
-        let has_notifications = sidebar.has_notifications;
-        let indicator_border = cx.theme().colors().status_bar_background;
-
-        let toggle = sidebar_side_context_menu("sidebar-status-toggle-menu", cx)
-            .anchor(if on_right {
-                Anchor::BottomRight
-            } else {
-                Anchor::BottomLeft
-            })
-            .attach(if on_right {
-                Anchor::TopRight
-            } else {
-                Anchor::TopLeft
-            })
-            .trigger(move |_is_active, _window, _cx| {
-                IconButton::new(
-                    "toggle-workspace-sidebar",
-                    if on_right {
-                        IconName::ThreadsSidebarRightClosed
-                    } else {
-                        IconName::ThreadsSidebarLeftClosed
-                    },
-                )
-                .icon_size(IconSize::Small)
-                .tab_index(0isize)
-                .aria_label("Open threads sidebar")
-                .when(has_notifications, |this| {
-                    this.indicator(Indicator::dot().color(Color::Accent))
-                        .indicator_border_color(Some(indicator_border))
-                })
-                .tooltip(move |_, cx| {
-                    Tooltip::for_action("Open Threads Sidebar", &ToggleWorkspaceSidebar, cx)
-                })
-                .on_click(move |_, window, cx| {
-                    if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
-                        multi_workspace.update(cx, |multi_workspace, cx| {
-                            multi_workspace.toggle_sidebar(window, cx);
-                        });
-                    }
-                })
-            });
-
-        h_flex()
-            .gap_0p5()
-            .when(on_right, |this| {
-                this.child(Divider::vertical().color(ui::DividerColor::Border))
-            })
-            .child(toggle)
-            .when(!on_right, |this| {
-                this.child(Divider::vertical().color(ui::DividerColor::Border))
-            })
     }
 }
 
@@ -496,6 +429,412 @@ impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
 
     fn hide_setting(&self, cx: &App) -> Option<HideStatusItem> {
         self.read(cx).hide_setting(cx)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// In addition to the bottom status bar, two vertical strips flank the
+// workspace and host only the panel toggle buttons: `LeftStatusBar` (project
+// and git panels) and `RightStatusBar` (agent panel and the threads sidebar).
+// The size of the icons in these strips is controlled by the
+// `status_bar.icon_scale` setting: `IconSize::Small` at a scale of 1.0,
+// scaled linearly beyond that.
+
+/// Returns the icon size used by the vertical status strips.
+///
+/// At a `status_bar.icon_scale` of 1.0 this is exactly `IconSize::Small` (the
+/// size used by the bottom status bar items); at larger scales the size is
+/// scaled linearly.
+pub fn status_bar_icon_size(cx: &App) -> IconSize {
+    let icon_scale = StatusBarSettings::get_global(cx).icon_scale;
+    if icon_scale <= 1.0 {
+        IconSize::Small
+    } else {
+        IconSize::Custom(rems(IconSize::Small.rems().0 * icon_scale))
+    }
+}
+
+/// Moves focus between the interactive controls within one of the vertical
+/// status strips in response to arrow keys. Navigation is clamped to the
+/// strip so arrows move between items and stop at the ends (ARIA toolbar
+/// semantics); Tab is still used to leave the toolbar.
+fn move_focus_between_items(
+    focus_handle: &FocusHandle,
+    forward: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let previous = window.focused(cx);
+    if forward {
+        window.focus_next(cx);
+    } else {
+        window.focus_prev(cx);
+    }
+    let landed_in_status_bar = window
+        .focused(cx)
+        .is_some_and(|handle| focus_handle.contains(&handle, window));
+    if !landed_in_status_bar && let Some(previous) = previous {
+        window.focus(&previous, cx);
+    }
+}
+
+fn render_sidebar_toggle(sidebar: &SidebarStatus, cx: &App) -> impl IntoElement {
+    let on_right = sidebar.side == SidebarSide::Right;
+    let has_notifications = sidebar.has_notifications;
+    let indicator_border = cx.theme().colors().status_bar_background;
+    let icon_size = status_bar_icon_size(cx);
+
+    let (icon, label) = if sidebar.open {
+        (
+            if on_right {
+                IconName::ThreadsSidebarRightOpen
+            } else {
+                IconName::ThreadsSidebarLeftOpen
+            },
+            "Close Threads Sidebar",
+        )
+    } else {
+        (
+            if on_right {
+                IconName::ThreadsSidebarRightClosed
+            } else {
+                IconName::ThreadsSidebarLeftClosed
+            },
+            "Open Threads Sidebar",
+        )
+    };
+
+    let toggle = sidebar_side_context_menu("sidebar-status-toggle-menu", cx)
+        .anchor(if on_right {
+            Anchor::TopRight
+        } else {
+            Anchor::TopLeft
+        })
+        .attach(if on_right {
+            Anchor::TopLeft
+        } else {
+            Anchor::TopRight
+        })
+        .trigger(move |_is_active, _window, _cx| {
+            IconButton::new("toggle-workspace-sidebar", icon)
+                .icon_size(icon_size)
+                .tab_index(0isize)
+                .aria_label(label)
+                .when(has_notifications, |this| {
+                    this.indicator(Indicator::dot().color(Color::Accent))
+                        .indicator_border_color(Some(indicator_border))
+                })
+                .tooltip(move |_, cx| Tooltip::for_action(label, &ToggleWorkspaceSidebar, cx))
+                .on_click(move |_, window, cx| {
+                    if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+                        multi_workspace.update(cx, |multi_workspace, cx| {
+                            multi_workspace.toggle_sidebar(window, cx);
+                        });
+                    }
+                })
+        });
+
+    h_flex()
+        .gap_0p5()
+        .when(on_right, |this| {
+            this.child(Divider::horizontal().color(ui::DividerColor::Border))
+        })
+        .child(toggle)
+        .when(!on_right, |this| {
+            this.child(Divider::horizontal().color(ui::DividerColor::Border))
+        })
+}
+
+pub struct LeftStatusBar {
+    status_bar: Entity<StatusBar>,
+    panel_buttons: Entity<PanelButtons>,
+    search_button: Option<AnyView>,
+    references_button: Option<AnyView>,
+    focus_handle: FocusHandle,
+    _observe_status_bar: Subscription,
+    _observe_multi_workspace: Option<Subscription>,
+}
+
+impl LeftStatusBar {
+    pub fn new(
+        status_bar: Entity<StatusBar>,
+        panel_buttons: Entity<PanelButtons>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            _observe_status_bar: cx.observe(&status_bar, |this, _, cx| {
+                this.update_multi_workspace_subscription(cx);
+                cx.notify();
+            }),
+            panel_buttons,
+            search_button: None,
+            references_button: None,
+            status_bar,
+            focus_handle: cx.focus_handle(),
+            _observe_multi_workspace: None,
+        };
+        this.update_multi_workspace_subscription(cx);
+        this
+    }
+
+    /// Sets the project search button shown at the top of this strip.
+    pub fn set_search_button(&mut self, search_button: AnyView, cx: &mut Context<Self>) {
+        self.search_button = Some(search_button);
+        cx.notify();
+    }
+
+    /// Sets the find-all-references toggle button shown below the search button
+    /// in this strip.
+    pub fn set_references_button(&mut self, references_button: AnyView, cx: &mut Context<Self>) {
+        self.references_button = Some(references_button);
+        cx.notify();
+    }
+
+    /// Re-subscribes to the threads sidebar's multi-workspace so this strip
+    /// re-renders when the sidebar opens or closes.
+    fn update_multi_workspace_subscription(&mut self, cx: &mut Context<Self>) {
+        self._observe_multi_workspace = self
+            .status_bar
+            .read(cx)
+            .multi_workspace
+            .clone()
+            .and_then(|multi_workspace| multi_workspace.upgrade())
+            .map(|multi_workspace| cx.observe(&multi_workspace, |_, _, cx| cx.notify()));
+    }
+
+    fn move_item_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        move_focus_between_items(&self.focus_handle, forward, window, cx);
+        cx.notify();
+    }
+}
+
+impl Focusable for LeftStatusBar {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for LeftStatusBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = SidebarStatus::query(&self.status_bar.read(cx).multi_workspace, cx);
+
+        v_flex()
+            .id("left-status-bar")
+            .track_focus(&self.focus_handle)
+            .key_context("StatusBar")
+            // Expose the status strip as an ARIA toolbar so assistive
+            // technology announces it as a toolbar and region navigation can
+            // reach its controls; arrow keys move between items once focus is
+            // inside (see the on_key_down handler below).
+            .role(Role::Toolbar)
+            .aria_label("Left status bar")
+            .tab_group()
+            .on_key_down(
+                cx.listener(|status_bar, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    match event.keystroke.key.as_str() {
+                        "down" => {
+                            status_bar.move_item_focus(true, window, cx);
+                            cx.stop_propagation();
+                        }
+                        "up" => {
+                            status_bar.move_item_focus(false, window, cx);
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }
+                }),
+            )
+            .h_full()
+            .flex_shrink_0()
+            .items_center()
+            .overflow_hidden()
+            .max_w(px(220.))
+            .gap(DynamicSpacing::Base08.rems(cx))
+            .p(DynamicSpacing::Base04.rems(cx))
+            .bg(cx.theme().colors().status_bar_background)
+            .map(|el| match window.window_decorations() {
+                Decorations::Server => el,
+                Decorations::Client { tiling, .. } => el
+                    .when(
+                        !(tiling.top || tiling.left)
+                            && !(sidebar.open && sidebar.side == SidebarSide::Left),
+                        |el| el.rounded_tl(CLIENT_SIDE_DECORATION_ROUNDING),
+                    )
+                    .when(
+                        !(tiling.bottom || tiling.left)
+                            && !(sidebar.open && sidebar.side == SidebarSide::Left),
+                        |el| el.rounded_bl(CLIENT_SIDE_DECORATION_ROUNDING),
+                    )
+                    // This border is to avoid a transparent gap in the rounded corners
+                    .ml(px(-1.))
+                    .mr({
+                        #[cfg(target_os = "linux")]
+                        let needs_gap_fix = {
+                            // Running on Wayland and using some scaling levels other than
+                            // 100% can cause a 1px seam next to the strip; adding a
+                            // negative margin avoids this.
+                            gpui::guess_compositor() == "Wayland" && window.scale_factor() != 1.0
+                        };
+                        #[cfg(not(target_os = "linux"))]
+                        let needs_gap_fix = false;
+                        if needs_gap_fix { px(-1.) } else { px(0.) }
+                    })
+                    .border_l(px(1.0))
+                    .border_color(cx.theme().colors().status_bar_background),
+            })
+            .child(
+                v_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .items_center()
+                    .overflow_x_hidden()
+                    .child(self.panel_buttons.clone())
+                    .when_some(self.search_button.clone(), |this, view| this.child(view))
+                    .when_some(self.references_button.clone(), |this, view| {
+                        this.child(view)
+                    })
+                    .when(
+                        sidebar.show_toggle && sidebar.side == SidebarSide::Left,
+                        |this| this.child(render_sidebar_toggle(&sidebar, cx)),
+                    ),
+            )
+    }
+}
+
+pub struct RightStatusBar {
+    status_bar: Entity<StatusBar>,
+    panel_buttons: Entity<PanelButtons>,
+    focus_handle: FocusHandle,
+    _observe_status_bar: Subscription,
+    _observe_multi_workspace: Option<Subscription>,
+}
+
+impl RightStatusBar {
+    pub fn new(
+        status_bar: Entity<StatusBar>,
+        panel_buttons: Entity<PanelButtons>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            _observe_status_bar: cx.observe(&status_bar, |this, _, cx| {
+                this.update_multi_workspace_subscription(cx);
+                cx.notify();
+            }),
+            panel_buttons,
+            status_bar,
+            focus_handle: cx.focus_handle(),
+            _observe_multi_workspace: None,
+        };
+        this.update_multi_workspace_subscription(cx);
+        this
+    }
+
+    /// Re-subscribes to the threads sidebar's multi-workspace so this strip
+    /// re-renders when the sidebar opens or closes.
+    fn update_multi_workspace_subscription(&mut self, cx: &mut Context<Self>) {
+        self._observe_multi_workspace = self
+            .status_bar
+            .read(cx)
+            .multi_workspace
+            .clone()
+            .and_then(|multi_workspace| multi_workspace.upgrade())
+            .map(|multi_workspace| cx.observe(&multi_workspace, |_, _, cx| cx.notify()));
+    }
+
+    fn move_item_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        move_focus_between_items(&self.focus_handle, forward, window, cx);
+        cx.notify();
+    }
+}
+
+impl Focusable for RightStatusBar {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for RightStatusBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = SidebarStatus::query(&self.status_bar.read(cx).multi_workspace, cx);
+
+        v_flex()
+            .id("right-status-bar")
+            .track_focus(&self.focus_handle)
+            .key_context("StatusBar")
+            .role(Role::Toolbar)
+            .aria_label("Right status bar")
+            .tab_group()
+            .on_key_down(
+                cx.listener(|status_bar, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    match event.keystroke.key.as_str() {
+                        "down" => {
+                            status_bar.move_item_focus(true, window, cx);
+                            cx.stop_propagation();
+                        }
+                        "up" => {
+                            status_bar.move_item_focus(false, window, cx);
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }
+                }),
+            )
+            .h_full()
+            .flex_shrink_0()
+            .items_center()
+            .overflow_hidden()
+            .max_w(px(220.))
+            .gap(DynamicSpacing::Base08.rems(cx))
+            .p(DynamicSpacing::Base04.rems(cx))
+            .bg(cx.theme().colors().status_bar_background)
+            .map(|el| match window.window_decorations() {
+                Decorations::Server => el,
+                Decorations::Client { tiling, .. } => el
+                    .when(
+                        !(tiling.top || tiling.right)
+                            && !(sidebar.open && sidebar.side == SidebarSide::Right),
+                        |el| el.rounded_tr(CLIENT_SIDE_DECORATION_ROUNDING),
+                    )
+                    .when(
+                        !(tiling.bottom || tiling.right)
+                            && !(sidebar.open && sidebar.side == SidebarSide::Right),
+                        |el| el.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING),
+                    )
+                    // This border is to avoid a transparent gap in the rounded corners
+                    .mr(px(-1.))
+                    .ml({
+                        #[cfg(target_os = "linux")]
+                        let needs_gap_fix = {
+                            // Running on Wayland and using some scaling levels other than
+                            // 100% can cause a 1px seam next to the strip; adding a
+                            // negative margin avoids this.
+                            gpui::guess_compositor() == "Wayland" && window.scale_factor() != 1.0
+                        };
+                        #[cfg(not(target_os = "linux"))]
+                        let needs_gap_fix = false;
+                        if needs_gap_fix { px(-1.) } else { px(0.) }
+                    })
+                    .border_r(px(1.0))
+                    .border_color(cx.theme().colors().status_bar_background),
+            })
+            .child(
+                v_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .items_center()
+                    .overflow_x_hidden()
+                    .child(self.panel_buttons.clone())
+                    .when(
+                        sidebar.show_toggle && sidebar.side == SidebarSide::Right,
+                        |this| this.child(render_sidebar_toggle(&sidebar, cx)),
+                    ),
+            )
     }
 }
 

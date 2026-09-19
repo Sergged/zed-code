@@ -1963,6 +1963,10 @@
     // input is pending. Hovering the indicator pauses the timeout. Its binding
     // preview popover is disabled when "which_key.enabled" is true.
     "pending_keystrokes_indicator": true,
+    // Multiplier for the panel button icons in the vertical status strips on
+    // the left and right edges of the workspace (1.0 = the same size as the
+    // bottom status bar's icons).
+    "icon_scale": 1.0,
   },
   // Settings specific to the terminal
   "terminal": {
