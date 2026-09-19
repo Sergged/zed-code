@@ -32,7 +32,7 @@ use util::paths::{PathExt as _, PathStyle};
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
     Workspace,
-    item::{ItemEvent, SaveOptions},
+    item::{ItemEvent, PreviewTabsSettings, SaveOptions, TabContentParams},
     notifications::NotifyTaskExt,
     searchable::SearchableItemHandle,
 };
@@ -112,10 +112,37 @@ impl SoloDiffView {
                     )
                 });
 
-                workspace.add_item_to_active_pane(Box::new(view.clone()), None, true, window, cx);
+                Self::open_view_in_pane(view.clone(), workspace, window, cx);
                 view
             })
         })
+    }
+
+    /// Opens the view in the active pane as a preview tab when preview tabs are
+    /// enabled, so browsing files in the git panel reuses the tab instead of
+    /// accumulating diff tabs.
+    fn open_view_in_pane(
+        view: Entity<Self>,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let pane = workspace.active_pane().clone();
+        pane.update(cx, |pane, cx| {
+            let destination_index = if PreviewTabsSettings::get_global(cx).enabled {
+                pane.replace_preview_item_id(view.item_id(), window, cx)
+            } else {
+                None
+            };
+            pane.add_item(
+                Box::new(view.clone()),
+                false,
+                true,
+                destination_index,
+                window,
+                cx,
+            );
+        });
     }
 
     fn new(
@@ -375,6 +402,14 @@ impl Item for SoloDiffView {
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
         Some(Icon::new(IconName::Diff).color(Color::Muted))
+    }
+
+    fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
+        Label::new(self.tab_content_text(params.detail.unwrap_or_default(), cx))
+            .single_line()
+            .color(params.text_color())
+            .when(params.preview, |this| this.italic())
+            .into_any_element()
     }
 
     fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
