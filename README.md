@@ -1,3 +1,27 @@
+> [!IMPORTANT]
+> Remove this line to confirm you've reviewed this PR before submitting.
+
+> [!IMPORTANT]
+> Remove this section before opening a PR — it is local-only setup documentation.
+
+### Local build on macOS without full Xcode
+
+This checkout builds with the `runtime_shaders` feature enabled (see `crates/gpui_macos/Cargo.toml`), which compiles Metal shaders at runtime instead of requiring the `metal` compiler from a full Xcode install.
+
+```sh
+cargo build -p zed -j 6               # debug binary
+cargo build -p zed --release -j 6     # release binary
+CARGO_BUILD_JOBS=4 script/bundle-fast-mac   # fast .app bundle (one build, see script/bundle-fast-mac)
+# release channel comes from crates/zed/RELEASE_CHANNEL (dev => "Zed Dev.app")
+
+# artifacts:
+./target/debug/zed                                        # debug binary
+./target/release/zed                                      # release binary
+target/aarch64-apple-darwin/release/bundle/osx/           # Zed Dev.app (bundle)
+```
+
+`-j 6` because the machine has 16 GiB RAM. The full `script/bundle-mac` does the same bundle plus git binary, ad-hoc signature, and DMG, but takes ~1.5 h locally (three separate builds). Once a full Xcode is installed, revert `crates/gpui_macos/Cargo.toml` to restore the canonical AOT shader build.
+
 # Zed
 
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
