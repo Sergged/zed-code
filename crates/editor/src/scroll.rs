@@ -581,6 +581,112 @@ impl Editor {
         self.scroll_manager.has_autoscroll_request()
     }
 
+    /// Smoothly scrolls the viewport to where the given autoscroll would take it.
+    ///
+    /// The animation progresses over a fixed number of ticks rather than by
+    /// elapsed real time, so it is deterministic in tests, where no frames are
+    /// produced and the scheduler clock is virtualized.
+    pub(crate) fn smooth_scroll_to(
+        &mut self,
+        autoscroll: Autoscroll,
+        start_scroll: gpui::Point<ScrollOffset>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        const TICK_COUNT: u32 = 10;
+        const TICK_DURATION: Duration = Duration::from_millis(16);
+
+        cx.spawn_in(window, async move |editor, cx| -> anyhow::Result<()> {
+            // Apply the autoscroll once to compute the target viewport position,
+            // then rewind to the start and animate between the two positions.
+            let target_scroll = editor
+                .update_in(cx, |editor, window, cx| {
+                    let display_map = editor.display_map.update(cx, |map, cx| map.snapshot(cx));
+                    let line_height = editor
+                        .style(cx)
+                        .text
+                        .line_height_in_pixels(window.rem_size());
+                    let Some(visible_lines) = editor.visible_line_count() else {
+                        return None;
+                    };
+                    let bounds = gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: gpui::Size::new(
+                            gpui::px(0.),
+                            gpui::px((visible_lines * f64::from(line_height)).max(1.0) as f32),
+                        ),
+                    };
+                    let height_in_lines = f64::from(bounds.size.height / line_height);
+                    let max_row = display_map.max_point().row().as_f64();
+                    let max_scroll_top = match editor.scroll_beyond_last_line(cx) {
+                        ScrollBeyondLastLine::OnePage => max_row,
+                        ScrollBeyondLastLine::Off => (max_row - height_in_lines + 1.).max(0.),
+                        ScrollBeyondLastLine::VerticalScrollMargin => {
+                            let margin = EditorSettings::get_global(cx).vertical_scroll_margin;
+                            (max_row - height_in_lines + 1. + margin).max(0.)
+                        }
+                    };
+                    editor.autoscroll_vertically(
+                        bounds,
+                        line_height,
+                        max_scroll_top,
+                        Some((autoscroll, true)),
+                        window,
+                        cx,
+                    );
+                    Some(editor.scroll_position(cx))
+                })
+                .ok()
+                .flatten();
+
+            let Some(target_scroll) = target_scroll else {
+                // The editor has never been laid out, so the target is unknown.
+                // Fall back to the plain autoscroll behavior.
+                editor.update_in(cx, |editor, _, cx| {
+                    editor.request_autoscroll(autoscroll, cx);
+                })?;
+                return Ok(());
+            };
+
+            editor.update_in(cx, |editor, window, cx| {
+                editor.set_scroll_position(start_scroll, window, cx);
+            })?;
+
+            let start_y = start_scroll.y;
+            let end_y = target_scroll.y;
+            let mut previous_y = start_y;
+            for tick in 1..=TICK_COUNT {
+                if tick < TICK_COUNT {
+                    cx.background_executor().timer(TICK_DURATION).await;
+                }
+                let t = tick as f32 / TICK_COUNT as f32;
+                let eased = t * t * (3. - 2. * t);
+                let aborted = editor
+                    .update_in(cx, |editor, window, cx| {
+                        if (editor.scroll_position(cx).y - previous_y).abs() > 0.25 {
+                            // The user scrolled manually during the animation.
+                            return true;
+                        }
+                        let y = start_y + (end_y - start_y) * f64::from(eased);
+                        editor.set_scroll_position(
+                            gpui::Point::new(target_scroll.x, y),
+                            window,
+                            cx,
+                        );
+                        previous_y = editor.scroll_position(cx).y;
+                        cx.notify();
+                        false
+                    })
+                    .unwrap_or(true);
+                if aborted {
+                    break;
+                }
+            }
+            Ok(())
+        })
+        .detach();
+    }
+
     pub fn set_forbid_vertical_scroll(&mut self, forbid: bool) {
         self.scroll_manager.set_forbid_vertical_scroll(forbid);
     }

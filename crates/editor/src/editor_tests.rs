@@ -31589,6 +31589,10 @@ async fn test_goto_definition_preserve_scroll_strategy(cx: &mut TestAppContext) 
     .await
     .expect("Failed to navigate to definition");
     cx.run_until_parked();
+    // Smooth scrolling animates the viewport over a few ticks; wait for it to
+    // finish before asserting the final scroll position.
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
     cx.update_editor(|editor, window, cx| {
         assert_eq!(
             editor.snapshot(window, cx).scroll_position(),
@@ -31624,12 +31628,396 @@ async fn test_goto_definition_preserve_scroll_strategy(cx: &mut TestAppContext) 
     .await
     .expect("Failed to navigate to definition");
     cx.run_until_parked();
+    // Smooth scrolling animates the viewport over a few ticks; wait for it to
+    // finish before asserting the final scroll position.
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
     cx.update_editor(|editor, window, cx| {
         assert_eq!(
             editor.snapshot(window, cx).scroll_position(),
             gpui::Point::new(0.0, (target_row - center_offset).max(0.0)),
         );
     });
+}
+
+#[gpui::test]
+async fn test_goto_definition_navigates_in_place_in_diff_like_multibuffer(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            definition_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+
+    // The file contains a caller and a definition. A diff-like editor (such as a
+    // solo diff view) only shows excerpts of the file; rows 0-2 and row 6 are
+    // visible here.
+    cx.set_state(
+        &r#"fn caller() {
+            let _ = ˇtarget();
+        }
+
+
+
+        fn target() {}"#
+            .unindent(),
+    );
+
+    let buffer = cx.update_editor(|editor, _, cx| editor.buffer().read(cx).as_singleton().unwrap());
+
+    // Replace the plain editor with a diff-like editor by removing it from the
+    // pane directly (the buffer is dirty from `set_state`, so asking the
+    // workspace to close it would trigger save prompting).
+    cx.update_workspace(|workspace, window, cx| {
+        let pane = workspace.active_pane().clone();
+        let item_id = pane.read(cx).active_item().unwrap().item_id();
+        pane.update(cx, |pane, cx| {
+            pane.remove_item(item_id, false, false, window, cx);
+        });
+    });
+    cx.cx.cx.run_until_parked();
+    cx.run_until_parked();
+
+    let diff_editor = cx.update_workspace(|workspace, window, cx| {
+        let editor = cx.new(|cx| {
+            let multibuffer = cx.new(|cx| {
+                let mut multibuffer = MultiBuffer::without_headers(buffer.read(cx).capability());
+                multibuffer.set_excerpts_for_buffer(
+                    buffer.clone(),
+                    [
+                        Point::zero()..Point::new(2, 0),
+                        Point::new(6, 0)..Point::new(7, 0),
+                    ],
+                    0,
+                    cx,
+                );
+                multibuffer
+            });
+            build_editor_with_project(workspace.project().clone(), multibuffer, window, cx)
+        });
+        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        let nav_history = workspace
+            .active_pane()
+            .read(cx)
+            .nav_history_for_item(&editor);
+        editor.update(cx, |editor, cx| {
+            editor.set_nav_history(Some(nav_history));
+            let anchor = {
+                let multibuffer = editor.buffer().read(cx);
+                multibuffer
+                    .buffer_point_to_anchor(&buffer, Point::new(1, 12), cx)
+                    .unwrap()
+            };
+            editor.change_selections(None.into(), window, cx, |s| {
+                s.select_anchor_ranges([anchor..anchor]);
+            });
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        editor
+    });
+    cx.run_until_parked();
+
+    let _go_to_definition =
+        cx.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |url, _, _| async move {
+            Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+                uri: url,
+                range: lsp::Range::new(lsp::Position::new(6, 3), lsp::Position::new(6, 9)),
+            })))
+        });
+
+    let navigated = diff_editor
+        .update_in(&mut cx.cx.cx, |editor, window, cx| {
+            editor.go_to_definition(&GoToDefinition::default(), window, cx)
+        })
+        .await
+        .expect("Failed to navigate to definition");
+    assert_eq!(navigated, Navigated::Yes);
+
+    // The definition is visible in an excerpt, so the diff-like editor should
+    // navigate in place instead of opening a new editor. The first excerpt
+    // spans rows 0-2, so the definition on buffer row 6 lands on multibuffer
+    // row 3.
+    let selection = diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| {
+        let display_snapshot = editor.display_snapshot(cx);
+        editor.selections.newest::<Point>(&display_snapshot).range()
+    });
+    assert_eq!(selection, Point::new(3, 3)..Point::new(3, 9));
+    cx.update_workspace(|workspace, _, cx| {
+        assert_eq!(
+            workspace.items_of_type::<Editor>(cx).count(),
+            1,
+            "Should not have opened a new editor"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_goto_definition_outside_excerpts_opens_plain_editor(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            definition_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+
+    cx.set_state(
+        &r#"fn caller() {
+            let _ = ˇtarget();
+        }
+
+
+
+        fn target() {}"#
+            .unindent(),
+    );
+
+    let buffer = cx.update_editor(|editor, _, cx| editor.buffer().read(cx).as_singleton().unwrap());
+
+    // Replace the plain editor with a diff-like editor by removing it from the
+    // pane directly (the buffer is dirty from `set_state`, so asking the
+    // workspace to close it would trigger save prompting).
+    cx.update_workspace(|workspace, window, cx| {
+        let pane = workspace.active_pane().clone();
+        let item_id = pane.read(cx).active_item().unwrap().item_id();
+        pane.update(cx, |pane, cx| {
+            pane.remove_item(item_id, false, false, window, cx);
+        });
+    });
+    cx.cx.cx.run_until_parked();
+    cx.run_until_parked();
+
+    let diff_editor = cx.update_workspace(|workspace, window, cx| {
+        let editor = cx.new(|cx| {
+            let multibuffer = cx.new(|cx| {
+                let mut multibuffer = MultiBuffer::without_headers(buffer.read(cx).capability());
+                multibuffer.set_excerpts_for_buffer(
+                    buffer.clone(),
+                    [Point::zero()..Point::new(2, 0)],
+                    0,
+                    cx,
+                );
+                multibuffer
+            });
+            build_editor_with_project(workspace.project().clone(), multibuffer, window, cx)
+        });
+        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        let nav_history = workspace
+            .active_pane()
+            .read(cx)
+            .nav_history_for_item(&editor);
+        editor.update(cx, |editor, cx| {
+            editor.set_nav_history(Some(nav_history));
+            let anchor = {
+                let multibuffer = editor.buffer().read(cx);
+                multibuffer
+                    .buffer_point_to_anchor(&buffer, Point::new(1, 12), cx)
+                    .unwrap()
+            };
+            editor.change_selections(None.into(), window, cx, |s| {
+                s.select_anchor_ranges([anchor..anchor]);
+            });
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        editor
+    });
+    cx.run_until_parked();
+
+    let _go_to_definition =
+        cx.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |url, _, _| async move {
+            Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+                uri: url,
+                range: lsp::Range::new(lsp::Position::new(6, 3), lsp::Position::new(6, 9)),
+            })))
+        });
+
+    let navigated = diff_editor
+        .update_in(&mut cx.cx.cx, |editor, window, cx| {
+            editor.go_to_definition(&GoToDefinition::default(), window, cx)
+        })
+        .await
+        .expect("Failed to navigate to definition");
+    assert_eq!(navigated, Navigated::Yes);
+    cx.run_until_parked();
+
+    // The definition is in the same buffer but not visible in any excerpt, so a
+    // plain editor for the file should have been opened and navigated instead.
+    let (editor_count, opened_editor) = cx.update_workspace(|workspace, _, cx| {
+        let editors = workspace.items_of_type::<Editor>(cx).collect::<Vec<_>>();
+        let editor_count = editors.len();
+        let opened_editor = editors
+            .into_iter()
+            .find(|editor| *editor != diff_editor)
+            .expect("Should have a plain editor for the file");
+        (editor_count, opened_editor)
+    });
+    assert_eq!(editor_count, 2, "Should have opened a new editor");
+
+    let diff_selection = diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| {
+        let display_snapshot = editor.display_snapshot(cx);
+        editor.selections.newest::<Point>(&display_snapshot).range()
+    });
+    assert_eq!(diff_selection, Point::new(1, 12)..Point::new(1, 12));
+
+    let opened_selection = opened_editor.update_in(&mut cx.cx.cx, |editor, _, cx| {
+        let display_snapshot = editor.display_snapshot(cx);
+        editor.selections.newest::<Point>(&display_snapshot).range()
+    });
+    assert_eq!(opened_selection, Point::new(6, 3)..Point::new(6, 9));
+}
+
+#[gpui::test]
+async fn test_goto_definition_smooth_scrolls(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            definition_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+
+    // A diff-like editor showing the caller and the definition in separate
+    // excerpts, in a viewport small enough that navigating to the definition
+    // has to scroll.
+    cx.set_state(
+        &r#"fn caller() {
+            let _ = ˇtarget();
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        fn target() {}"#
+            .unindent(),
+    );
+
+    let window = cx.window;
+    let line_height = cx.update_editor(|editor, window, cx| {
+        editor
+            .style(cx)
+            .text
+            .line_height_in_pixels(window.rem_size())
+    });
+    cx.simulate_window_resize(window, size(px(1000.), 8. * line_height));
+
+    let buffer = cx.update_editor(|editor, _, cx| editor.buffer().read(cx).as_singleton().unwrap());
+
+    // Replace the plain editor with a diff-like editor: the caller is on rows
+    // 0-2 and the definition on row 20.
+    cx.update_workspace(|workspace, window, cx| {
+        let pane = workspace.active_pane().clone();
+        let item_id = pane.read(cx).active_item().unwrap().item_id();
+        pane.update(cx, |pane, cx| {
+            pane.remove_item(item_id, false, false, window, cx);
+        });
+    });
+    cx.cx.cx.run_until_parked();
+    cx.run_until_parked();
+
+    let diff_editor = cx.update_workspace(|workspace, window, cx| {
+        let editor = cx.new(|cx| {
+            let multibuffer = cx.new(|cx| {
+                let mut multibuffer = MultiBuffer::without_headers(buffer.read(cx).capability());
+                multibuffer.set_excerpts_for_buffer(
+                    buffer.clone(),
+                    [
+                        Point::zero()..Point::new(3, 0),
+                        Point::new(20, 0)..Point::new(21, 0),
+                    ],
+                    0,
+                    cx,
+                );
+                multibuffer
+            });
+            build_editor_with_project(workspace.project().clone(), multibuffer, window, cx)
+        });
+        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        let nav_history = workspace
+            .active_pane()
+            .read(cx)
+            .nav_history_for_item(&editor);
+        editor.update(cx, |editor, cx| {
+            editor.set_nav_history(Some(nav_history));
+            let anchor = {
+                let multibuffer = editor.buffer().read(cx);
+                multibuffer
+                    .buffer_point_to_anchor(&buffer, Point::new(1, 12), cx)
+                    .unwrap()
+            };
+            editor.change_selections(None.into(), window, cx, |s| {
+                s.select_anchor_ranges([anchor..anchor]);
+            });
+            editor.set_scroll_position(gpui::Point::new(0.0, 0.0), window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        editor
+    });
+    cx.run_until_parked();
+
+    let start_y =
+        diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
+    assert_eq!(start_y, 0.0);
+
+    let _go_to_definition =
+        cx.set_request_handler::<lsp::request::GotoDefinition, _, _>(move |url, _, _| async move {
+            Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+                uri: url,
+                range: lsp::Range::new(lsp::Position::new(20, 3), lsp::Position::new(20, 9)),
+            })))
+        });
+
+    let navigated = diff_editor
+        .update_in(&mut cx.cx.cx, |editor, window, cx| {
+            editor.go_to_definition(&GoToDefinition::default(), window, cx)
+        })
+        .await
+        .expect("Failed to navigate to definition");
+    assert_eq!(navigated, Navigated::Yes);
+    // The first animation tick snaps the viewport back to the start position.
+    cx.run_until_parked();
+    let after_start =
+        diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
+    assert_eq!(
+        after_start, 0.0,
+        "The viewport should start animating from the original position"
+    );
+
+    // After one tick the viewport should be strictly between the start and the
+    // target positions.
+    cx.executor().advance_clock(Duration::from_millis(16));
+    cx.run_until_parked();
+    let mid_y = diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
+    assert!(mid_y > 0.0, "The viewport should have started moving");
+
+    // After the animation completes, the viewport should be at the target.
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    let end_y = diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
+    assert!(
+        mid_y < end_y,
+        "The animation should move the viewport gradually toward the definition"
+    );
+    assert!(end_y > 0.0, "The viewport should end at the definition");
 }
 
 #[gpui::test]
