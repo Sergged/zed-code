@@ -632,7 +632,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let merge_conflict_indicator =
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(active_file_name, window, cx);
@@ -650,6 +649,12 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             status_bar.add_right_item(vim_mode_indicator, window, cx);
             status_bar.add_right_item(pending_keystrokes_indicator, window, cx);
         });
+
+        workspace.set_left_status_bar_search_button(search_button.into(), cx);
+        workspace.set_left_status_bar_references_button(
+            cx.new(|_| references_panel::ReferencesButton::new()).into(),
+            cx,
+        );
 
         let panels_task = initialize_panels(window, cx);
         workspace.set_panels_task(panels_task);
