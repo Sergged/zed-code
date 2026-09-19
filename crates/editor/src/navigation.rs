@@ -1896,40 +1896,50 @@ impl Editor {
                         .map(|r| editor.range_for_match(&r))
                         .map(collapse_multiline_range)
                         .collect::<Vec<_>>();
-                    if !split
-                        && Some(&target_buffer) == editor.buffer.read(cx).as_singleton().as_ref()
-                    {
-                        let multibuffer = editor.buffer.read(cx);
-                        let target_ranges = target_ranges
-                            .into_iter()
-                            .filter_map(|r| {
-                                let start = multibuffer.buffer_point_to_anchor(
-                                    &target_buffer,
-                                    r.start,
-                                    cx,
-                                )?;
-                                let end = multibuffer.buffer_point_to_anchor(
-                                    &target_buffer,
-                                    r.end,
-                                    cx,
-                                )?;
-                                Some(start..end)
-                            })
-                            .collect::<Vec<_>>();
-                        if target_ranges.is_empty() {
-                            return Navigated::No;
-                        }
 
+                    // Navigate in place when the target is already visible in this editor's
+                    // buffer, e.g. a definition in the same file shown in a diff view.
+                    // `buffer_anchor_range_to_anchor_range` only succeeds when the range is
+                    // fully contained in an excerpt, so targets in parts of a file that
+                    // aren't currently shown (such as outside the hunks of a solo diff)
+                    // fall through to opening a new editor below.
+                    let in_place_ranges = if !split
+                        && editor
+                            .buffer
+                            .read(cx)
+                            .all_buffers_iter()
+                            .any(|buffer| buffer == target_buffer)
+                    {
+                        let multibuffer_snapshot = editor.buffer.read(cx).snapshot(cx);
+                        let target_buffer_snapshot = target_buffer.read(cx);
+                        target_ranges
+                            .iter()
+                            .filter_map(|range| {
+                                multibuffer_snapshot.buffer_anchor_range_to_anchor_range(
+                                    target_buffer_snapshot.anchor_range_inside(range.clone()),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+
+                    if !in_place_ranges.is_empty() && in_place_ranges.len() == target_ranges.len() {
+                        let autoscroll =
+                            Autoscroll::for_go_to_definition(editor.cursor_top_offset(cx), cx);
+                        let start_scroll = editor.scroll_position(cx);
                         editor.change_selections(
-                            SelectionEffects::scroll(Autoscroll::for_go_to_definition(
-                                editor.cursor_top_offset(cx),
-                                cx,
-                            ))
-                            .nav_history(true),
+                            SelectionEffects::no_scroll().nav_history(true),
                             window,
                             cx,
-                            |s| s.select_anchor_ranges(target_ranges),
+                            |s| s.select_anchor_ranges(in_place_ranges),
                         );
+
+                        if cx.reduce_motion() {
+                            editor.request_autoscroll(autoscroll, cx);
+                        } else {
+                            editor.smooth_scroll_to(autoscroll, start_scroll, window, cx);
+                        }
 
                         let target =
                             editor.navigation_entry(editor.selections.newest_anchor().head(), cx);
