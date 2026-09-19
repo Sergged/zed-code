@@ -10215,6 +10215,40 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_solo_diff_active_project_path_resolves_to_file(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "file.rs": "fn main() {}\n",
+            }),
+            &[("file.rs", StatusCode::Modified)],
+        )
+        .await;
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("file.rs"), Section::Tracked);
+            panel.open_solo_diff(&menu::SecondaryConfirm, window, cx);
+        });
+        cx.run_until_parked();
+
+        let project_path = workspace.read_with(&cx, |workspace, cx| {
+            let solo_diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("SoloDiffView should be active");
+            solo_diff.read(cx).active_project_path(cx)
+        });
+        assert!(project_path.is_some());
+        let expected = ProjectPath {
+            worktree_id: project_path.as_ref().expect("project path").worktree_id,
+            path: rel_path("file.rs").into(),
+        };
+        assert_eq!(project_path, Some(expected));
+    }
+
+    #[gpui::test]
     async fn test_skip_hooks_remains_enabled_after_failed_commit(cx: &mut TestAppContext) {
         init_test(cx);
         let (fs, _, _, panel, mut cx) = setup_git_panel_with_changes(
@@ -11790,6 +11824,122 @@ mod tests {
             assert_eq!(workspace.items_of_type::<StagedDiff>(cx).count(), 1);
             assert_eq!(workspace.items_of_type::<UnstagedDiff>(cx).count(), 1);
             assert_eq!(workspace.items_of_type::<ProjectDiff>(cx).count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_solo_diff_opens_as_preview_tab(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(search::buffer_search::init);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "one.rs": "one content",
+                "two.rs": "two content",
+            }),
+        )
+        .await;
+
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[
+                (
+                    "one.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Modified,
+                        worktree_status: StatusCode::Modified,
+                    }
+                    .into(),
+                ),
+                (
+                    "two.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Modified,
+                        worktree_status: StatusCode::Modified,
+                    }
+                    .into(),
+                ),
+            ],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Staging);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        await_git_panel_entries(&panel, cx).await;
+
+        fn open_solo_diff_for(panel: &Entity<GitPanel>, cx: &mut VisualTestContext, path: &str) {
+            panel.update_in(cx, |panel, window, cx| {
+                panel.selected_entry =
+                    panel.entry_by_path_in_section(&repo_path(path), Section::Unstaged);
+                panel.open_solo_diff(&menu::SecondaryConfirm, window, cx);
+            });
+            cx.executor().run_until_parked();
+        }
+
+        open_solo_diff_for(&panel, cx, "one.rs");
+        let first_diff = workspace.read_with(cx, |workspace, cx| {
+            let pane = workspace.active_pane();
+            let diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("SoloDiffView should be active");
+            assert_eq!(
+                pane.read(cx).preview_item_id(),
+                Some(diff.entity_id()),
+                "Solo diff should open as a preview tab"
+            );
+            diff
+        });
+
+        // Opening another solo diff replaces the preview tab instead of
+        // accumulating diff tabs.
+        open_solo_diff_for(&panel, cx, "two.rs");
+        workspace.read_with(cx, |workspace, cx| {
+            let pane = workspace.active_pane();
+            let diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("SoloDiffView should be active");
+            assert_ne!(diff.entity_id(), first_diff.entity_id());
+            assert_eq!(
+                pane.read(cx).preview_item_id(),
+                Some(diff.entity_id()),
+                "Second solo diff should replace the preview tab"
+            );
+            assert_eq!(
+                workspace.items_of_type::<SoloDiffView>(cx).count(),
+                1,
+                "Replaced preview diff should have been closed"
+            );
         });
     }
 
