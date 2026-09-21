@@ -548,8 +548,6 @@ fn render_sidebar_toggle(sidebar: &SidebarStatus, cx: &App) -> impl IntoElement 
 pub struct LeftStatusBar {
     status_bar: Entity<StatusBar>,
     panel_buttons: Entity<PanelButtons>,
-    search_button: Option<AnyView>,
-    references_button: Option<AnyView>,
     focus_handle: FocusHandle,
     _observe_status_bar: Subscription,
     _observe_multi_workspace: Option<Subscription>,
@@ -567,27 +565,12 @@ impl LeftStatusBar {
                 cx.notify();
             }),
             panel_buttons,
-            search_button: None,
-            references_button: None,
             status_bar,
             focus_handle: cx.focus_handle(),
             _observe_multi_workspace: None,
         };
         this.update_multi_workspace_subscription(cx);
         this
-    }
-
-    /// Sets the project search button shown at the top of this strip.
-    pub fn set_search_button(&mut self, search_button: AnyView, cx: &mut Context<Self>) {
-        self.search_button = Some(search_button);
-        cx.notify();
-    }
-
-    /// Sets the find-all-references toggle button shown below the search button
-    /// in this strip.
-    pub fn set_references_button(&mut self, references_button: AnyView, cx: &mut Context<Self>) {
-        self.references_button = Some(references_button);
-        cx.notify();
     }
 
     /// Re-subscribes to the threads sidebar's multi-workspace so this strip
@@ -692,10 +675,6 @@ impl Render for LeftStatusBar {
                     .items_center()
                     .overflow_x_hidden()
                     .child(self.panel_buttons.clone())
-                    .when_some(self.search_button.clone(), |this, view| this.child(view))
-                    .when_some(self.references_button.clone(), |this, view| {
-                        this.child(view)
-                    })
                     .when(
                         sidebar.show_toggle && sidebar.side == SidebarSide::Left,
                         |this| this.child(render_sidebar_toggle(&sidebar, cx)),

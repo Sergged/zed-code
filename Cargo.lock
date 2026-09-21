@@ -16111,6 +16111,7 @@ dependencies = [
  "language",
  "log",
  "lsp",
+ "lsp_locations",
  "menu",
  "multi_buffer",
  "picker",

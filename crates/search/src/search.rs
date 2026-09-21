@@ -13,20 +13,22 @@ pub use zed_actions::search::{
     FocusSearch, SelectNextMatch, SelectPreviousMatch, ToggleCaseSensitive, ToggleIncludeIgnored,
 };
 
-pub use search_status_button::SEARCH_ICON;
+/// The icon used for the search panel button in the left status strip.
+pub const SEARCH_ICON: IconName = IconName::MagnifyingGlass;
 
 use crate::project_search::ProjectSearchBar;
 
 pub mod buffer_search;
 pub mod project_search;
 pub(crate) mod search_bar;
-pub mod search_status_button;
+pub mod search_panel;
 pub mod text_finder;
 
 pub fn init(cx: &mut App) {
     menu::init();
     buffer_search::init(cx);
     project_search::init(cx);
+    search_panel::init(cx);
     text_finder::init(cx);
 }
 

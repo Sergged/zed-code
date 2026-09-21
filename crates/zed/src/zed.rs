@@ -71,6 +71,7 @@ use references_panel::ReferencesPanel;
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
+use search::search_panel::SearchPanel;
 use settings::{
     BaseKeymap, DEFAULT_KEYMAP_PATH, DefaultOpenBehavior, InvalidSettingsError, KeybindSource,
     KeymapFile, KeymapFileLoadResult, MigrationStatus, SPECIFIC_OVERRIDES_KEYMAP_PATH, Settings,
@@ -599,7 +600,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             }
         });
 
-        let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
@@ -649,12 +649,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             status_bar.add_right_item(vim_mode_indicator, window, cx);
             status_bar.add_right_item(pending_keystrokes_indicator, window, cx);
         });
-
-        workspace.set_left_status_bar_search_button(search_button.into(), cx);
-        workspace.set_left_status_bar_references_button(
-            cx.new(|_| references_panel::ReferencesButton::new()).into(),
-            cx,
-        );
 
         let panels_task = initialize_panels(window, cx);
         workspace.set_panels_task(panels_task);
@@ -788,6 +782,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let channels_panel =
             collab_ui::collab_panel::CollabPanel::load(workspace_handle.clone(), cx.clone());
         let references_panel = ReferencesPanel::load(workspace_handle.clone(), cx.clone());
+        let search_panel = SearchPanel::load(workspace_handle.clone(), cx.clone());
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
 
         async fn add_panel_when_ready(
@@ -813,6 +808,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(references_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(search_panel, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle.clone(), cx.clone()).map(|r| r.log_err()),
         );
 
