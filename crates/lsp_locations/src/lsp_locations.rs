@@ -85,7 +85,6 @@ fn register(editor: &mut Editor, _window: Option<&mut Window>, cx: &mut Context<
         .detach();
     editor
         .register_action({
-            let handle = handle.clone();
             move |action: &GoToTypeDefinition, window, cx| {
                 handle_nav_action(
                     action.open_results_in,
@@ -508,63 +507,11 @@ pub fn build_location_matches(locations: &[Location], cx: &App) -> Vec<LocationM
             .entry(location.buffer.entity_id())
             .or_insert_with(|| location.buffer.read(cx).snapshot());
 
-        let Some(file) = snapshot.file() else {
-            continue;
-        };
-        let path = ProjectPath {
-            worktree_id: file.worktree_id(cx),
-            path: file.path().clone(),
-        };
-
-        let start_offset: usize = snapshot.summary_for_anchor(&location.range.start);
-        let end_offset: usize = snapshot.summary_for_anchor(&location.range.end);
-        let row = snapshot.offset_to_point(start_offset).row;
-        let line_start = snapshot.point_to_offset(Point::new(row, 0));
-        let line_end = snapshot.point_to_offset(Point::new(row, snapshot.line_len(row)));
-        let full_line: String = snapshot.text_for_range(line_start..line_end).collect();
-
-        // The row shows the line with leading indentation trimmed. Offsets below
-        // are relative to that displayed text.
-        let display_text = full_line.trim_start().to_string();
-        let visible_start = line_end.saturating_sub(display_text.len());
-        let visible_end = line_end;
-
-        // Precompute syntax highlights for the displayed text so rendering a row
-        // never re-snapshots the buffer or re-runs highlighting.
-        let mut syntax_highlights = Vec::new();
-        let mut offset = 0;
-        for chunk in snapshot.chunks(
-            visible_start..visible_end,
-            LanguageAwareStyling {
-                tree_sitter: true,
-                diagnostics: false,
-            },
-        ) {
-            let chunk_len = chunk.text.len();
-            if let Some(id) = chunk.syntax_highlight_id {
-                syntax_highlights.push((offset..offset + chunk_len, id));
-            }
-            offset += chunk_len;
+        if let Some(location_match) =
+            location_match_for_snapshot(&location.buffer, location.range.clone(), snapshot, cx)
+        {
+            matches.push(location_match);
         }
-
-        // The match span, clamped into the displayed text. `clamp` bounds each
-        // endpoint to the line; `min`/`max` then keep the range well-ordered even
-        // for a malformed/inverted LSP range (clamping alone preserves bounds but
-        // not `start <= end`).
-        let clamped_start = start_offset.clamp(visible_start, visible_end) - visible_start;
-        let clamped_end = end_offset.clamp(visible_start, visible_end) - visible_start;
-        let match_range = clamped_start.min(clamped_end)..clamped_start.max(clamped_end);
-
-        matches.push(LocationMatch {
-            path,
-            buffer: location.buffer.clone(),
-            anchor_range: location.range.clone(),
-            range: start_offset..end_offset,
-            display_text,
-            syntax_highlights,
-            match_range,
-            line_number: row + 1,
-        });
     }
 
     // Group by file and order by position so the grouped display list is stable,
@@ -572,6 +519,81 @@ pub fn build_location_matches(locations: &[Location], cx: &App) -> Vec<LocationM
     matches.sort_by(|a, b| a.path.cmp(&b.path).then(a.range.start.cmp(&b.range.start)));
     matches.dedup_by(|a, b| a.path == b.path && a.range == b.range);
     matches
+}
+
+/// Builds a [`LocationMatch`] for a single anchored range in `buffer`, or
+/// `None` when the buffer has no associated file. Shared by the LSP locations
+/// picker, the references panel and the search panel.
+pub fn location_match_for_range(
+    buffer: &Entity<Buffer>,
+    anchor_range: Range<Anchor>,
+    cx: &App,
+) -> Option<LocationMatch> {
+    let snapshot = buffer.read(cx).snapshot();
+    location_match_for_snapshot(buffer, anchor_range, &snapshot, cx)
+}
+
+fn location_match_for_snapshot(
+    buffer: &Entity<Buffer>,
+    anchor_range: Range<Anchor>,
+    snapshot: &language::BufferSnapshot,
+    cx: &App,
+) -> Option<LocationMatch> {
+    let file = snapshot.file()?;
+    let path = ProjectPath {
+        worktree_id: file.worktree_id(cx),
+        path: file.path().clone(),
+    };
+
+    let start_offset: usize = snapshot.summary_for_anchor(&anchor_range.start);
+    let end_offset: usize = snapshot.summary_for_anchor(&anchor_range.end);
+    let row = snapshot.offset_to_point(start_offset).row;
+    let line_start = snapshot.point_to_offset(Point::new(row, 0));
+    let line_end = snapshot.point_to_offset(Point::new(row, snapshot.line_len(row)));
+    let full_line: String = snapshot.text_for_range(line_start..line_end).collect();
+
+    // The row shows the line with leading indentation trimmed. Offsets below
+    // are relative to that displayed text.
+    let display_text = full_line.trim_start().to_string();
+    let visible_start = line_end.saturating_sub(display_text.len());
+    let visible_end = line_end;
+
+    // Precompute syntax highlights for the displayed text so rendering a row
+    // never re-snapshots the buffer or re-runs highlighting.
+    let mut syntax_highlights = Vec::new();
+    let mut offset = 0;
+    for chunk in snapshot.chunks(
+        visible_start..visible_end,
+        LanguageAwareStyling {
+            tree_sitter: true,
+            diagnostics: false,
+        },
+    ) {
+        let chunk_len = chunk.text.len();
+        if let Some(id) = chunk.syntax_highlight_id {
+            syntax_highlights.push((offset..offset + chunk_len, id));
+        }
+        offset += chunk_len;
+    }
+
+    // The match span, clamped into the displayed text. `clamp` bounds each
+    // endpoint to the line; `min`/`max` then keep the range well-ordered even
+    // for a malformed/inverted LSP range (clamping alone preserves bounds but
+    // not `start <= end`).
+    let clamped_start = start_offset.clamp(visible_start, visible_end) - visible_start;
+    let clamped_end = end_offset.clamp(visible_start, visible_end) - visible_start;
+    let match_range = clamped_start.min(clamped_end)..clamped_start.max(clamped_end);
+
+    Some(LocationMatch {
+        path,
+        buffer: buffer.clone(),
+        anchor_range,
+        range: start_offset..end_offset,
+        display_text,
+        syntax_highlights,
+        match_range,
+        line_number: row + 1,
+    })
 }
 
 impl PickerDelegate for LspLocationsDelegate {
