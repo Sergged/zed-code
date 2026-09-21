@@ -7,9 +7,7 @@
 // custom settings, run `zed: open default settings` from the
 // command palette (cmd-shift-p / ctrl-shift-p)
 {
-  "indent_guides": {
-    
-  },
+  "indent_guides": {},
   "when_closing_with_no_tabs": "keep_window_open",
   "double_click_in_multibuffer": "select",
   "excerpt_context_lines": 10,
@@ -56,6 +54,7 @@
     "show_diagnostics": "all",
     "file_icons": true,
     "git_status": true,
+    "show_full_tab_titles": true,
   },
   "diagnostics": {
     "button": true,
@@ -88,6 +87,18 @@
   "language_models": {
     "opencode": {
       "show_zen_models": false,
+      "available_models": [
+        {
+          "name": "deepseek-v4-flash-vision-exp",
+          "display_name": "DeepSeek V4 Flash Vision",
+          "max_tokens": 1000000,
+          "max_output_tokens": 384000,
+          "protocol": "openai_chat",
+          "interleaved_reasoning": false,
+          "reasoning_effort_levels": ["none", "low", "high", "max"],
+          "subscription": "go",
+        },
+      ],
     },
   },
   "toolbar": {
@@ -118,11 +129,14 @@
     "entry_primary_click_action": "file_diff",
     "diff_stats": false,
     "status_style": "label_color",
+    "message_editor_min_lines": 2,
   },
   "project_panel": {
     "default_width": 320.0,
     "folder_indicator": "both",
-    "scrollbar": {},
+    "scrollbar": {
+      "show": "auto",
+    },
     "auto_fold_dirs": false,
     "entry_spacing": "comfortable",
     "hide_root": false,
@@ -164,53 +178,53 @@
         "terminal": {
           "always_allow": [
             {
-              "pattern": "^grep\\b"
+              "pattern": "^grep\\b",
             },
             {
-              "pattern": "^head\\b"
+              "pattern": "^head\\b",
             },
             {
-              "pattern": "^echo\\b"
+              "pattern": "^echo\\b",
             },
             {
-              "pattern": "^tail\\b"
+              "pattern": "^tail\\b",
             },
             {
-              "pattern": "^ls\\b"
+              "pattern": "^ls\\b",
             },
             {
-              "pattern": "^date\\s+\\+%Y-%m-%d(\\s|$)"
+              "pattern": "^date\\s+\\+%Y-%m-%d(\\s|$)",
             },
             {
-              "pattern": "^wc\\b"
+              "pattern": "^wc\\b",
             },
             {
-              "pattern": "^cat\\b"
+              "pattern": "^cat\\b",
             },
             {
-              "pattern": "^sort\\b"
+              "pattern": "^sort\\b",
             },
             {
-              "pattern": "^uniq\\b"
+              "pattern": "^uniq\\b",
             },
             {
-              "pattern": "^sed\\b"
+              "pattern": "^sed\\b",
             },
             {
-              "pattern": "^du\\b"
+              "pattern": "^du\\b",
             },
             {
-              "pattern": "^pgrep\\b"
+              "pattern": "^pgrep\\b",
             },
             {
-              "pattern": "^stat\\b"
+              "pattern": "^stat\\b",
             },
             {
-              "pattern": "^find\\b"
+              "pattern": "^find\\b",
             },
             {
-              "pattern": "^strings\\b"
-            }
+              "pattern": "^strings\\b",
+            },
           ],
         },
         "search_web": {
@@ -239,7 +253,7 @@
           "provider": "opencode",
           "model": "go/deepseek-v4-flash",
           "enable_thinking": true,
-          "effort": "max"
+          "effort": "max",
         },
         "name": "Write",
         "tools": {
@@ -296,9 +310,9 @@
               "get_file_info": true,
               "edit_file": false,
               "directory_tree": true,
-              "create_directory": false
-            }
-          }
+              "create_directory": false,
+            },
+          },
         },
         "default_model": {
           "provider": "opencode",
@@ -328,31 +342,31 @@
         "provider": "opencode",
         "model": "go/deepseek-v4-flash",
         "enable_thinking": true,
-        "effort": "high"
+        "effort": "high",
       },
       {
         "provider": "opencode",
         "model": "go/kimi-k3",
         "enable_thinking": true,
-        "effort": "max"
+        "effort": "max",
       },
       {
         "provider": "opencode",
         "model": "go/deepseek-v4-pro",
         "enable_thinking": true,
-        "effort": "high"
+        "effort": "high",
       },
       {
         "provider": "opencode",
         "model": "go/minimax-m3",
-        "enable_thinking": false
+        "enable_thinking": false,
       },
       {
         "provider": "opencode",
         "model": "go/glm-5.2",
         "enable_thinking": true,
-        "effort": "max"
-      }
+        "effort": "max",
+      },
     ],
     "model_parameters": [],
   },
