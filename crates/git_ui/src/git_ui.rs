@@ -29,7 +29,7 @@ use zed_actions;
 use crate::{
     commit_view::CommitView,
     git_panel::{GitPanel, GitStatusEntry, RemoteOperationKind},
-    solo_diff_view::SoloDiffView,
+    solo_diff_view::{SoloDiffBase, SoloDiffView},
     text_diff_view::TextDiffView,
 };
 
@@ -374,7 +374,8 @@ fn open_file_diff(
     cx: &mut App,
 ) {
     window.defer(cx, move |window, cx| {
-        SoloDiffView::open_or_focus(entry, repository, workspace.clone(), window, cx)
+        let base = SoloDiffBase::for_entry(&entry);
+        SoloDiffView::open_or_focus(entry, base, repository, workspace.clone(), window, cx)
             .detach_and_notify_err(workspace, window, cx);
     });
 }
