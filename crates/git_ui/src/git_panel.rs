@@ -48,10 +48,10 @@ use git::{
 };
 use gpui::{
     AbsoluteLength, Action, Anchor, AnyElement, AsyncApp, AsyncWindowContext, ClickEvent,
-    ClipboardItem, DismissEvent, Empty, Entity, EventEmitter, ExternalDragPayload, FileDragPaths,
-    FocusHandle, Focusable, KeyContext, MouseButton, MouseDownEvent, Pixels, Point, PromptLevel,
-    ScrollStrategy, Subscription, Task, TaskExt, TextStyle, UniformListScrollHandle, WeakEntity,
-    actions, anchored, deferred, uniform_list,
+    ClipboardItem, DismissEvent, Div, Empty, Entity, EventEmitter, ExternalDragPayload,
+    FileDragPaths, FocusHandle, Focusable, KeyContext, MouseButton, MouseDownEvent, Pixels, Point,
+    PromptLevel, ScrollStrategy, Stateful, Subscription, Task, TaskExt, TextStyle,
+    UniformListScrollHandle, WeakEntity, actions, anchored, deferred, uniform_list,
 };
 use itertools::Itertools;
 use language::{Buffer, BufferEvent, File};
@@ -1601,19 +1601,65 @@ impl GitPanel {
     ) -> Option<DraggedSelection> {
         let active_selection = self.selected_entry_for_repo_path(repo, &entry.repo_path, cx)?;
         let marked_selections = if self.marked_entries.contains(&entry.repo_path) {
-            Arc::from(
-                self.marked_entries
-                    .iter()
-                    .filter_map(|path| self.selected_entry_for_repo_path(repo, path, cx))
-                    .collect::<Vec<_>>(),
-            )
+            self.all_marked_selections(repo, cx)
+        } else {
+            vec![active_selection]
+        };
+        Some(Self::dragged_selection_for(
+            active_selection,
+            marked_selections,
+        ))
+    }
+
+    /// Like [`Self::dragged_selection_for_status_entry`], but for tree-view
+    /// directory rows.
+    fn dragged_selection_for_directory_entry(
+        &self,
+        entry: &GitTreeDirEntry,
+        repo: &Repository,
+        cx: &Context<Self>,
+    ) -> Option<DraggedSelection> {
+        let active_selection = self.selected_entry_for_repo_path(repo, &entry.key.path, cx)?;
+        let marked_selections = if self.marked_directories.contains(&entry.key) {
+            self.all_marked_selections(repo, cx)
+        } else {
+            vec![active_selection]
+        };
+        Some(Self::dragged_selection_for(
+            active_selection,
+            marked_selections,
+        ))
+    }
+
+    fn dragged_selection_for(
+        active_selection: SelectedEntry,
+        marked_selections: Vec<SelectedEntry>,
+    ) -> DraggedSelection {
+        let marked_selections = if marked_selections.contains(&active_selection) {
+            Arc::from(marked_selections)
         } else {
             Arc::from([active_selection])
         };
-        Some(DraggedSelection {
+        DraggedSelection {
             active_selection,
             marked_selections,
-        })
+        }
+    }
+
+    /// All currently marked entries (files from `marked_entries` and tree
+    /// directories from `marked_directories`) that resolve to worktree entries.
+    fn all_marked_selections(&self, repo: &Repository, cx: &Context<Self>) -> Vec<SelectedEntry> {
+        let mut selections = self
+            .marked_directories
+            .iter()
+            .filter_map(|key| self.selected_entry_for_repo_path(repo, &key.path, cx))
+            .collect::<Vec<_>>();
+        selections.extend(
+            self.marked_entries
+                .iter()
+                .filter_map(|path| self.selected_entry_for_repo_path(repo, path, cx)),
+        );
+        selections
     }
 
     fn selected_entry_for_repo_path(
@@ -1651,6 +1697,37 @@ impl GitPanel {
             .collect::<SmallVec<[_; 2]>>();
 
         (!paths.is_empty()).then(|| FileDragPaths::new(paths))
+    }
+
+    /// Attaches the drag and drop handlers shared by file and directory rows:
+    /// a `DraggedSelection` drag with a preview, plus the external payload.
+    fn attach_drag_handlers(
+        element: Stateful<Div>,
+        dragged_selection: DraggedSelection,
+        filename: String,
+        project: Entity<Project>,
+    ) -> Stateful<Div> {
+        element
+            .on_drag(
+                dragged_selection,
+                move |selection: &DraggedSelection, click_offset, _window, cx| {
+                    let active = selection.active_selection;
+                    let selections = selection.marked_selections.clone();
+                    cx.new(|_| DraggedGitEntryView {
+                        filename: filename.clone(),
+                        click_offset,
+                        count: if selections.contains(&active) {
+                            selections.len()
+                        } else {
+                            1
+                        },
+                    })
+                },
+            )
+            .external_drag_payload(move |selection: &DraggedSelection, _window, cx| {
+                Self::file_drag_paths_for_selected_entries(&project, selection.items().copied(), cx)
+                    .map(ExternalDragPayload::Files)
+            })
     }
 
     fn mark_range(&mut self, anchor_ix: usize, target_ix: usize) {
@@ -8610,36 +8687,10 @@ impl GitPanel {
                 },
             )
             .when_some(self.dragged_selection_for_status_entry(entry, repo, cx), {
-                let filename = display_name_for_drag.clone();
+                let filename = display_name_for_drag;
                 let project = self.project.clone();
                 move |this, dragged_selection| {
-                    this.on_drag(
-                        dragged_selection,
-                        move |selection: &DraggedSelection, click_offset, _window, cx| {
-                            let active = selection.active_selection;
-                            let selections = selection.marked_selections.clone();
-                            cx.new(|_| DraggedGitEntryView {
-                                filename: filename.clone(),
-                                click_offset,
-                                count: if selections.contains(&active) {
-                                    selections.len()
-                                } else {
-                                    1
-                                },
-                            })
-                        },
-                    )
-                    .external_drag_payload({
-                        let project = project.clone();
-                        move |selection: &DraggedSelection, _window, cx| {
-                            GitPanel::file_drag_paths_for_selected_entries(
-                                &project,
-                                selection.items().copied(),
-                                cx,
-                            )
-                            .map(ExternalDragPayload::Files)
-                        }
-                    })
+                    Self::attach_drag_handlers(this, dragged_selection, filename, project)
                 }
             })
             .into_any_element()
@@ -8833,6 +8884,18 @@ impl GitPanel {
                     cx.stop_propagation();
                     this.deploy_entry_context_menu(event.position, ix, window, cx);
                 }),
+            )
+            .when_some(
+                self.active_repository.as_ref().and_then(|repo| {
+                    self.dragged_selection_for_directory_entry(entry, repo.read(cx), cx)
+                }),
+                {
+                    let filename = entry.name.to_string();
+                    let project = self.project.clone();
+                    move |this, dragged_selection| {
+                        Self::attach_drag_handlers(this, dragged_selection, filename, project)
+                    }
+                },
             )
             .into_any_element()
     }
@@ -10251,6 +10314,96 @@ mod tests {
             vec![
                 (PathBuf::from("/project/a.txt"), false),
                 (PathBuf::from("/project/b.txt"), false),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_dragged_tree_directory_maps_to_worktree_entry(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().tree_view = Some(true);
+                })
+            });
+        });
+        let (_, project, _, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "src": {
+                    "a.txt": "modified a\n",
+                },
+            }),
+            &[("src/a.txt", StatusCode::Modified)],
+        )
+        .await;
+
+        panel.update_in(&mut cx, |panel, _window, cx| {
+            let dir_index = panel
+                .entries
+                .iter()
+                .position(|entry| {
+                    matches!(entry, GitListEntry::Directory(dir) if dir.key.path == repo_path("src"))
+                })
+                .expect("src directory entry");
+            let file_index =
+                entry_index_for_repo_path(panel, &repo_path("src/a.txt")).expect("src/a.txt entry");
+            panel.toggle_mark(dir_index, cx);
+            panel.toggle_mark(file_index, cx);
+        });
+
+        let dragged = panel.update_in(&mut cx, |panel, _window, cx| {
+            let dir_index = panel
+                .entries
+                .iter()
+                .position(|entry| {
+                    matches!(entry, GitListEntry::Directory(dir) if dir.key.path == repo_path("src"))
+                })
+                .expect("src directory entry");
+            let GitListEntry::Directory(dir) = &panel.entries[dir_index] else {
+                unreachable!()
+            };
+            let repo = panel.active_repository.clone().expect("a repository");
+            let repo = repo.read(cx);
+            panel
+                .dragged_selection_for_directory_entry(dir, repo, cx)
+                .expect("dragged selection")
+        });
+
+        assert_eq!(dragged.marked_selections.len(), 2);
+        assert_eq!(dragged.items().count(), 2);
+
+        let active = dragged.active_selection;
+        let project_path = project.read_with(&cx, |project, cx| {
+            project.path_for_entry(active.entry_id, cx)
+        });
+        assert_eq!(
+            project_path,
+            Some(ProjectPath {
+                worktree_id: active.worktree_id,
+                path: rel_path("src").into(),
+            })
+        );
+
+        let mut paths = cx
+            .read(|cx| {
+                GitPanel::file_drag_paths_for_selected_entries(
+                    &project,
+                    dragged.items().copied(),
+                    cx,
+                )
+            })
+            .expect("file drag paths")
+            .entries()
+            .to_vec();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                (PathBuf::from("/project/src"), true),
+                (PathBuf::from("/project/src/a.txt"), false),
             ]
         );
     }
