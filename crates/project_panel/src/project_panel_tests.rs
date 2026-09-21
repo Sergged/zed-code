@@ -8725,6 +8725,75 @@ async fn test_expand_all_entries(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_toggle_all_entries(cx: &mut gpui::TestAppContext) {
+    init_test_with_editor(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/project_root",
+        json!({
+            "dir_1": {
+                "nested_dir": {
+                    "file_a.py": "# File contents",
+                    "file_b.py": "# File contents",
+                    "file_c.py": "# File contents",
+                },
+                "file_1.py": "# File contents",
+                "file_2.py": "# File contents",
+                "file_3.py": "# File contents",
+            },
+            "dir_2": {
+                "file_1.py": "# File contents",
+                "file_2.py": "# File contents",
+                "file_3.py": "# File contents",
+            }
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), ["/project_root".as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, ProjectPanel::new);
+    cx.run_until_parked();
+
+    panel.update_in(cx, |panel, _window, cx| {
+        assert!(panel.is_fully_collapsed(cx));
+    });
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.toggle_all_entries(window, cx);
+    });
+    cx.executor().run_until_parked();
+
+    panel.update_in(cx, |panel, _window, cx| {
+        assert!(!panel.is_fully_collapsed(cx));
+    });
+    let entries = visible_entries_as_strings(&panel, 0..20, cx);
+    assert_eq!(entries.len(), 13, "should show all 13 entries");
+    assert!(
+        !entries.iter().any(|e| e.contains("> ")),
+        "no collapsed dirs"
+    );
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.toggle_all_entries(window, cx);
+    });
+    cx.executor().run_until_parked();
+
+    panel.update_in(cx, |panel, _window, cx| {
+        assert!(panel.is_fully_collapsed(cx));
+    });
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..10, cx),
+        &["v project_root", "    > dir_1", "    > dir_2",]
+    );
+}
+
+#[gpui::test]
 async fn test_expand_all_entries_multiple_worktrees(cx: &mut gpui::TestAppContext) {
     init_test_with_editor(cx);
 
