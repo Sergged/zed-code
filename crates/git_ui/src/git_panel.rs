@@ -1228,8 +1228,6 @@ impl From<&Arc<InitialGraphCommitData>> for CommitHistoryEntry {
     }
 }
 
-const MAX_PANEL_EDITOR_LINES: usize = 6;
-
 pub(crate) fn commit_message_editor(
     commit_message_buffer: Entity<Buffer>,
     placeholder: Option<SharedString>,
@@ -1239,17 +1237,19 @@ pub(crate) fn commit_message_editor(
     cx: &mut Context<Editor>,
 ) -> Editor {
     let buffer = cx.new(|cx| MultiBuffer::singleton(commit_message_buffer, cx));
-    let max_lines = if in_panel { MAX_PANEL_EDITOR_LINES } else { 18 };
-    let mut commit_editor = Editor::new(
+    let editor_mode = if in_panel {
+        let settings = GitPanelSettings::get_global(cx);
         EditorMode::AutoHeight {
-            min_lines: max_lines,
-            max_lines: Some(max_lines),
-        },
-        buffer,
-        None,
-        window,
-        cx,
-    );
+            min_lines: settings.message_editor_min_lines,
+            max_lines: Some(settings.set_message_editor_max_lines()),
+        }
+    } else {
+        EditorMode::AutoHeight {
+            min_lines: 18,
+            max_lines: Some(18),
+        }
+    };
+    let mut commit_editor = Editor::new(editor_mode, buffer, None, window, cx);
     commit_editor.set_collaboration_hub(Box::new(project));
     commit_editor.set_use_autoclose(false);
     commit_editor.set_show_gutter(false, cx);
@@ -1327,6 +1327,8 @@ impl GitPanel {
             let mut was_file_icons = GitPanelSettings::get_global(cx).file_icons;
             let mut was_folder_indicator = GitPanelSettings::get_global(cx).folder_indicator;
             let mut was_diff_stats = GitPanelSettings::get_global(cx).diff_stats;
+            let mut was_message_editor_min_lines =
+                GitPanelSettings::get_global(cx).message_editor_min_lines;
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
                 let settings = GitPanelSettings::get_global(cx);
                 let sort_by = settings.sort_by;
@@ -1335,6 +1337,7 @@ impl GitPanel {
                 let file_icons = settings.file_icons;
                 let folder_indicator = settings.folder_indicator;
                 let diff_stats = settings.diff_stats;
+                let message_editor_min_lines = settings.message_editor_min_lines;
                 if tree_view != was_tree_view {
                     match (&mut this.view_mode, tree_view) {
                         (GitPanelViewMode::Tree(state), false) => {
@@ -1363,12 +1366,24 @@ impl GitPanel {
                 if file_icons != was_file_icons || folder_indicator != was_folder_indicator {
                     cx.notify();
                 }
+                if message_editor_min_lines != was_message_editor_min_lines
+                    && !this.commit_editor_expanded
+                {
+                    this.commit_editor.update(cx, |editor, cx| {
+                        let settings = GitPanelSettings::get_global(cx);
+                        editor.set_mode(EditorMode::AutoHeight {
+                            min_lines: settings.message_editor_min_lines,
+                            max_lines: Some(settings.set_message_editor_max_lines()),
+                        })
+                    });
+                }
                 was_sort_by = sort_by;
                 was_group_by = group_by;
                 was_tree_view = tree_view;
                 was_file_icons = file_icons;
                 was_folder_indicator = folder_indicator;
                 was_diff_stats = diff_stats;
+                was_message_editor_min_lines = message_editor_min_lines;
             })
             .detach();
 
@@ -6494,7 +6509,7 @@ impl GitPanel {
         cx: &mut Context<Self>,
     ) {
         self.commit_editor_expanded = !self.commit_editor_expanded;
-        self.commit_editor.update(cx, |editor, _cx| {
+        self.commit_editor.update(cx, |editor, cx| {
             if self.commit_editor_expanded {
                 editor.set_mode(EditorMode::Full {
                     scale_ui_elements_with_buffer_font_size: false,
@@ -6502,9 +6517,10 @@ impl GitPanel {
                     sizing_behavior: SizingBehavior::ExcludeOverscrollMargin,
                 })
             } else {
+                let settings = GitPanelSettings::get_global(cx);
                 editor.set_mode(EditorMode::AutoHeight {
-                    min_lines: MAX_PANEL_EDITOR_LINES,
-                    max_lines: Some(MAX_PANEL_EDITOR_LINES),
+                    min_lines: settings.message_editor_min_lines,
+                    max_lines: Some(settings.set_message_editor_max_lines()),
                 })
             }
         });
@@ -6722,7 +6738,8 @@ impl GitPanel {
                 .trim_end_matches("/"),
         ));
         let editor_is_long = self.commit_editor.update(cx, |editor, cx| {
-            editor.max_point(cx).row().0 >= MAX_PANEL_EDITOR_LINES as u32
+            editor.max_point(cx).row().0
+                >= GitPanelSettings::get_global(cx).message_editor_min_lines as u32
         });
 
         let max_title_length = GitPanelSettings::get_global(cx).commit_title_max_length;
