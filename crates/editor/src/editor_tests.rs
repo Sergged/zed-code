@@ -1208,146 +1208,218 @@ async fn test_navigation_history(cx: &mut TestAppContext) {
     let fs = FakeFs::new(cx.executor());
     let project = Project::test(fs, [], cx).await;
     let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let window_handle = *window;
     let workspace = window
         .read_with(cx, |mw, _| mw.workspace().clone())
         .unwrap();
     let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
-    _ = window.update(cx, |_mw, window, cx| {
-        cx.new(|cx| {
-            let buffer = MultiBuffer::build_simple(&sample_text(300, 5, 'a'), cx);
-            let mut editor = build_editor(buffer, window, cx);
-            let handle = cx.entity();
-            editor.set_nav_history(Some(pane.read(cx).nav_history_for_item(&handle)));
+    fn pop_history(editor: &mut Editor, cx: &mut App) -> Option<NavigationEntry> {
+        editor.nav_history.as_mut().unwrap().pop_backward(cx)
+    }
 
-            fn pop_history(editor: &mut Editor, cx: &mut App) -> Option<NavigationEntry> {
-                editor.nav_history.as_mut().unwrap().pop_backward(cx)
-            }
+    let original_scroll_position = RefCell::new(None::<ScrollAnchor>);
+    let editor = window
+        .update(cx, |_mw, window, cx| {
+            let editor = cx.new(|cx| {
+                let buffer = MultiBuffer::build_simple(&sample_text(300, 5, 'a'), cx);
+                let mut editor = build_editor(buffer, window, cx);
+                let handle = cx.entity();
+                editor.set_nav_history(Some(pane.read(cx).nav_history_for_item(&handle)));
 
-            // Move the cursor a small distance.
-            // Nothing is added to the navigation history.
-            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                s.select_display_ranges([
-                    DisplayPoint::new(DisplayRow(1), 0)..DisplayPoint::new(DisplayRow(1), 0)
-                ])
+                // Move the cursor a small distance.
+                // Nothing is added to the navigation history.
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                    s.select_display_ranges([
+                        DisplayPoint::new(DisplayRow(1), 0)..DisplayPoint::new(DisplayRow(1), 0)
+                    ])
+                });
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                    s.select_display_ranges([
+                        DisplayPoint::new(DisplayRow(3), 0)..DisplayPoint::new(DisplayRow(3), 0)
+                    ])
+                });
+                assert!(pop_history(&mut editor, cx).is_none());
+
+                // Move the cursor a large distance.
+                // The history can jump back to the previous position.
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                    s.select_display_ranges([
+                        DisplayPoint::new(DisplayRow(13), 0)..DisplayPoint::new(DisplayRow(13), 3)
+                    ])
+                });
+                let nav_entry = pop_history(&mut editor, cx).unwrap();
+                editor.navigate(nav_entry.data.unwrap(), window, cx);
+                assert_eq!(nav_entry.item.id(), cx.entity_id());
+                assert_eq!(
+                    editor
+                        .selections
+                        .display_ranges(&editor.display_snapshot(cx)),
+                    &[DisplayPoint::new(DisplayRow(3), 0)..DisplayPoint::new(DisplayRow(3), 0)]
+                );
+                assert!(pop_history(&mut editor, cx).is_none());
+
+                // Move the cursor a small distance via the mouse.
+                // Nothing is added to the navigation history.
+                editor.begin_selection(DisplayPoint::new(DisplayRow(5), 0), false, 1, window, cx);
+                editor.end_selection(window, cx);
+                assert_eq!(
+                    editor
+                        .selections
+                        .display_ranges(&editor.display_snapshot(cx)),
+                    &[DisplayPoint::new(DisplayRow(5), 0)..DisplayPoint::new(DisplayRow(5), 0)]
+                );
+                assert!(pop_history(&mut editor, cx).is_none());
+
+                // Move the cursor a large distance via the mouse.
+                // The history can jump back to the previous position.
+                editor.begin_selection(DisplayPoint::new(DisplayRow(15), 0), false, 1, window, cx);
+                editor.end_selection(window, cx);
+                assert_eq!(
+                    editor
+                        .selections
+                        .display_ranges(&editor.display_snapshot(cx)),
+                    &[DisplayPoint::new(DisplayRow(15), 0)..DisplayPoint::new(DisplayRow(15), 0)]
+                );
+                let nav_entry = pop_history(&mut editor, cx).unwrap();
+                editor.navigate(nav_entry.data.unwrap(), window, cx);
+                assert_eq!(nav_entry.item.id(), cx.entity_id());
+                assert_eq!(
+                    editor
+                        .selections
+                        .display_ranges(&editor.display_snapshot(cx)),
+                    &[DisplayPoint::new(DisplayRow(5), 0)..DisplayPoint::new(DisplayRow(5), 0)]
+                );
+                assert!(pop_history(&mut editor, cx).is_none());
+
+                // Set scroll position to check later
+                editor.set_scroll_position(gpui::Point::<f64>::new(5.5, 5.5), window, cx);
+
+                // Jump to the end of the document
+                // Jump to the end of the document and adjust scroll.
+                editor.move_to_end(&MoveToEnd, window, cx);
+                editor.set_scroll_position(gpui::Point::<f64>::new(-2.5, -0.5), window, cx);
+
+                editor
             });
-            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                s.select_display_ranges([
-                    DisplayPoint::new(DisplayRow(3), 0)..DisplayPoint::new(DisplayRow(3), 0)
-                ])
+            // Add the editor to the workspace so it is actually rendered: the
+            // frame-driven smooth scroll animation only advances while the
+            // editor is painted, and an editor that is never rendered would
+            // never animate.
+            workspace.update(cx, |workspace, cx| {
+                workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
             });
-            assert!(pop_history(&mut editor, cx).is_none());
-
-            // Move the cursor a large distance.
-            // The history can jump back to the previous position.
-            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
-                s.select_display_ranges([
-                    DisplayPoint::new(DisplayRow(13), 0)..DisplayPoint::new(DisplayRow(13), 3)
-                ])
-            });
-            let nav_entry = pop_history(&mut editor, cx).unwrap();
-            editor.navigate(nav_entry.data.unwrap(), window, cx);
-            assert_eq!(nav_entry.item.id(), cx.entity_id());
-            assert_eq!(
-                editor
-                    .selections
-                    .display_ranges(&editor.display_snapshot(cx)),
-                &[DisplayPoint::new(DisplayRow(3), 0)..DisplayPoint::new(DisplayRow(3), 0)]
-            );
-            assert!(pop_history(&mut editor, cx).is_none());
-
-            // Move the cursor a small distance via the mouse.
-            // Nothing is added to the navigation history.
-            editor.begin_selection(DisplayPoint::new(DisplayRow(5), 0), false, 1, window, cx);
-            editor.end_selection(window, cx);
-            assert_eq!(
-                editor
-                    .selections
-                    .display_ranges(&editor.display_snapshot(cx)),
-                &[DisplayPoint::new(DisplayRow(5), 0)..DisplayPoint::new(DisplayRow(5), 0)]
-            );
-            assert!(pop_history(&mut editor, cx).is_none());
-
-            // Move the cursor a large distance via the mouse.
-            // The history can jump back to the previous position.
-            editor.begin_selection(DisplayPoint::new(DisplayRow(15), 0), false, 1, window, cx);
-            editor.end_selection(window, cx);
-            assert_eq!(
-                editor
-                    .selections
-                    .display_ranges(&editor.display_snapshot(cx)),
-                &[DisplayPoint::new(DisplayRow(15), 0)..DisplayPoint::new(DisplayRow(15), 0)]
-            );
-            let nav_entry = pop_history(&mut editor, cx).unwrap();
-            editor.navigate(nav_entry.data.unwrap(), window, cx);
-            assert_eq!(nav_entry.item.id(), cx.entity_id());
-            assert_eq!(
-                editor
-                    .selections
-                    .display_ranges(&editor.display_snapshot(cx)),
-                &[DisplayPoint::new(DisplayRow(5), 0)..DisplayPoint::new(DisplayRow(5), 0)]
-            );
-            assert!(pop_history(&mut editor, cx).is_none());
-
-            // Set scroll position to check later
-            editor.set_scroll_position(gpui::Point::<f64>::new(5.5, 5.5), window, cx);
-            let original_scroll_position = editor
-                .scroll_manager
-                .native_anchor(&editor.display_snapshot(cx), cx);
-
-            // Jump to the end of the document and adjust scroll
-            editor.move_to_end(&MoveToEnd, window, cx);
-            editor.set_scroll_position(gpui::Point::<f64>::new(-2.5, -0.5), window, cx);
-            assert_ne!(
-                editor
-                    .scroll_manager
-                    .native_anchor(&editor.display_snapshot(cx), cx),
-                original_scroll_position
-            );
-
-            let nav_entry = pop_history(&mut editor, cx).unwrap();
-            editor.navigate(nav_entry.data.unwrap(), window, cx);
-            assert_eq!(
-                editor
-                    .scroll_manager
-                    .native_anchor(&editor.display_snapshot(cx), cx),
-                original_scroll_position
-            );
-
-            let other_buffer =
-                cx.new(|cx| MultiBuffer::singleton(cx.new(|cx| Buffer::local("test", cx)), cx));
-
-            // Ensure we don't panic when navigation data contains invalid anchors *and* points.
-            let invalid_anchor = other_buffer.update(cx, |buffer, cx| {
-                buffer.snapshot(cx).anchor_after(MultiBufferOffset(3))
-            });
-            let invalid_point = Point::new(9999, 0);
-            editor.navigate(
-                Arc::new(NavigationData {
-                    cursor_anchor: invalid_anchor,
-                    cursor_position: invalid_point,
-                    scroll_anchor: ScrollAnchor {
-                        anchor: invalid_anchor,
-                        offset: Default::default(),
-                    },
-                    scroll_top_row: invalid_point.row,
-                }),
-                window,
-                cx,
-            );
-            assert_eq!(
-                editor
-                    .selections
-                    .display_ranges(&editor.display_snapshot(cx)),
-                &[editor.max_point(cx)..editor.max_point(cx)]
-            );
-            assert_eq!(
-                editor.scroll_position(cx),
-                gpui::Point::new(0., editor.max_point(cx).row().as_f64())
-            );
-
             editor
         })
+        .unwrap();
+
+    // Set the scroll position the restore below should return to, then
+    // capture the anchor. The editor is rendered from here on, so its
+    // horizontal scroll is clamped to the document width (the sample buffer is
+    // only five columns wide); capture the anchor after a render so the
+    // restore assertion below compares like with like.
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_scroll_position(gpui::Point::<f64>::new(5.5, 5.5), window, cx);
+            });
+        })
+        .unwrap();
+    *original_scroll_position.borrow_mut() = Some(
+        window
+            .update(cx, |_, _window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor
+                        .scroll_manager
+                        .native_anchor(&editor.display_snapshot(cx), cx)
+                })
+            })
+            .unwrap(),
+    );
+
+    // Jump to the end of the document and adjust scroll.
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.move_to_end(&MoveToEnd, window, cx);
+                editor.set_scroll_position(gpui::Point::<f64>::new(-2.5, -0.5), window, cx);
+                assert_ne!(
+                    editor
+                        .scroll_manager
+                        .native_anchor(&editor.display_snapshot(cx), cx),
+                    *original_scroll_position.borrow().as_ref().unwrap()
+                );
+            });
+        })
+        .unwrap();
+    let original_scroll_position = original_scroll_position.into_inner().unwrap();
+
+    let mut cx = VisualTestContext::from_window(*window, cx);
+
+    // Restoring a nav entry animates the scroll back to the saved position,
+    // so drive the frame-driven smooth-scroll animation to completion before
+    // asserting: each iteration advances the virtual clock by one frame
+    // interval and delivers the queued frame.
+    editor.update_in(&mut cx, |editor, window, cx| {
+        let nav_entry = pop_history(editor, cx).unwrap();
+        editor.navigate(nav_entry.data.unwrap(), window, cx);
+    });
+    for _ in 0..16 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        window_handle
+            .update(&mut cx, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    editor.update_in(&mut cx, |editor, _, cx| {
+        assert_eq!(
+            editor
+                .scroll_manager
+                .native_anchor(&editor.display_snapshot(cx), cx),
+            original_scroll_position
+        );
+    });
+
+    // Ensure we don't panic when navigation data contains invalid anchors *and* points.
+    let other_buffer =
+        cx.new(|cx| MultiBuffer::singleton(cx.new(|cx| Buffer::local("test", cx)), cx));
+    let invalid_anchor = other_buffer.update(&mut cx, |buffer, cx| {
+        buffer.snapshot(cx).anchor_after(MultiBufferOffset(3))
+    });
+    let invalid_point = Point::new(9999, 0);
+    editor.update_in(&mut cx, |editor, window, cx| {
+        editor.navigate(
+            Arc::new(NavigationData {
+                cursor_anchor: invalid_anchor,
+                cursor_position: invalid_point,
+                scroll_anchor: ScrollAnchor {
+                    anchor: invalid_anchor,
+                    offset: Default::default(),
+                },
+                scroll_top_row: invalid_point.row,
+            }),
+            window,
+            cx,
+        );
+        assert_eq!(
+            editor
+                .selections
+                .display_ranges(&editor.display_snapshot(cx)),
+            &[editor.max_point(cx)..editor.max_point(cx)]
+        );
+    });
+    for _ in 0..16 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        window_handle
+            .update(&mut cx, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    editor.update_in(&mut cx, |editor, _, cx| {
+        assert_eq!(
+            editor.scroll_position(cx),
+            gpui::Point::new(0., editor.max_point(cx).row().as_f64())
+        );
     });
 }
 
@@ -31589,10 +31661,17 @@ async fn test_goto_definition_preserve_scroll_strategy(cx: &mut TestAppContext) 
     .await
     .expect("Failed to navigate to definition");
     cx.run_until_parked();
-    // Smooth scrolling animates the viewport over a few ticks; wait for it to
-    // finish before asserting the final scroll position.
-    cx.executor().advance_clock(Duration::from_millis(200));
-    cx.run_until_parked();
+    // Smooth scrolling animates the viewport over a few frames; drive the
+    // frame-driven animation to completion before asserting the final scroll
+    // position.
+    for _ in 0..16 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        cx.cx
+            .cx
+            .update_window(cx.window, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
     cx.update_editor(|editor, window, cx| {
         assert_eq!(
             editor.snapshot(window, cx).scroll_position(),
@@ -31628,10 +31707,17 @@ async fn test_goto_definition_preserve_scroll_strategy(cx: &mut TestAppContext) 
     .await
     .expect("Failed to navigate to definition");
     cx.run_until_parked();
-    // Smooth scrolling animates the viewport over a few ticks; wait for it to
-    // finish before asserting the final scroll position.
-    cx.executor().advance_clock(Duration::from_millis(200));
-    cx.run_until_parked();
+    // Smooth scrolling animates the viewport over a few frames; drive the
+    // frame-driven animation to completion before asserting the final scroll
+    // position.
+    for _ in 0..16 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        cx.cx
+            .cx
+            .update_window(cx.window, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
     cx.update_editor(|editor, window, cx| {
         assert_eq!(
             editor.snapshot(window, cx).scroll_position(),
@@ -31993,7 +32079,7 @@ async fn test_goto_definition_smooth_scrolls(cx: &mut TestAppContext) {
         .await
         .expect("Failed to navigate to definition");
     assert_eq!(navigated, Navigated::Yes);
-    // The first animation tick snaps the viewport back to the start position.
+    // The first rendered frame leaves the viewport at the start position.
     cx.run_until_parked();
     let after_start =
         diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
@@ -32002,16 +32088,26 @@ async fn test_goto_definition_smooth_scrolls(cx: &mut TestAppContext) {
         "The viewport should start animating from the original position"
     );
 
-    // After one tick the viewport should be strictly between the start and the
-    // target positions.
+    // After one frame the viewport should be strictly between the start and
+    // the target positions: deliver the frame requested by the first prepaint.
     cx.executor().advance_clock(Duration::from_millis(16));
+    cx.cx
+        .cx
+        .update_window(window, |_, window, cx| window.simulate_next_frame(cx))
+        .unwrap();
     cx.run_until_parked();
     let mid_y = diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
     assert!(mid_y > 0.0, "The viewport should have started moving");
 
     // After the animation completes, the viewport should be at the target.
-    cx.executor().advance_clock(Duration::from_millis(300));
-    cx.run_until_parked();
+    for _ in 0..16 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        cx.cx
+            .cx
+            .update_window(window, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
     let end_y = diff_editor.update_in(&mut cx.cx.cx, |editor, _, cx| editor.scroll_position(cx).y);
     assert!(
         mid_y < end_y,

@@ -669,6 +669,7 @@ impl Item for Editor {
             if newest_selection.head() == offset {
                 false
             } else {
+                let start_scroll = self.scroll_position(cx);
                 self.set_scroll_anchor(scroll_anchor, window, cx);
                 self.change_selections(
                     SelectionEffects::default().nav_history(false),
@@ -676,6 +677,11 @@ impl Item for Editor {
                     cx,
                     |s| s.select_ranges([offset..offset]),
                 );
+                if !cx.reduce_motion() {
+                    let target_scroll = self.scroll_position(cx);
+                    self.set_scroll_position(start_scroll, window, cx);
+                    self.smooth_scroll_to_position(start_scroll, target_scroll, cx);
+                }
                 true
             }
         } else {

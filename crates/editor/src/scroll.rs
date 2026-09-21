@@ -18,6 +18,7 @@ use gpui::{
 };
 use language::language_settings::{AllLanguageSettings, SoftWrap};
 use language::{Bias, Point};
+use scheduler;
 pub use scroll_amount::ScrollAmount;
 use settings::Settings;
 use std::{cmp::Ordering, time::Duration};
@@ -26,6 +27,9 @@ use util::ResultExt;
 use workspace::{ItemId, WorkspaceId};
 
 const SCROLLBAR_SHOW_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Total duration of a smooth scroll animation, mirroring VS Code's ~125ms.
+const SMOOTH_SCROLL_DURATION: Duration = Duration::from_millis(128);
 
 pub struct WasScrolled(pub(crate) bool);
 
@@ -146,6 +150,7 @@ pub struct ScrollManager {
     /// Each side separately clamps the x component using its own scroll_max_x when reading from the SharedScrollAnchor.
     scroll_max_x: Option<f64>,
     ongoing: OngoingScroll,
+    smooth_scroll_animation: Option<SmoothScrollAnimation>,
     /// The second element indicates whether the autoscroll request is local
     /// (true) or remote (false). Local requests are initiated by user actions,
     /// while remote requests come from external sources.
@@ -177,6 +182,7 @@ impl ScrollManager {
             anchor,
             scroll_max_x: None,
             ongoing: OngoingScroll::default(),
+            smooth_scroll_animation: None,
             autoscroll_request: None,
             show_scrollbars: true,
             hide_scrollbar_task: None,
@@ -576,6 +582,76 @@ impl ScrollManager {
     }
 }
 
+/// Interpolates a vertical scroll animation, inspired by VS Code's smooth
+/// scrolling curve. Short jumps use `easeOutCubic`. Long jumps (more than two
+/// and a half viewports) are split into three continuous phases: an eased
+/// ramp over the first three quarters of a viewport, a fast linear sweep
+/// through the middle, and an eased approach over the last three quarters of
+/// a viewport. (VS Code's own composed curve jumps discontinuously at the
+/// phase boundary; this one stays continuous.)
+enum SmoothScrollCurve {
+    Simple {
+        start: f64,
+        end: f64,
+    },
+    Composed {
+        start: f64,
+        sweep_start: f64,
+        sweep_end: f64,
+        end: f64,
+    },
+}
+
+/// An in-flight smooth scroll animation.
+///
+/// The animation records when it started and re-interpolates the scroll
+/// position from the elapsed time on every rendered frame (see
+/// [`Editor::advance_smooth_scroll`]), so it runs at the display's refresh
+/// rate instead of on a fixed timer.
+struct SmoothScrollAnimation {
+    /// The scroll position to finish at.
+    target: gpui::Point<ScrollOffset>,
+    /// The last scroll y applied by the animation, used to detect manual
+    /// scrolling during the animation.
+    last_applied_y: f64,
+    /// When the animation started, in the virtualized test clock.
+    started_at: scheduler::Instant,
+    curve: SmoothScrollCurve,
+    duration: Duration,
+}
+
+impl SmoothScrollCurve {
+    fn interpolate(&self, t: f32) -> f64 {
+        fn ease_out_cubic(t: f64) -> f64 {
+            1. - (1. - t).powi(3)
+        }
+
+        let t = t as f64;
+        match self {
+            SmoothScrollCurve::Simple { start, end } => {
+                *start + (*end - *start) * ease_out_cubic(t)
+            }
+            SmoothScrollCurve::Composed {
+                start,
+                sweep_start,
+                sweep_end,
+                end,
+            } => {
+                const RAMP: f64 = 0.33;
+                if t < RAMP {
+                    *start + (*sweep_start - *start) * ease_out_cubic(t / RAMP)
+                } else if t < 1. - RAMP {
+                    let u = (t - RAMP) / (1. - 2. * RAMP);
+                    *sweep_start + (*sweep_end - *sweep_start) * u
+                } else {
+                    let u = (t - (1. - RAMP)) / RAMP;
+                    *sweep_end + (*end - *sweep_end) * ease_out_cubic(u)
+                }
+            }
+        }
+    }
+}
+
 impl Editor {
     pub fn has_autoscroll_request(&self) -> bool {
         self.scroll_manager.has_autoscroll_request()
@@ -583,9 +659,11 @@ impl Editor {
 
     /// Smoothly scrolls the viewport to where the given autoscroll would take it.
     ///
-    /// The animation progresses over a fixed number of ticks rather than by
-    /// elapsed real time, so it is deterministic in tests, where no frames are
-    /// produced and the scheduler clock is virtualized.
+    /// The target position is computed by applying the autoscroll once, then the
+    /// viewport is rewound to the start and animated there via
+    /// `smooth_scroll_to_position`. The animation is frame-driven, so it is
+    /// deterministic in tests, where the scheduler clock is virtualized and
+    /// frames are simulated explicitly.
     pub(crate) fn smooth_scroll_to(
         &mut self,
         autoscroll: Autoscroll,
@@ -593,9 +671,6 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const TICK_COUNT: u32 = 10;
-        const TICK_DURATION: Duration = Duration::from_millis(16);
-
         cx.spawn_in(window, async move |editor, cx| -> anyhow::Result<()> {
             // Apply the autoscroll once to compute the target viewport position,
             // then rewind to the start and animate between the two positions.
@@ -652,39 +727,104 @@ impl Editor {
                 editor.set_scroll_position(start_scroll, window, cx);
             })?;
 
-            let start_y = start_scroll.y;
-            let end_y = target_scroll.y;
-            let mut previous_y = start_y;
-            for tick in 1..=TICK_COUNT {
-                if tick < TICK_COUNT {
-                    cx.background_executor().timer(TICK_DURATION).await;
-                }
-                let t = tick as f32 / TICK_COUNT as f32;
-                let eased = t * t * (3. - 2. * t);
-                let aborted = editor
-                    .update_in(cx, |editor, window, cx| {
-                        if (editor.scroll_position(cx).y - previous_y).abs() > 0.25 {
-                            // The user scrolled manually during the animation.
-                            return true;
-                        }
-                        let y = start_y + (end_y - start_y) * f64::from(eased);
-                        editor.set_scroll_position(
-                            gpui::Point::new(target_scroll.x, y),
-                            window,
-                            cx,
-                        );
-                        previous_y = editor.scroll_position(cx).y;
-                        cx.notify();
-                        false
-                    })
-                    .unwrap_or(true);
-                if aborted {
-                    break;
-                }
-            }
+            editor.update_in(cx, |editor, _, cx| {
+                editor.smooth_scroll_to_position(start_scroll, target_scroll, cx);
+            })?;
             Ok(())
         })
         .detach();
+    }
+
+    /// Smoothly animates the viewport between two scroll positions.
+    ///
+    /// The animation is frame-driven: it records the target and the time it
+    /// started, and is advanced once per rendered frame by
+    /// `advance_smooth_scroll`, so it runs at the display's refresh rate rather
+    /// than on a fixed timer. It aborts as soon as the user scrolls manually.
+    ///
+    /// Jumps spanning more than two and a half viewports are split into a
+    /// fast sweep through the middle with an eased approach at each end,
+    /// mirroring VS Code's smooth scrolling, so long distances don't crawl.
+    pub(crate) fn smooth_scroll_to_position(
+        &mut self,
+        start_scroll: gpui::Point<ScrollOffset>,
+        target_scroll: gpui::Point<ScrollOffset>,
+        cx: &mut Context<Self>,
+    ) {
+        let start_y = start_scroll.y;
+        let end_y = target_scroll.y;
+        let curve = if let Some(viewport_rows) = self.visible_line_count()
+            && (end_y - start_y).abs() > 2.5 * viewport_rows
+        {
+            let (sweep_start, sweep_end) = if end_y > start_y {
+                (start_y + 0.75 * viewport_rows, end_y - 0.75 * viewport_rows)
+            } else {
+                (start_y - 0.75 * viewport_rows, end_y + 0.75 * viewport_rows)
+            };
+            SmoothScrollCurve::Composed {
+                start: start_y,
+                sweep_start,
+                sweep_end,
+                end: end_y,
+            }
+        } else {
+            SmoothScrollCurve::Simple {
+                start: start_y,
+                end: end_y,
+            }
+        };
+
+        self.scroll_manager.smooth_scroll_animation = Some(SmoothScrollAnimation {
+            target: target_scroll,
+            // Read the position rather than trusting `start_scroll`, so the
+            // abort check below tolerates clamping applied by the rewind.
+            last_applied_y: self.scroll_position(cx).y,
+            started_at: cx.background_executor().now(),
+            curve,
+            duration: SMOOTH_SCROLL_DURATION,
+        });
+        cx.notify();
+    }
+
+    /// Advances an in-flight smooth scroll animation by the time that has
+    /// elapsed since it started, and requests another frame if it is still
+    /// running. Called from the editor element's prepaint, i.e. once per
+    /// rendered frame, so the animation follows the display's refresh rate
+    /// rather than a fixed timer. Returns whether the scroll position changed.
+    pub(crate) fn advance_smooth_scroll(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(animation) = self.scroll_manager.smooth_scroll_animation.take() else {
+            return false;
+        };
+
+        let current_y = self.scroll_position(cx).y;
+        if (current_y - animation.last_applied_y).abs() > 0.25 {
+            // The user started scrolling manually while the animation was in
+            // flight; drop the animation and keep their scroll position.
+            return false;
+        }
+
+        let elapsed = cx
+            .background_executor()
+            .now()
+            .saturating_duration_since(animation.started_at);
+        let progress = elapsed.as_secs_f32() / animation.duration.as_secs_f32();
+        if progress >= 1.0 {
+            self.set_scroll_position(animation.target, window, cx);
+            return true;
+        }
+
+        let y = animation.curve.interpolate(progress);
+        self.set_scroll_position(gpui::Point::new(animation.target.x, y), window, cx);
+        self.scroll_manager.smooth_scroll_animation = Some(SmoothScrollAnimation {
+            last_applied_y: self.scroll_position(cx).y,
+            ..animation
+        });
+        window.request_animation_frame();
+        true
     }
 
     pub fn set_forbid_vertical_scroll(&mut self, forbid: bool) {
@@ -1094,6 +1234,78 @@ impl Editor {
                 anchor: top_anchor,
             };
             self.set_scroll_anchor(scroll_anchor, window, cx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SmoothScrollCurve;
+
+    #[test]
+    fn test_curve_endpoints() {
+        let simple = SmoothScrollCurve::Simple {
+            start: 5.,
+            end: 20.,
+        };
+        assert_eq!(simple.interpolate(0.), 5.);
+        assert_eq!(simple.interpolate(1.), 20.);
+
+        let composed = SmoothScrollCurve::Composed {
+            start: 0.,
+            sweep_start: 7.5,
+            sweep_end: 92.5,
+            end: 100.,
+        };
+        assert_eq!(composed.interpolate(0.), 0.);
+        assert_eq!(composed.interpolate(1.), 100.);
+    }
+
+    #[test]
+    fn test_curves_are_monotonic() {
+        let simple = SmoothScrollCurve::Simple {
+            start: 100.,
+            end: 10.,
+        };
+        let composed = SmoothScrollCurve::Composed {
+            start: 100.,
+            sweep_start: 92.5,
+            sweep_end: 7.5,
+            end: 0.,
+        };
+        for curve in [simple, composed] {
+            let mut previous = curve.interpolate(0.);
+            for i in 1..=100 {
+                let value = curve.interpolate(i as f32 / 100.);
+                assert!(
+                    value < previous,
+                    "curve must move monotonically towards the target"
+                );
+                previous = value;
+            }
+        }
+    }
+
+    #[test]
+    fn test_composed_curve_is_continuous() {
+        // Unlike VS Code's composed curve, which jumps at the phase boundary,
+        // ours must not teleport at any time during the animation.
+        let composed = SmoothScrollCurve::Composed {
+            start: 0.,
+            sweep_start: 7.5,
+            sweep_end: 92.5,
+            end: 100.,
+        };
+        let mut previous = composed.interpolate(0.);
+        for i in 1..=10_000 {
+            let value = composed.interpolate(i as f32 / 10_000.);
+            let step = value - previous;
+            assert!(
+                step > 0. && step < 0.05,
+                "curve must move continuously without teleporting at t = {}",
+                i as f32 / 10_000.
+            );
+            previous = value;
         }
     }
 }
