@@ -22,15 +22,24 @@ fi
 
 echo "==> Channel: ${channel}"
 echo "==> Building zed + cli for ${target_triple}..."
-ZED_BUNDLE=true cargo build --release --package zed --package cli --target "${target_triple}" "${build_jobs[@]}"
+ZED_BUNDLE=true cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target "${target_triple}" "${build_jobs[@]}"
 
 echo "==> Bundling..."
 cp crates/zed/Cargo.toml crates/zed/Cargo.toml.backup
 restore_cargo_toml() { mv -f crates/zed/Cargo.toml.backup crates/zed/Cargo.toml; }
 trap restore_cargo_toml EXIT
-sed -i '' "s/package.metadata.bundle-${channel}/package.metadata.bundle/" crates/zed/Cargo.toml
-ZED_BUNDLE=true CARGO_BUNDLE_SKIP_BUILD=true cargo bundle --release --target "${target_triple}" --select-workspace-root
+if [[ "${channel}" != "dev" ]]; then
+    # dev uses the plain [package.metadata.bundle] section (no suffix); move it aside,
+    # then rename the channel-specific section so cargo-bundle can see it.
+    sed -i '' 's/^\[package.metadata.bundle\]$/[package.metadata.bundle-zz-local]/' crates/zed/Cargo.toml
+    sed -i '' "s/package.metadata.bundle-${channel}/package.metadata.bundle/" crates/zed/Cargo.toml
+fi
+(cd crates/zed && ZED_BUNDLE=true CARGO_BUNDLE_SKIP_BUILD=true cargo bundle --release --target "${target_triple}" --select-workspace-root)
+echo "==> Ad-hoc signing..."
+app_path="$(ls -d "target/${target_triple}/release/bundle/osx/"*.app | head -1)"
+codesign --force --deep --sign - "${app_path}"
+
 restore_cargo_toml
 trap - EXIT
 
-echo "==> Done: target/${target_triple}/release/bundle/osx/"
+echo "==> Done: ${app_path}"

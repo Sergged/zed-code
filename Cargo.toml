@@ -1006,19 +1006,7 @@ incremental = false
 codegen-units = 16
 debug = "limited"
 
-# Local tweak: keep incremental only for the crates in the main edit-rebuild
-# loop, otherwise a full workspace build writes gigabytes of incremental data.
-[profile.dev.package.zed]
-incremental = true
 
-[profile.dev.package.editor]
-incremental = true
-
-[profile.dev.package.workspace]
-incremental = true
-
-[profile.dev.package.project]
-incremental = true
 
 # mirror configuration for crates compiled for the build platform
 # (without this cargo will compile ~400 crates twice)
@@ -1030,6 +1018,7 @@ debug = "limited"
 # "debug" is a reserved profile name.
 [profile.dbg]
 inherits = "dev"
+incremental = false
 debug = "full"
 
 [profile.dbg.build-override]
@@ -1096,6 +1085,7 @@ zed_actions = { codegen-units = 1 }
 
 [profile.release]
 debug = "limited"
+incremental = false
 lto = "thin"
 codegen-units = 1
 
@@ -1104,6 +1094,7 @@ zed = { codegen-units = 16 }
 
 [profile.release-fast]
 inherits = "release"
+incremental = false
 debug = "full"
 lto = false
 codegen-units = 16
