@@ -5604,6 +5604,7 @@ dependencies = [
  "release_channel",
  "rope",
  "rpc",
+ "scheduler",
  "schemars 1.0.4",
  "semver",
  "serde",

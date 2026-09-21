@@ -8250,6 +8250,12 @@ impl Element for EditorElement {
                         if was_scrolled.0 {
                             snapshot = editor.snapshot(window, cx);
                         }
+                        // Advance any in-flight smooth scroll animation once
+                        // per rendered frame, so it runs at the display's
+                        // refresh rate rather than on a fixed timer.
+                        if editor.advance_smooth_scroll(window, cx) {
+                            snapshot = editor.snapshot(window, cx);
+                        }
                         (
                             autoscroll_request,
                             autoscroll_containing_element,
