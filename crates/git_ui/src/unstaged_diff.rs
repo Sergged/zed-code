@@ -196,6 +196,10 @@ impl UnstagedDiff {
             .update(cx, |diff, cx| diff.move_to_entry(entry, window, cx));
     }
 
+    pub(crate) fn autoscroll(&self, cx: &mut Context<Self>) {
+        self.diff.update(cx, |diff, cx| diff.autoscroll(cx));
+    }
+
     pub(crate) fn new(
         project: Entity<Project>,
         workspace: Entity<Workspace>,

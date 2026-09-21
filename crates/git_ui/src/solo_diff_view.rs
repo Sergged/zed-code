@@ -7,6 +7,7 @@ use editor::{
     actions::{GoToHunk, GoToPreviousHunk},
     file_status_label_color,
 };
+use file_icons::FileIcons;
 use git::{
     Commit, Restore, StageAndNext, StageFile, ToggleStaged, UnstageAndNext, UnstageFile,
     repository::RepoPath, status::StageStatus,
@@ -25,22 +26,48 @@ use settings::{Settings, SettingsStore, StatusStyle};
 use std::{
     any::{Any, TypeId},
     ops::Range,
+    path::PathBuf,
     sync::Arc,
 };
 use ui::{DiffStat, Divider, Tooltip, prelude::*};
 use util::paths::{PathExt as _, PathStyle};
 use workspace::{
-    Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
-    Workspace,
+    Item, ItemHandle, ItemNavHistory, ItemSettings, ToolbarItemEvent, ToolbarItemLocation,
+    ToolbarItemView, Workspace,
     item::{ItemEvent, PreviewTabsSettings, SaveOptions, TabContentParams},
     notifications::NotifyTaskExt,
     searchable::SearchableItemHandle,
 };
 
+/// The base a solo diff is shown against, mirroring the git panel section the
+/// diff was opened from. Like VSCode, each base gets its own view so staged and
+/// unstaged sections show different diffs for the same file.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum SoloDiffBase {
+    /// Worktree vs HEAD: the combined (uncommitted) diff.
+    Head,
+    /// Worktree vs index: the unstaged diff, used for files with a staged
+    /// version and further unstaged changes.
+    Index,
+    /// Index vs HEAD: the staged diff, shown with the read-only index text.
+    Staged,
+}
+
+impl SoloDiffBase {
+    pub(crate) fn for_entry(entry: &GitStatusEntry) -> Self {
+        if entry.staging.has_staged() && entry.staging.has_unstaged() {
+            SoloDiffBase::Index
+        } else {
+            SoloDiffBase::Head
+        }
+    }
+}
+
 pub struct SoloDiffView {
     repository: Entity<Repository>,
     repository_id: RepositoryId,
     repo_path: RepoPath,
+    base: SoloDiffBase,
     buffer: Entity<Buffer>,
     diff: Entity<buffer_diff::BufferDiff>,
     editor: Entity<SplittableEditor>,
@@ -50,8 +77,9 @@ pub struct SoloDiffView {
 }
 
 impl SoloDiffView {
-    pub fn open_or_focus(
+    pub(crate) fn open_or_focus(
         entry: GitStatusEntry,
+        base: SoloDiffBase,
         repository: Entity<Repository>,
         workspace: WeakEntity<Workspace>,
         window: &mut Window,
@@ -64,7 +92,10 @@ impl SoloDiffView {
         let existing = workspace_entity
             .read(cx)
             .items_of_type::<SoloDiffView>(cx)
-            .find(|item| item.read(cx).matches(&repository, &entry.repo_path, cx));
+            .find(|item| {
+                item.read(cx)
+                    .matches(&repository, &entry.repo_path, base, cx)
+            });
         if let Some(existing) = existing {
             workspace_entity.update(cx, |workspace, cx| {
                 workspace.activate_item(&existing, true, true, window, cx);
@@ -91,11 +122,32 @@ impl SoloDiffView {
                     project.open_buffer(project_path.clone(), cx)
                 })
                 .await?;
-            let diff = project
-                .update(cx, |project, cx| {
-                    project.open_uncommitted_diff(buffer.clone(), cx)
-                })
-                .await?;
+            let (buffer, diff) = match base {
+                SoloDiffBase::Head => {
+                    let diff = project
+                        .update(cx, |project, cx| {
+                            project.open_uncommitted_diff(buffer.clone(), cx)
+                        })
+                        .await?;
+                    (buffer, diff)
+                }
+                SoloDiffBase::Index => {
+                    let diff = project
+                        .update(cx, |project, cx| {
+                            project.open_unstaged_diff(buffer.clone(), cx)
+                        })
+                        .await?;
+                    (buffer, diff)
+                }
+                SoloDiffBase::Staged => {
+                    let (diff, index_buffer) = project
+                        .update(cx, |project, cx| {
+                            project.open_staged_diff(buffer.clone(), cx)
+                        })
+                        .await?;
+                    (index_buffer, diff)
+                }
+            };
 
             workspace_entity.update_in(cx, |workspace, window, cx| {
                 let workspace_handle = cx.entity();
@@ -104,6 +156,7 @@ impl SoloDiffView {
                         project,
                         repository,
                         repo_path,
+                        base,
                         buffer,
                         diff,
                         workspace_handle,
@@ -149,6 +202,7 @@ impl SoloDiffView {
         project: Entity<Project>,
         repository: Entity<Repository>,
         repo_path: RepoPath,
+        base: SoloDiffBase,
         buffer: Entity<Buffer>,
         diff: Entity<buffer_diff::BufferDiff>,
         workspace: Entity<Workspace>,
@@ -170,6 +224,10 @@ impl SoloDiffView {
             );
             editor.rhs_editor().update(cx, |editor, cx| {
                 editor.set_should_serialize(false, cx);
+                if base == SoloDiffBase::Staged {
+                    // The staged view displays the read-only index text.
+                    editor.set_read_only(true);
+                }
                 editor.set_allow_git_diff_scrollbar_markers(showing_full_file, cx);
                 let snapshot = editor.snapshot(window, cx);
                 editor.go_to_hunk_before_or_after_position(
@@ -203,6 +261,7 @@ impl SoloDiffView {
             repository,
             repository_id,
             repo_path,
+            base,
             buffer,
             diff,
             editor,
@@ -288,8 +347,26 @@ impl SoloDiffView {
         cx.notify();
     }
 
-    fn matches(&self, repository: &Entity<Repository>, repo_path: &RepoPath, cx: &App) -> bool {
-        self.repository_id == repository.read(cx).id && &self.repo_path == repo_path
+    fn matches(
+        &self,
+        repository: &Entity<Repository>,
+        repo_path: &RepoPath,
+        base: SoloDiffBase,
+        cx: &App,
+    ) -> bool {
+        self.repository_id == repository.read(cx).id
+            && &self.repo_path == repo_path
+            && self.base == base
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diff_base_text(&self, cx: &App) -> Option<String> {
+        self.diff.read(cx).snapshot(cx).base_text_string()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn display_text(&self, cx: &App) -> String {
+        self.buffer.read(cx).text()
     }
 
     fn button_states(&self, cx: &App) -> SoloDiffButtonStates {
@@ -363,6 +440,19 @@ impl SoloDiffView {
         });
     }
 
+    /// Returns the path used to look up the file icon for this diff, preferring
+    /// the buffer's file and falling back to the repo-relative path (e.g. for
+    /// staged diffs whose buffer is the index text).
+    fn file_icon_path(&self, cx: &App) -> Option<SharedString> {
+        let path = self
+            .buffer
+            .read(cx)
+            .file()
+            .map(|file| file.full_path(cx))
+            .unwrap_or_else(|| PathBuf::from(self.repo_path.to_string()));
+        FileIcons::get_icon(&path, cx)
+    }
+
     fn change_file_stage(&self, stage: bool, window: &mut Window, cx: &mut Context<Self>) {
         let repository = self.repository.clone();
         let repo_path = self.repo_path.clone();
@@ -405,10 +495,26 @@ impl Item for SoloDiffView {
     }
 
     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
-        Label::new(self.tab_content_text(params.detail.unwrap_or_default(), cx))
+        let label = Label::new(self.tab_content_text(params.detail.unwrap_or_default(), cx))
             .single_line()
             .color(params.text_color())
-            .when(params.preview, |this| this.italic())
+            .when(params.preview, |this| this.italic());
+
+        // Render the file icon alongside the diff icon (rendered separately by
+        // the pane via `tab_icon`) so the tab shows both, matching how the
+        // editor renders file tabs when `tabs.file_icons` is enabled.
+        h_flex()
+            .gap_1()
+            .when(ItemSettings::get_global(cx).file_icons, |this| {
+                this.when_some(self.file_icon_path(cx), |this, icon_path| {
+                    this.child(
+                        Icon::from_path(icon_path)
+                            .size(IconSize::Small)
+                            .color(Color::Muted),
+                    )
+                })
+            })
+            .child(label)
             .into_any_element()
     }
 
@@ -489,7 +595,12 @@ impl Item for SoloDiffView {
     }
 
     fn active_project_path(&self, cx: &App) -> Option<ProjectPath> {
-        self.editor.read(cx).active_project_path(cx)
+        // The staged view displays the index text buffer, which does not belong
+        // to a worktree, so resolve the path from the repository instead of the
+        // editor's buffers.
+        self.repository
+            .read(cx)
+            .repo_path_to_project_path(&self.repo_path, cx)
     }
 
     fn set_nav_history(
