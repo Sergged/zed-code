@@ -6398,7 +6398,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn git_panel_section() -> [SettingsPageItem; 18] {
+    fn git_panel_section() -> [SettingsPageItem; 19] {
         [
             SettingsPageItem::SectionHeader("Git Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6701,6 +6701,29 @@ fn panels_page() -> SettingsPage {
                             .git_panel
                             .get_or_insert_default()
                             .commit_title_max_length = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Message Editor Min Lines",
+                description: "Minimum number of lines of height the commit message editor should have.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("git_panel.message_editor_min_lines"),
+                    pick: |settings_content| {
+                        settings_content
+                            .git_panel
+                            .as_ref()?
+                            .message_editor_min_lines
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .git_panel
+                            .get_or_insert_default()
+                            .message_editor_min_lines = value;
                     },
                 }),
                 metadata: None,

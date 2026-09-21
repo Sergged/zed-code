@@ -1128,6 +1128,10 @@
     //
     // Default: 0
     "commit_title_max_length": 0,
+    // Minimum number of lines of height the commit message editor should have.
+    //
+    // Default: 6
+    "message_editor_min_lines": 6,
     // Default action when clicking a changed file in the Git panel.
     //
     // Choices: project_diff, file_diff, view_file

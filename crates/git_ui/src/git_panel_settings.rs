@@ -32,6 +32,7 @@ pub struct GitPanelSettings {
     pub show_count_badge: bool,
     pub starts_open: bool,
     pub commit_title_max_length: usize,
+    pub message_editor_min_lines: usize,
     pub entry_primary_click_action: GitPanelClickBehavior,
 }
 
@@ -52,6 +53,12 @@ impl ScrollbarVisibility for GitPanelScrollbarAccessor {
             .scrollbar
             .show
             .unwrap_or_else(|| EditorSettings::get_global(cx).scrollbar.show)
+    }
+}
+
+impl GitPanelSettings {
+    pub fn set_message_editor_max_lines(&self) -> usize {
+        self.message_editor_min_lines * 2
     }
 }
 
@@ -81,6 +88,7 @@ impl Settings for GitPanelSettings {
             show_count_badge: git_panel.show_count_badge.unwrap(),
             starts_open: git_panel.starts_open.unwrap(),
             commit_title_max_length: git_panel.commit_title_max_length.unwrap(),
+            message_editor_min_lines: git_panel.message_editor_min_lines.unwrap(),
             entry_primary_click_action: git_panel.entry_primary_click_action.unwrap(),
         }
     }

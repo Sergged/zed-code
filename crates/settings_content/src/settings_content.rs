@@ -806,6 +806,10 @@ pub struct GitPanelSettingsContent {
     ///
     /// Default: 0
     pub commit_title_max_length: Option<usize>,
+    /// Minimum number of lines of height the commit message editor should have.
+    ///
+    /// Default: 6
+    pub message_editor_min_lines: Option<usize>,
 
     /// Default action when clicking a changed file in the Git panel.
     ///
