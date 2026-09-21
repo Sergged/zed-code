@@ -202,6 +202,11 @@ pub struct ItemSettingsContent {
     ///
     /// Default: false
     pub show_close_button: Option<ShowCloseButton>,
+    /// Whether to render the full tab title, expanding the tab width to fit the
+    /// file name instead of truncating it.
+    ///
+    /// Default: false
+    pub show_full_tab_titles: Option<bool>,
 }
 
 #[with_fallible_options]

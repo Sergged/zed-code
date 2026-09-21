@@ -1487,7 +1487,26 @@ or
     "git_status": false,
     "activate_on_close": "history",
     "show_close_button": "hover",
-    "show_diagnostics": "off"
+    "show_diagnostics": "off",
+    "show_full_tab_titles": false
+  }
+}
+```
+
+### Show Full Tab Titles
+
+- Description: Whether to render the full tab title, expanding the tab width to fit the file name instead of truncating it.
+- Setting: `show_full_tab_titles`
+- Default: `false`
+
+**Options**
+
+`boolean` values
+
+```json [settings]
+{
+  "tabs": {
+    "show_full_tab_titles": true
   }
 }
 ```
