@@ -1,18 +1,25 @@
+use std::collections::HashSet;
 use std::ops::Range;
+use std::time::Duration;
 
-use editor::Editor;
 use editor::actions::FindAllReferences;
+use editor::{Editor, EditorSettings};
 use file_icons::FileIcons;
 use gpui::{
-    Action, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, KeyContext, ListHorizontalSizingBehavior, ListSizingBehavior, Pixels, Render,
-    ScrollStrategy, UniformListScrollHandle, WeakEntity, Window, actions, uniform_list,
+    Action, Animation, AnimationExt, App, AsyncWindowContext, ClickEvent, Context, Entity,
+    EventEmitter, FocusHandle, Focusable, KeyContext, ListHorizontalSizingBehavior,
+    ListSizingBehavior, Pixels, Render, ScrollStrategy, UniformListScrollHandle, WeakEntity,
+    Window, actions, uniform_list,
 };
 use language::ToPoint;
 use lsp_locations::{LocationMatch, build_location_matches, render_matched_line};
 use menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::{Project, ProjectPath};
-use ui::{ListItem, ListItemSpacing, Tab, Tooltip, prelude::*};
+use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
+use ui::{
+    CommonAnimationExt, ListItem, ListItemSpacing, ScrollAxes, Scrollbars, Tab, Tooltip,
+    WithScrollbar, prelude::*,
+};
 use util::ResultExt as _;
 use workspace::Workspace;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
@@ -29,6 +36,18 @@ actions!(
 );
 
 const REFERENCES_PANEL_KEY: &str = "ReferencesPanel";
+
+/// The references panel has no settings of its own, so it follows the
+/// global `editor.scrollbar.show` setting like other panels do when their
+/// own `scrollbar` setting is unset.
+#[derive(Default)]
+struct ReferencesPanelScrollbarAccessor;
+
+impl ScrollbarVisibility for ReferencesPanelScrollbarAccessor {
+    fn visibility(&self, cx: &App) -> ShowScrollbar {
+        EditorSettings::get_global(cx).scrollbar.show
+    }
+}
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
@@ -84,6 +103,38 @@ fn find_all_references(
     let project = workspace.project().clone();
     let editor = editor.downgrade();
     cx.spawn_in(window, async move |workspace, cx| {
+        // Load the panel up-front (it is normally added by the workspace
+        // startup task, but may be missing when the query runs before that
+        // task finishes) so the searching state can be shown right away.
+        let panel = match workspace
+            .read_with(cx, |workspace, cx| workspace.panel::<ReferencesPanel>(cx))
+            .ok()
+            .flatten()
+        {
+            Some(panel) => Some(panel),
+            None => ReferencesPanel::load(workspace.clone(), cx.clone())
+                .await
+                .log_err(),
+        };
+        let Some(panel) = panel else {
+            return;
+        };
+
+        // Show the searching state immediately so the panel does not look
+        // stuck while the language server responds.
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                if workspace.panel::<ReferencesPanel>(cx).is_none() {
+                    workspace.add_panel(panel.clone(), window, cx);
+                }
+                panel.update(cx, |panel, cx| {
+                    panel.set_searching(true, cx);
+                });
+                workspace.open_panel::<ReferencesPanel>(window, cx);
+                cx.notify();
+            })
+            .log_err();
+
         let locations = {
             let Some(task) = editor
                 .update(cx, |editor, cx| {
@@ -114,31 +165,13 @@ fn find_all_references(
             return;
         };
 
-        // The panel is loaded lazily in case it was not added by the workspace
-        // startup task yet (or was removed).
-        let loaded_panel = match workspace
-            .read_with(cx, |workspace, cx| workspace.panel::<ReferencesPanel>(cx))
-            .ok()
-            .flatten()
-        {
-            Some(panel) => Some(panel),
-            None => ReferencesPanel::load(workspace.clone(), cx.clone())
-                .await
-                .log_err(),
-        };
-
         workspace
             .update_in(cx, |workspace, window, cx| {
-                let panel = match (workspace.panel::<ReferencesPanel>(cx), loaded_panel) {
-                    (Some(existing), _) => existing,
-                    (None, Some(loaded)) => {
-                        workspace.add_panel(loaded.clone(), window, cx);
-                        loaded
-                    }
-                    (None, None) => return,
+                let Some(panel) = workspace.panel::<ReferencesPanel>(cx) else {
+                    return;
                 };
-                panel.update(cx, |panel, _cx| {
-                    panel.set_results(matches);
+                panel.update(cx, |panel, cx| {
+                    panel.set_results(matches, cx);
                 });
                 workspace.open_panel::<ReferencesPanel>(window, cx);
                 cx.notify();
@@ -160,11 +193,32 @@ struct ReferenceResults {
     matches: Vec<LocationMatch>,
 }
 
+/// Builds the display rows from the (path-grouped) matches: one header per
+/// file, then its matches, or only the headers for collapsed files.
+fn build_entries(matches: &[LocationMatch], collapsed_files: &HashSet<ProjectPath>) -> Vec<Entry> {
+    let mut entries = Vec::with_capacity(matches.len());
+    let mut last_path: Option<&ProjectPath> = None;
+    for (match_index, location_match) in matches.iter().enumerate() {
+        if last_path != Some(&location_match.path) {
+            entries.push(Entry::Header(location_match.path.clone()));
+            last_path = Some(&location_match.path);
+        }
+        if !collapsed_files.contains(&location_match.path) {
+            entries.push(Entry::Match(match_index));
+        }
+    }
+    entries
+}
+
 pub struct ReferencesPanel {
     workspace: WeakEntity<Workspace>,
     project: Entity<Project>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
+    /// Whether a "find all references" query is currently running.
+    searching: bool,
+    /// Files whose groups are collapsed to their headers.
+    collapsed_files: HashSet<ProjectPath>,
     /// The results of the last "find all references" query. `None` means no
     /// query has been run yet, so the panel shows a hint instead of results.
     results: Option<ReferenceResults>,
@@ -187,6 +241,8 @@ impl ReferencesPanel {
             project: workspace.project().clone(),
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
+            searching: false,
+            collapsed_files: HashSet::default(),
             results: None,
             selected_entry: None,
         }
@@ -199,19 +255,66 @@ impl ReferencesPanel {
         dispatch_context
     }
 
-    fn set_results(&mut self, matches: Vec<LocationMatch>) {
-        let mut entries = Vec::with_capacity(matches.len());
-        let mut last_path: Option<&ProjectPath> = None;
-        for (match_index, location_match) in matches.iter().enumerate() {
-            if last_path != Some(&location_match.path) {
-                entries.push(Entry::Header(location_match.path.clone()));
-                last_path = Some(&location_match.path);
-            }
-            entries.push(Entry::Match(match_index));
-        }
-        self.results = Some(ReferenceResults { entries, matches });
+    fn set_searching(&mut self, searching: bool, cx: &mut Context<Self>) {
+        self.searching = searching;
+        cx.notify();
+    }
+
+    fn set_results(&mut self, matches: Vec<LocationMatch>, cx: &mut Context<Self>) {
+        self.searching = false;
+        self.collapsed_files.clear();
+        self.results = Some(ReferenceResults {
+            entries: build_entries(&matches, &self.collapsed_files),
+            matches,
+        });
         self.selected_entry = None;
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// Collapses or expands the file group for `path`; collapse keeps only the
+    /// file header visible.
+    fn toggle_group(&mut self, path: ProjectPath, cx: &mut Context<Self>) {
+        if !self.collapsed_files.remove(&path) {
+            self.collapsed_files.insert(path);
+        }
+        self.rebuild_entries(cx);
+    }
+
+    /// Collapses or expands all file groups at once.
+    fn set_all_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        let Some(results) = &self.results else {
+            return;
+        };
+        self.collapsed_files = if collapsed {
+            results.matches.iter().map(|m| m.path.clone()).collect()
+        } else {
+            HashSet::default()
+        };
+        self.rebuild_entries(cx);
+    }
+
+    fn all_collapsed(&self) -> bool {
+        let Some(results) = &self.results else {
+            return false;
+        };
+        let group_count = results
+            .matches
+            .iter()
+            .map(|m| &m.path)
+            .collect::<HashSet<_>>()
+            .len();
+        group_count > 0 && self.collapsed_files.len() == group_count
+    }
+
+    fn rebuild_entries(&mut self, cx: &mut Context<Self>) {
+        let Some(results) = &mut self.results else {
+            return;
+        };
+        results.entries = build_entries(&results.matches, &self.collapsed_files);
+        self.selected_entry = None;
+        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
     }
 
     fn select_entry(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -347,23 +450,59 @@ impl ReferencesPanel {
     }
 
     fn render_header(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_collapsed = self.all_collapsed();
+        let collapse_button = IconButton::new(
+            "collapse-all",
+            if is_collapsed {
+                IconName::ExpandDown
+            } else {
+                IconName::ListCollapse
+            },
+        )
+        .icon_size(IconSize::Small)
+        .tooltip(Tooltip::text(if is_collapsed {
+            "Expand All"
+        } else {
+            "Collapse All"
+        }))
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.set_all_collapsed(!this.all_collapsed(), cx);
+        }));
+
         h_flex()
+            .id("references-panel-toolbar")
             .h(Tab::container_height(cx))
-            .w_full()
-            .px_2()
-            .gap_1p5()
+            .flex_shrink_0()
+            .max_w_full()
+            .bg(cx.theme().colors().tab_bar_background)
             .border_b_1()
-            .border_color(cx.theme().colors().border_variant)
+            .border_color(cx.theme().colors().border)
             .child(
-                Icon::new(IconName::Quote)
-                    .size(IconSize::Small)
-                    .color(Color::Muted),
+                h_flex()
+                    .relative()
+                    .h_full()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .gap(DynamicSpacing::Base04.rems(cx))
+                    .pl(DynamicSpacing::Base04.rems(cx))
+                    .child(Icon::new(IconName::Quote).color(Color::Muted))
+                    .child(Label::new("References").truncate()),
             )
-            .child(Label::new("References").size(LabelSize::Small))
-            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .px_1()
+                    .h_full()
+                    .flex_none()
+                    .gap_1()
+                    .child(collapse_button),
+            )
     }
 
     fn render_contents(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.searching {
+            return self.render_searching(window, cx);
+        }
         match &self.results {
             None => self
                 .render_empty_state(&["Run Find All References", "with Shift-F12 to see results"]),
@@ -372,6 +511,42 @@ impl ReferencesPanel {
             }
             Some(_) => self.render_results_list(window, cx),
         }
+    }
+
+    fn render_searching(&self, _window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .size_full()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap_1p5()
+            .child(
+                Icon::new(IconName::LoadCircle)
+                    .size(IconSize::Small)
+                    .color(Color::Muted)
+                    .with_rotate_animation(2),
+            )
+            .child(Self::render_loading_label())
+            .into_any_element()
+    }
+
+    fn render_loading_label() -> impl IntoElement {
+        Label::new("Loading references")
+            .color(Color::Muted)
+            .size(LabelSize::Small)
+            .with_animations(
+                "loading_references_label",
+                vec![Animation::new(Duration::from_secs(1)).repeat()],
+                |mut label, _animation_ix, delta| {
+                    match delta {
+                        ..0.25 => {}
+                        ..0.5 => label.set_text("Loading references."),
+                        ..0.75 => label.set_text("Loading references.."),
+                        _ => label.set_text("Loading references..."),
+                    }
+                    label
+                },
+            )
     }
 
     fn render_empty_state(&self, lines: &[&'static str]) -> AnyElement {
@@ -390,7 +565,7 @@ impl ReferencesPanel {
             .into_any_element()
     }
 
-    fn render_results_list(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_results_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(results) = &self.results else {
             return self.render_empty_state(&["No references found"]);
         };
@@ -400,6 +575,15 @@ impl ReferencesPanel {
             .iter()
             .map(|location_match| location_match.line_number)
             .max()
+            .unwrap_or(0);
+        // Measure the list by the first match row instead of the first entry:
+        // the uniform list applies one measured height to every row, and file
+        // headers are shorter than match rows, so measuring a header would
+        // overlap the match rows at large font sizes.
+        let first_match_index = results
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, Entry::Match(_)))
             .unwrap_or(0);
 
         let list = uniform_list(
@@ -429,11 +613,27 @@ impl ReferencesPanel {
                     .collect()
             }),
         )
-        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .with_sizing_behavior(ListSizingBehavior::Auto)
+        .size_full()
+        .with_width_from_item(Some(first_match_index))
         .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
         .track_scroll(&self.scroll_handle);
 
-        v_flex().size_full().child(list).into_any_element()
+        v_flex()
+            .size_full()
+            .child(list)
+            // Long reference lines need a horizontal scrollbar; the list's
+            // `Unconstrained` sizing already enables horizontal scrolling. Both
+            // axes follow the global `editor.scrollbar.show` setting.
+            .custom_scrollbars(
+                Scrollbars::for_settings::<ReferencesPanelScrollbarAccessor>()
+                    .tracked_scroll_handle(&self.scroll_handle.clone())
+                    .with_track_along(ScrollAxes::Horizontal, cx.theme().colors().panel_background)
+                    .tracked_entity(cx.entity_id()),
+                window,
+                cx,
+            )
+            .into_any_element()
     }
 
     fn render_entry(
@@ -485,12 +685,18 @@ impl ReferencesPanel {
                     .color(Color::Muted)
                     .size(IconSize::Small)
             });
+        let path = path.clone();
         h_flex()
+            .id(path.path.as_std_path().to_string_lossy().into_owned())
             .w_full()
             .min_w_0()
             .px(DynamicSpacing::Base06.rems(cx))
             .py_1()
             .gap_1p5()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.toggle_group(path.clone(), cx);
+            }))
             .children(file_icon)
             .child(
                 h_flex()
@@ -524,10 +730,14 @@ impl ReferencesPanel {
         ListItem::new(entry_index)
             .spacing(ListItemSpacing::Sparse)
             .inset(true)
+            // Don't apply the hover style on top of the selected item: the
+            // active row keeps its selected background while hovered.
+            .selectable(!selected)
             .toggle_state(selected)
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.selected_entry = Some(entry_index);
                 this.open_selected_entry(window, cx);
+                cx.notify();
             }))
             .child(
                 h_flex()
@@ -537,7 +747,7 @@ impl ReferencesPanel {
                     .text_sm()
                     .child(
                         h_flex()
-                            .w(rems((max_line_number.max(1).ilog10() + 1) as f32 * 0.5))
+                            .w(rems((max_line_number.max(1).ilog10() + 1) as f32 * 0.6))
                             .justify_end()
                             .child(
                                 Label::new(location_match.line_number.to_string()).color(
@@ -595,10 +805,7 @@ impl Panel for ReferencesPanel {
     }
 
     fn icon(&self, _window: &Window, _cx: &App) -> Option<ui::IconName> {
-        // The toggle button lives in the workspace's left status strip (after
-        // the project search button), not in the dock's panel buttons, so the
-        // strip order stays project, git, search, references.
-        None
+        Some(IconName::Quote)
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
@@ -630,29 +837,6 @@ impl Render for ReferencesPanel {
             .track_focus(&self.focus_handle)
             .child(self.render_header(window, cx))
             .child(self.render_contents(window, cx))
-    }
-}
-
-/// The toggle button for the references panel, shown in the workspace's left
-/// status strip below the project search button.
-pub struct ReferencesButton;
-
-impl ReferencesButton {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Render for ReferencesButton {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        IconButton::new("references-panel-toggle", IconName::Quote)
-            .icon_size(IconSize::Small)
-            .tab_index(0isize)
-            .aria_label("Find All References")
-            .tooltip(Tooltip::text("Find All References"))
-            .on_click(cx.listener(|_this, _, window, cx| {
-                window.dispatch_action(Box::new(ToggleFocus), cx);
-            }))
     }
 }
 
@@ -927,6 +1111,123 @@ mod tests {
             "the reference's file should be reopened in the workspace"
         );
         assert_eq!(selection, Some(Point::new(2, 14)..Point::new(2, 17)));
+    }
+
+    #[gpui::test]
+    async fn test_collapse_and_expand_groups(cx: &mut TestAppContext) {
+        let mut cx = rust_cx(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+        cx.set_state(SOURCE);
+        cx.lsp
+            .set_request_handler::<lsp::request::References, _, _>(async move |params, _| {
+                let uri = params.text_document_position.text_document.uri;
+                Ok(Some(references(uri, &[(1, 8, 11), (2, 14, 17)])))
+            });
+        let _ = add_panel(&mut cx);
+
+        cx.dispatch_action(FindAllReferences::default());
+        cx.run_until_parked();
+
+        let workspace = cx.workspace.clone();
+        let entries_len = |cx: &mut EditorLspTestContext| -> usize {
+            let panel = workspace.read_with(&cx.cx.cx, |workspace, cx| {
+                workspace.panel::<ReferencesPanel>(cx).unwrap()
+            });
+            panel.read_with(&cx.cx.cx, |panel, _| {
+                panel.results.as_ref().unwrap().entries.len()
+            })
+        };
+        assert_eq!(entries_len(&mut cx), 3, "one header plus two matches");
+
+        cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.update(cx, |panel, cx| panel.set_all_collapsed(true, cx));
+        });
+        assert_eq!(entries_len(&mut cx), 1, "only the file header remains");
+
+        cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.update(cx, |panel, cx| panel.set_all_collapsed(false, cx));
+        });
+        assert_eq!(entries_len(&mut cx), 3, "matches are restored");
+    }
+
+    #[gpui::test]
+    async fn test_toggle_group_toggles_only_that_file(cx: &mut TestAppContext) {
+        let mut cx = rust_cx(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+        cx.set_state(SOURCE);
+        cx.lsp
+            .set_request_handler::<lsp::request::References, _, _>(async move |params, _| {
+                let uri = params.text_document_position.text_document.uri;
+                Ok(Some(references(uri, &[(1, 8, 11), (2, 14, 17)])))
+            });
+        let _ = add_panel(&mut cx);
+
+        cx.dispatch_action(FindAllReferences::default());
+        cx.run_until_parked();
+
+        let workspace = cx.workspace.clone();
+        let path = cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            match &panel.read(cx).results.as_ref().unwrap().entries[0] {
+                Entry::Header(path) => path.clone(),
+                Entry::Match(_) => panic!("first entry should be a file header"),
+            }
+        });
+
+        cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.update(cx, |panel, cx| panel.toggle_group(path.clone(), cx));
+        });
+        let entries_len = cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.read(cx).results.as_ref().unwrap().entries.len()
+        });
+        assert_eq!(entries_len, 1, "toggling the group hides its matches");
+
+        cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.update(cx, |panel, cx| panel.toggle_group(path, cx));
+        });
+        let entries_len = cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.read(cx).results.as_ref().unwrap().entries.len()
+        });
+        assert_eq!(entries_len, 3, "toggling again restores the matches");
     }
 
     #[gpui::test]

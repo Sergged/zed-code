@@ -2893,27 +2893,6 @@ impl Workspace {
         StatusBarSettings::get_global(cx).show
     }
 
-    /// Sets the project search button shown in the left status strip.
-    pub fn set_left_status_bar_search_button(
-        &mut self,
-        search_button: AnyView,
-        cx: &mut Context<Self>,
-    ) {
-        self.left_status_bar
-            .update(cx, |strip, cx| strip.set_search_button(search_button, cx));
-    }
-
-    /// Sets the find-all-references toggle button shown in the left status strip.
-    pub fn set_left_status_bar_references_button(
-        &mut self,
-        references_button: AnyView,
-        cx: &mut Context<Self>,
-    ) {
-        self.left_status_bar.update(cx, |strip, cx| {
-            strip.set_references_button(references_button, cx)
-        });
-    }
-
     pub fn multi_workspace(&self) -> Option<&WeakEntity<MultiWorkspace>> {
         self.multi_workspace.as_ref()
     }
