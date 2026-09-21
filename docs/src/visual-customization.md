@@ -337,7 +337,9 @@ TBD: Centered layout related settings
     "show_close_button": "hover",     // Close button shown (hover, always, hidden)
     "file_icons": false,              // Icon showing file type
     // Show diagnostics in file icon (off, errors, all). Requires file_icons=true
-    "show_diagnostics": "off"
+    "show_diagnostics": "off",
+    // Expand the tab to fit the full file name instead of truncating it
+    "show_full_tab_titles": false
   }
 ```
 

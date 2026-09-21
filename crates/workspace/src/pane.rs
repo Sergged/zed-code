@@ -2850,13 +2850,14 @@ impl Pane {
             .map(|id| id == item.item_id())
             .unwrap_or(false);
 
+        let settings = ItemSettings::get_global(cx);
         let label = item.tab_content(
             TabContentParams {
                 detail: Some(detail),
                 selected: is_active,
                 preview: is_preview,
                 deemphasized: !self.has_focus(window, cx),
-                max_title_len: None,
+                max_title_len: settings.show_full_tab_titles.then_some(usize::MAX),
                 truncate_title_middle: false,
             },
             window,
@@ -2865,7 +2866,6 @@ impl Pane {
 
         let icon = self.tab_icon_element(item, is_active, window, cx);
 
-        let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
         let show_close_button = &settings.show_close_button;
         let indicator = render_item_indicator(item.boxed_clone(), cx);
@@ -5061,7 +5061,9 @@ impl Render for DraggedTab {
                 selected: false,
                 preview: false,
                 deemphasized: false,
-                max_title_len: None,
+                max_title_len: ItemSettings::get_global(cx)
+                    .show_full_tab_titles
+                    .then_some(usize::MAX),
                 truncate_title_middle: false,
             },
             window,

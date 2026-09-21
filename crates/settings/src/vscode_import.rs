@@ -791,6 +791,7 @@ impl VsCodeSettings {
                         ShowCloseButton::Hidden
                     }
                 }),
+            show_full_tab_titles: None,
         })
     }
 
