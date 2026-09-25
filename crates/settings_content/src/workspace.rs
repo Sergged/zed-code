@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, time::Duration};
 
 use collections::HashMap;
 use schemars::JsonSchema;
@@ -839,7 +839,11 @@ pub struct ProjectPanelSettingsContent {
     ///
     /// Default: right (Agentic layout), left (Classic layout)
     pub dock: Option<DockSide>,
-    // TODO
+    /// Delay before tooltips are shown when hovering over project panel
+    /// entries. Also applies to the tooltip shown when hovering over editor
+    /// tabs and git panel entries.
+    ///
+    /// Default: default
     pub title_tooltip_delay: Option<ProjectPanelTitleTooltipDelay>,
     /// Spacing between worktree entries in the project panel.
     ///
@@ -949,6 +953,20 @@ pub enum ProjectPanelTitleTooltipDelay {
     Custom(crate::DelayMs),
     /// Disables the tooltip
     Disabled,
+}
+
+impl ProjectPanelTitleTooltipDelay {
+    /// The delay after which a title tooltip is shown, or `None` when tooltips
+    /// are disabled.
+    pub fn show_delay(&self) -> Option<Duration> {
+        match self {
+            ProjectPanelTitleTooltipDelay::Default => Some(Duration::from_millis(1500)),
+            ProjectPanelTitleTooltipDelay::Custom(delay_ms) => {
+                Some(Duration::from_millis(delay_ms.0))
+            }
+            ProjectPanelTitleTooltipDelay::Disabled => None,
+        }
+    }
 }
 
 #[derive(

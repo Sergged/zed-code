@@ -2835,6 +2835,20 @@ impl Pane {
         )
     }
 
+    /// Returns the delay before a tab's title tooltip appears, mirroring the
+    /// `project_panel.title_tooltip_delay` setting so tabs behave like project
+    /// panel entries. `None` disables the tab tooltip.
+    fn tab_tooltip_show_delay(cx: &App) -> Option<Duration> {
+        let title_tooltip_delay = cx
+            .global::<SettingsStore>()
+            .merged_settings()
+            .project_panel
+            .as_ref()
+            .and_then(|project_panel| project_panel.title_tooltip_delay)
+            .unwrap_or_default();
+        title_tooltip_delay.show_delay()
+    }
+
     fn render_tab(
         &self,
         ix: usize,
@@ -2870,6 +2884,11 @@ impl Pane {
         let show_close_button = &settings.show_close_button;
         let indicator = render_item_indicator(item.boxed_clone(), cx);
         let tab_tooltip_content = item.tab_tooltip_content(cx);
+        let tooltip_show_delay = if tab_tooltip_content.is_some() {
+            Self::tab_tooltip_show_delay(cx)
+        } else {
+            None
+        };
         let item_id = item.item_id();
         let is_first_item = ix == 0;
         let is_last_item = ix == self.items.len() - 1;
@@ -3062,21 +3081,22 @@ impl Pane {
                         None
                     })
                     .child(label)
-                    .map(|this| match tab_tooltip_content {
-                        Some(TabTooltipContent::Text(text)) => {
+                    .map(|this| match (tab_tooltip_content, tooltip_show_delay) {
+                        (Some(TabTooltipContent::Text(text)), Some(show_delay)) => {
                             if capability.editable() {
-                                this.tooltip(Tooltip::text(text))
+                                this.tooltip_show_delay(show_delay)
+                                    .tooltip(Tooltip::text(text))
                             } else {
-                                this.tooltip(move |_, cx| {
+                                this.tooltip_show_delay(show_delay).tooltip(move |_, cx| {
                                     let text = text.clone();
                                     Tooltip::with_meta(text, None, "Read-Only Tab", cx)
                                 })
                             }
                         }
-                        Some(TabTooltipContent::Custom(element_fn)) => {
-                            this.tooltip(move |window, cx| element_fn(window, cx))
-                        }
-                        None => this,
+                        (Some(TabTooltipContent::Custom(element_fn)), Some(show_delay)) => this
+                            .tooltip_show_delay(show_delay)
+                            .tooltip(move |window, cx| element_fn(window, cx)),
+                        _ => this,
                     })
                     .when(capability == Capability::Read && has_file_icon, |this| {
                         this.child(read_only_toggle(true))
@@ -9057,6 +9077,42 @@ mod tests {
             cx.set_global(settings_store);
             theme_settings::init(LoadThemes::JustBase, cx);
         });
+    }
+
+    #[gpui::test]
+    fn test_tab_tooltip_show_delay_follows_project_panel_setting(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        // Untouched, the setting defaults to a 1500ms delay.
+        assert_eq!(
+            cx.update(|cx| Pane::tab_tooltip_show_delay(cx)),
+            Some(Duration::from_millis(1500))
+        );
+
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .title_tooltip_delay = Some(settings::ProjectPanelTitleTooltipDelay::Custom(
+                    settings::DelayMs(123),
+                ));
+            });
+        });
+        assert_eq!(
+            cx.update(|cx| Pane::tab_tooltip_show_delay(cx)),
+            Some(Duration::from_millis(123))
+        );
+
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .title_tooltip_delay = Some(settings::ProjectPanelTitleTooltipDelay::Disabled);
+            });
+        });
+        assert_eq!(cx.update(|cx| Pane::tab_tooltip_show_delay(cx)), None);
     }
 
     fn set_max_tabs(cx: &mut TestAppContext, value: Option<usize>) {
