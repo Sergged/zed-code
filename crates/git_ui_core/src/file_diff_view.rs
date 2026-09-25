@@ -22,7 +22,6 @@ use std::{
     time::Duration,
 };
 use ui::{Color, Icon, IconName, SharedString};
-use util::paths::PathExt as _;
 use workspace::{
     Item, ItemHandle as _, ItemNavHistory, ToolbarItemLocation, Workspace,
     item::{ItemEvent, SaveOptions},
@@ -276,7 +275,7 @@ impl Item for FileDiffView {
             buffer
                 .read(cx)
                 .file()
-                .map(|file| file.full_path(cx).compact().to_string_lossy().into_owned())
+                .map(|file| file.full_path(cx).to_string_lossy().into_owned())
                 .unwrap_or_else(|| MultiBuffer::DEFAULT_TITLE.into())
         };
         let old_path = path(&self.old_buffer);
