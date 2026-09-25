@@ -1,9 +1,9 @@
 use crate::scroll::ScrollAmount;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    AnyElement, Entity, Focusable, FontWeight, HighlightStyle, ListSizingBehavior, ScrollHandle,
-    ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, Task, TaskExt,
-    UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, Entity, Focusable, FontWeight, HighlightStyle, Hsla, ListSizingBehavior,
+    ScrollHandle, ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, Task,
+    TaskExt, UniformListScrollHandle, div, px, uniform_list,
 };
 use itertools::Itertools;
 use language::CodeLabel;
@@ -1030,9 +1030,12 @@ impl CompletionsMenu {
                                 &style.local_player,
                             )
                             .map(|(range, mut highlight)| {
-                                // Ignore font weight for syntax highlighting, as we'll use it
-                                // for fuzzy matches.
+                                // Ignore font weight and color for syntax highlighting: font
+                                // weight is used for fuzzy matches, and the kind badge (letter
+                                // or icon) already carries the kind color, so the label text
+                                // stays in the default text color.
                                 highlight.font_weight = None;
+                                highlight.color = None;
                                 if completion
                                     .source
                                     .lsp_completion(false)
@@ -1129,16 +1132,21 @@ impl CompletionsMenu {
                                 })
                             });
 
-                        let kind_letter_slot = match completion_menu_item_kind {
+                        let kind_slot = match completion_menu_item_kind {
                             CompletionMenuItemKind::Off => None,
                             CompletionMenuItemKind::Symbol => Some(render_completion_kind_letter(
                                 completion.kind(),
                                 item_ix,
                                 &style,
                             )),
+                            CompletionMenuItemKind::Icon => Some(render_completion_kind_icon(
+                                completion.kind(),
+                                item_ix,
+                                &style,
+                            )),
                         };
 
-                        let start_slot = match (kind_letter_slot, icon_or_color_slot) {
+                        let start_slot = match (kind_slot, icon_or_color_slot) {
                             (Some(letter), Some(icon_or_color)) => Some(
                                 h_flex()
                                     .gap_0p5()
@@ -1672,14 +1680,7 @@ fn render_completion_kind_letter(
         return badge.into_any_element();
     };
 
-    let color = completion_kind_highlight_name(kind)
-        .and_then(|name| {
-            style.syntax.style_for_name(name).or_else(|| {
-                let (parent, _) = name.rsplit_once('.')?;
-                style.syntax.style_for_name(parent)
-            })
-        })
-        .and_then(|hl| hl.color);
+    let color = completion_kind_highlight_color(kind, style);
 
     badge
         .id(("completion-kind", item_ix))
@@ -1687,6 +1688,48 @@ fn render_completion_kind_letter(
         .child(letter)
         .when_some(color, |element, color| element.text_color(color))
         .into_any_element()
+}
+
+fn render_completion_kind_icon(
+    kind: Option<CompletionItemKind>,
+    item_ix: usize,
+    style: &EditorStyle,
+) -> AnyElement {
+    let badge = div()
+        .flex_none()
+        .w(IconSize::XSmall.rems())
+        .text_center()
+        .line_height(rems_from_px(14_f32));
+
+    let Some(kind) = kind else {
+        return badge.into_any_element();
+    };
+    let Some(icon) = completion_kind_icon(kind) else {
+        return badge.into_any_element();
+    };
+
+    let color = completion_kind_highlight_color(kind, style);
+
+    badge
+        .id(("completion-kind", item_ix))
+        .tooltip(Tooltip::text(completion_kind_name(kind)))
+        .child(
+            Icon::new(icon)
+                .size(IconSize::XSmall)
+                .color(color.map_or(Color::Default, Color::Custom)),
+        )
+        .into_any_element()
+}
+
+fn completion_kind_highlight_color(kind: CompletionItemKind, style: &EditorStyle) -> Option<Hsla> {
+    completion_kind_highlight_name(kind)
+        .and_then(|name| {
+            style.syntax.style_for_name(name).or_else(|| {
+                let (parent, _) = name.rsplit_once('.')?;
+                style.syntax.style_for_name(parent)
+            })
+        })
+        .and_then(|hl| hl.color)
 }
 
 fn completion_kind_name(kind: CompletionItemKind) -> &'static str {
@@ -1718,6 +1761,36 @@ fn completion_kind_name(kind: CompletionItemKind) -> &'static str {
         CompletionItemKind::TYPE_PARAMETER => "Type Parameter",
         _ => "Unknown",
     }
+}
+
+fn completion_kind_icon(kind: CompletionItemKind) -> Option<IconName> {
+    Some(match kind {
+        CompletionItemKind::TEXT => IconName::SymbolText,
+        CompletionItemKind::METHOD
+        | CompletionItemKind::FUNCTION
+        | CompletionItemKind::CONSTRUCTOR => IconName::SymbolMethod,
+        CompletionItemKind::FIELD => IconName::SymbolField,
+        CompletionItemKind::VARIABLE => IconName::SymbolVariable,
+        CompletionItemKind::CLASS => IconName::SymbolClass,
+        CompletionItemKind::INTERFACE => IconName::SymbolInterface,
+        CompletionItemKind::MODULE => IconName::SymbolNamespace,
+        CompletionItemKind::PROPERTY => IconName::SymbolProperty,
+        CompletionItemKind::UNIT => IconName::SymbolRuler,
+        CompletionItemKind::VALUE | CompletionItemKind::ENUM => IconName::SymbolEnum,
+        CompletionItemKind::KEYWORD => IconName::SymbolKeyword,
+        CompletionItemKind::SNIPPET => IconName::SymbolSnippet,
+        CompletionItemKind::COLOR => IconName::SymbolColor,
+        CompletionItemKind::FILE => IconName::SymbolFile,
+        CompletionItemKind::REFERENCE => IconName::SymbolReference,
+        CompletionItemKind::FOLDER => IconName::SymbolFolder,
+        CompletionItemKind::ENUM_MEMBER => IconName::SymbolEnumMember,
+        CompletionItemKind::CONSTANT => IconName::SymbolConstant,
+        CompletionItemKind::STRUCT => IconName::SymbolStructure,
+        CompletionItemKind::EVENT => IconName::SymbolEvent,
+        CompletionItemKind::OPERATOR => IconName::SymbolOperator,
+        CompletionItemKind::TYPE_PARAMETER => IconName::SymbolParameter,
+        _ => return None,
+    })
 }
 
 fn completion_kind_letter(kind: CompletionItemKind) -> Option<&'static str> {

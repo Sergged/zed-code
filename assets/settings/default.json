@@ -402,6 +402,8 @@
   //   "off" (default)
   // 2. Display a single-letter badge, colorized based on the active syntax theme:
   //   "symbol"
+  // 3. Display a symbol icon, colorized based on the active syntax theme:
+  //   "icon"
   "completion_menu_item_kind": "off",
   // How to display diffs in the editor.
   //

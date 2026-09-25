@@ -415,8 +415,8 @@ TBD: Centered layout related settings
 
   // How to display the LSP item kind (function, method, variable, etc.)
   // of each entry in the completions menu. "symbol" shows a syntax-colored
-  // single-letter badge.
-  "completion_menu_item_kind": "off", // off, symbol
+  // single-letter badge, "icon" shows a syntax-colored symbol icon.
+  "completion_menu_item_kind": "off", // off, symbol, icon
   // Turn on colorization of brackets in editors (configurable per language)
   "colorize_brackets": true,
 ```
