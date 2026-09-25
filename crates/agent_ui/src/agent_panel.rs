@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
     agent::{
-        AddSelectionToThread, ConflictContent, LogoutAgent, OpenSettings, ReauthenticateAgent,
-        ResetAgentZoom, ResetOnboarding, ResolveConflictedFilesWithAgent,
+        AddDiagnosticToThread, AddSelectionToThread, ConflictContent, LogoutAgent, OpenSettings,
+        ReauthenticateAgent, ResetAgentZoom, ResetOnboarding, ResolveConflictedFilesWithAgent,
         ResolveConflictsWithAgent, ReviewBranchDiff, SelectAgent,
     },
     assistant::{
@@ -640,112 +640,12 @@ pub fn init(cx: &mut App) {
                         });
                     },
                 )
-                .register_action(
-                    |workspace: &mut Workspace, _: &AddSelectionToThread, window, cx| {
-                        let active_editor = workspace
-                            .active_item(cx)
-                            .and_then(|item| item.act_as::<Editor>(cx));
-                        let has_editor_selection = active_editor.is_some_and(|editor| {
-                            editor.update(cx, |editor, cx| {
-                                editor.has_non_empty_selection(&editor.display_snapshot(cx))
-                            })
-                        });
-
-                        let has_terminal_selection = workspace
-                            .active_item(cx)
-                            .and_then(|item| item.act_as::<TerminalView>(cx))
-                            .is_some_and(|terminal_view| {
-                                terminal_view
-                                    .read(cx)
-                                    .terminal()
-                                    .read(cx)
-                                    .last_content
-                                    .selection_text
-                                    .as_ref()
-                                    .is_some_and(|text| !text.is_empty())
-                            });
-
-                        let has_terminal_panel_selection =
-                            workspace.panel::<TerminalPanel>(cx).is_some_and(|panel| {
-                                let position = match TerminalSettings::get_global(cx).dock {
-                                    TerminalDockPosition::Left => DockPosition::Left,
-                                    TerminalDockPosition::Bottom => DockPosition::Bottom,
-                                    TerminalDockPosition::Right => DockPosition::Right,
-                                };
-                                let dock_is_open =
-                                    workspace.dock_at_position(position).read(cx).is_open();
-                                dock_is_open && !panel.read(cx).terminal_selections(cx).is_empty()
-                            });
-
-                        if !has_editor_selection
-                            && !has_terminal_selection
-                            && !has_terminal_panel_selection
-                        {
-                            return;
-                        }
-
-                        let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
-                            return;
-                        };
-
-                        let source = AgentContextSource::from_focused(workspace, window, cx);
-                        let source = source.or_else(|| {
-                            let cached = agent_panel.read(cx).last_context_source.clone()?;
-                            cached.exists(workspace, cx).then_some(cached)
-                        });
-                        let source =
-                            source.or_else(|| AgentContextSource::from_active(workspace, cx));
-
-                        let Some(source) = source else {
-                            return;
-                        };
-
-                        let Some(selection) = source.read_selection(workspace, true, cx) else {
-                            return;
-                        };
-
-                        if !agent_panel.focus_handle(cx).contains_focused(window, cx) {
-                            workspace.toggle_panel_focus::<AgentPanel>(window, cx);
-                        }
-
-                        agent_panel.update(cx, |panel, cx| {
-                            panel.last_context_source = Some(source);
-                            cx.defer_in(window, move |panel, window, cx| {
-                                if let Some(conversation_view) = panel.active_conversation_view() {
-                                    conversation_view.update(cx, |conversation_view, cx| {
-                                        conversation_view.insert_selection(selection, window, cx);
-                                    });
-                                } else if let Some(terminal_id) = panel.active_terminal_id()
-                                    && let Some(agent_terminal) = panel.terminals.get(&terminal_id)
-                                {
-                                    // Resolve mentions against the cwd: live cwd, else spawn dir.
-                                    let working_directory = agent_terminal
-                                        .view
-                                        .read(cx)
-                                        .terminal()
-                                        .read(cx)
-                                        .working_directory()
-                                        .or_else(|| agent_terminal.working_directory.clone());
-                                    let text = format_selection_for_terminal(
-                                        &selection,
-                                        &panel.project,
-                                        working_directory.as_deref(),
-                                        cx,
-                                    );
-                                    if !text.is_empty() {
-                                        let view = agent_terminal.view.clone();
-                                        view.update(cx, |view, cx| {
-                                            view.terminal().update(cx, |terminal, _| {
-                                                terminal.paste(&text);
-                                            });
-                                            window.focus(&view.focus_handle(cx), cx);
-                                        });
-                                    }
-                                }
-                            });
-                        });
-                    },
-                )
+                .register_action(|workspace, _: &AddSelectionToThread, window, cx| {
+                    add_selection_to_thread(workspace, SharedString::default(), window, cx);
+                })
+                .register_action(|workspace, action: &AddDiagnosticToThread, window, cx| {
+                    add_selection_to_thread(workspace, action.diagnostic_text.clone(), window, cx);
+                })
                 .register_action(|workspace, _: &menu::Cancel, _window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         let dismissed =
@@ -773,7 +673,18 @@ fn format_selection_for_terminal(
             let mut parts: Vec<String> = Vec::new();
             for (buffer, range) in ranges {
                 let buffer = buffer.read(cx);
-                let Some(project_path) = buffer.project_path(cx) else {
+                let project_path = buffer.project_path(cx).or_else(|| {
+                    // Historic buffers (e.g. the index text in staged diff
+                    // views) have no project path; resolve the file they show.
+                    let file = buffer.file()?;
+                    if !matches!(file.disk_state(), language::DiskState::Historic { .. }) {
+                        return None;
+                    }
+                    project
+                        .read(cx)
+                        .project_path_for_absolute_path(&file.full_path(cx), cx)
+                });
+                let Some(project_path) = project_path else {
                     continue;
                 };
                 let snapshot = buffer.snapshot();
@@ -797,6 +708,121 @@ fn format_selection_for_terminal(
         }
         AgentContextSelection::Terminal(texts) => texts.join("\n"),
     }
+}
+
+/// Adds the current selection as context for the agent panel thread, followed
+/// by `trailing_text` when non-empty. Used by the `AddSelectionToThread` action
+/// and by the editor's diagnostic hover popover (`AddDiagnosticToThread`).
+fn add_selection_to_thread(
+    workspace: &mut Workspace,
+    trailing_text: SharedString,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let active_editor = workspace
+        .active_item(cx)
+        .and_then(|item| item.act_as::<Editor>(cx));
+    let has_editor_selection = active_editor.is_some_and(|editor| {
+        editor.update(cx, |editor, cx| {
+            editor.has_non_empty_selection(&editor.display_snapshot(cx))
+        })
+    });
+
+    let has_terminal_selection = workspace
+        .active_item(cx)
+        .and_then(|item| item.act_as::<TerminalView>(cx))
+        .is_some_and(|terminal_view| {
+            terminal_view
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .last_content
+                .selection_text
+                .as_ref()
+                .is_some_and(|text| !text.is_empty())
+        });
+
+    let has_terminal_panel_selection = workspace.panel::<TerminalPanel>(cx).is_some_and(|panel| {
+        let position = match TerminalSettings::get_global(cx).dock {
+            TerminalDockPosition::Left => DockPosition::Left,
+            TerminalDockPosition::Bottom => DockPosition::Bottom,
+            TerminalDockPosition::Right => DockPosition::Right,
+        };
+        let dock_is_open = workspace.dock_at_position(position).read(cx).is_open();
+        dock_is_open && !panel.read(cx).terminal_selections(cx).is_empty()
+    });
+
+    if !has_editor_selection && !has_terminal_selection && !has_terminal_panel_selection {
+        return;
+    }
+
+    let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
+        return;
+    };
+
+    let source = AgentContextSource::from_focused(workspace, window, cx);
+    let source = source.or_else(|| {
+        let cached = agent_panel.read(cx).last_context_source.clone()?;
+        cached.exists(workspace, cx).then_some(cached)
+    });
+    let source = source.or_else(|| AgentContextSource::from_active(workspace, cx));
+
+    let Some(source) = source else {
+        return;
+    };
+
+    let Some(selection) = source.read_selection(workspace, true, cx) else {
+        return;
+    };
+
+    if !agent_panel.focus_handle(cx).contains_focused(window, cx) {
+        workspace.toggle_panel_focus::<AgentPanel>(window, cx);
+    }
+
+    agent_panel.update(cx, |panel, cx| {
+        panel.last_context_source = Some(source);
+        cx.defer_in(window, move |panel, window, cx| {
+            if let Some(conversation_view) = panel.active_conversation_view() {
+                conversation_view.update(cx, |conversation_view, cx| {
+                    conversation_view.insert_selection(selection, window, cx);
+                    if !trailing_text.is_empty() {
+                        conversation_view.append_text(&trailing_text, window, cx);
+                    }
+                });
+            } else if let Some(terminal_id) = panel.active_terminal_id()
+                && let Some(agent_terminal) = panel.terminals.get(&terminal_id)
+            {
+                // Resolve mentions against the cwd: live cwd, else spawn dir.
+                let working_directory = agent_terminal
+                    .view
+                    .read(cx)
+                    .terminal()
+                    .read(cx)
+                    .working_directory()
+                    .or_else(|| agent_terminal.working_directory.clone());
+                let text = format_selection_for_terminal(
+                    &selection,
+                    &panel.project,
+                    working_directory.as_deref(),
+                    cx,
+                );
+                if !text.is_empty() {
+                    let text = if trailing_text.is_empty() {
+                        text
+                    } else {
+                        format!("{text}\n{}", trailing_text)
+                    };
+                    let view = agent_terminal.view.clone();
+                    view.update(cx, |view, cx| {
+                        view.terminal().update(cx, |terminal, _| {
+                            terminal.paste(&text);
+                        });
+                        window.focus(&view.focus_handle(cx), cx);
+                    });
+                }
+            }
+        });
+    });
 }
 
 /// Path for a terminal mention: relative to the terminal cwd if possible, else absolute.
@@ -6888,6 +6914,7 @@ mod tests {
     };
     use acp_thread::{AgentConnection, StubAgentConnection, ThreadStatus};
     use action_log::ActionLog;
+    use agent_client_protocol::schema::v1 as acp;
     use anyhow::{Result, anyhow};
     use feature_flags::FeatureFlagAppExt;
     use fs::FakeFs;
@@ -9366,6 +9393,144 @@ mod tests {
         // Lines are 1-based and inclusive; the path is presented as
         // `<rel-path>:<start>-<end>`, with a trailing space.
         assert_eq!(pasted, "file.rs:2-3 ");
+    }
+
+    #[gpui::test]
+    async fn test_add_diagnostic_to_thread_inserts_selection_and_text(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            agent::ThreadStore::init_global(cx);
+            language_model::LanguageModelRegistry::test(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/project",
+            json!({ "file.rs": "line one\nline two\nline three\n" }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
+
+        let multi_workspace =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace
+            .read_with(cx, |multi_workspace, _cx| {
+                multi_workspace.workspace().clone()
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(multi_workspace.into(), cx);
+
+        let panel = workspace.update_in(&mut cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        open_thread_with_connection(&panel, StubAgentConnection::new(), &mut cx);
+        cx.run_until_parked();
+
+        // Open the file in the center pane so the selection comes from a
+        // worktree-backed editor (with a project path).
+        workspace
+            .update_in(&mut cx, |workspace, window, cx| {
+                workspace.open_paths(
+                    vec![PathBuf::from("/project/file.rs")],
+                    workspace::OpenOptions::default(),
+                    None,
+                    window,
+                    cx,
+                )
+            })
+            .await;
+        cx.run_until_parked();
+
+        let editor = workspace.update(&mut cx, |workspace, cx| {
+            workspace
+                .active_item(cx)
+                .and_then(|item| item.act_as::<Editor>(cx))
+                .expect("opened file should be an editor")
+        });
+        cx.focus(&editor);
+        cx.run_until_parked();
+
+        // Highlight the diagnostic's range: from the start of line 2 into line 3.
+        editor.update_in(&mut cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([text::Point::new(1, 0)..text::Point::new(2, 4)]);
+            });
+        });
+        cx.run_until_parked();
+
+        // The hover-popover button dispatches `AddDiagnosticToThread` with the
+        // diagnostic's message after selecting its range.
+        let diagnostic_text = "type mismatch: expected i32, found &str";
+        workspace.update_in(&mut cx, |_, window, cx| {
+            window.dispatch_action(
+                AddDiagnosticToThread {
+                    diagnostic_text: diagnostic_text.into(),
+                }
+                .boxed_clone(),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let message_editor = panel
+            .read_with(&cx, |panel, cx| {
+                panel
+                    .active_conversation_view()
+                    .and_then(|view| view.read(cx).root_thread_view())
+                    .map(|thread| thread.read(cx).message_editor.clone())
+            })
+            .expect("open thread should have a message editor");
+        let blocks =
+            message_editor.read_with(&cx, |editor, cx| editor.draft_content_blocks_snapshot(cx));
+
+        let mention = MentionUri::Selection {
+            abs_path: Some(PathBuf::from("/project/file.rs")),
+            line_range: 1..=2,
+            column: None,
+        };
+        let expected_uri = mention.to_uri().to_string();
+
+        // The selection over the diagnostic's range must be attached as a
+        // mention, carrying the file content of the highlighted lines.
+        let selection_uri = blocks.iter().find_map(|block| match block {
+            acp::ContentBlock::Resource(acp::EmbeddedResource {
+                resource: acp::EmbeddedResourceResource::TextResourceContents(contents),
+                ..
+            }) => Some(contents.uri.to_string()),
+            acp::ContentBlock::ResourceLink(acp::ResourceLink { uri, .. }) => Some(uri.to_string()),
+            _ => None,
+        });
+        assert_eq!(selection_uri.as_deref(), Some(expected_uri.as_str()));
+
+        let selection_content = blocks.iter().find_map(|block| match block {
+            acp::ContentBlock::Resource(acp::EmbeddedResource {
+                resource: acp::EmbeddedResourceResource::TextResourceContents(contents),
+                ..
+            }) => Some(contents.text.as_str()),
+            _ => None,
+        });
+        assert_eq!(selection_content, Some("line two\nline"));
+
+        // The diagnostic's message must follow the selection in the draft.
+        assert!(
+            blocks.iter().any(|block| match block {
+                acp::ContentBlock::Text(text) => text.text.contains(diagnostic_text),
+                _ => false,
+            }),
+            "draft should contain the diagnostic text; got {blocks:#?}"
+        );
+        // The fold placeholder must not leak into the draft as plain text.
+        for block in &blocks {
+            if let acp::ContentBlock::Text(text) = block {
+                assert!(
+                    !text.text.split_whitespace().any(|word| word == "selection"),
+                    "text block must not contain the bare fold placeholder: {:?}",
+                    text.text
+                );
+            }
+        }
     }
 
     async fn setup_panel(cx: &mut TestAppContext) -> (Entity<AgentPanel>, VisualTestContext) {

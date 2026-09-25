@@ -1,6 +1,6 @@
 use crate::{
     Anchor, AnchorRangeExt, DisplayPoint, DisplayRow, Editor, EditorSettings, EditorSnapshot,
-    GlobalDiagnosticRenderer, HighlightKey, Hover,
+    GlobalDiagnosticRenderer, HighlightKey, Hover, SelectionEffects,
     display_map::{InlayOffset, ToDisplayPoint, is_invisible},
     editor_settings::EditorSettingsScrollbarProxy,
     hover_links::{InlayHighlight, RangeInEditor},
@@ -9,10 +9,10 @@ use crate::{
 };
 use anyhow::Context as _;
 use gpui::{
-    AnyElement, App, AsyncWindowContext, Bounds, Context, Entity, Focusable as _, FontWeight, Hsla,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, ScrollHandle, Size,
-    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, TaskExt,
-    TextStyleRefinement, Window, canvas, div, px,
+    Action, AnyElement, App, AsyncWindowContext, Bounds, Context, Entity, Focusable as _,
+    FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
+    ScrollHandle, Size, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
+    TaskExt, TextStyleRefinement, Window, canvas, div, px,
 };
 use language::{DiagnosticEntry, Language, LanguageRegistry};
 use lsp::DiagnosticSeverity;
@@ -27,10 +27,11 @@ use std::{
 use std::{ops::Range, sync::Arc, time::Duration};
 use std::{path::PathBuf, rc::Rc};
 use theme_settings::ThemeSettings;
-use ui::{CopyButton, Scrollbars, WithScrollbar, prelude::*, theme_is_transparent};
+use ui::{CopyButton, Scrollbars, Tooltip, WithScrollbar, prelude::*, theme_is_transparent};
 use url::Url;
 use util::TryFutureExt;
 use workspace::{OpenOptions, OpenVisible, Workspace};
+use zed_actions::agent::AddDiagnosticToThread;
 
 pub const MIN_POPOVER_CHARACTER_WIDTH: f32 = 20.;
 pub const MIN_POPOVER_LINE_HEIGHT: f32 = 4.;
@@ -297,13 +298,18 @@ fn show_hover(
     editor.hover_state.closest_mouse_distance = None;
 
     if !ignore_timeout {
-        if same_info_hover(editor, &snapshot, anchor)
-            || same_diagnostic_hover(editor, &snapshot, anchor)
-            || editor.hover_state.diagnostic_popover.is_some()
-        {
-            // Hover triggered from same location as last time. Don't show again.
+        if same_info_hover(editor, &snapshot, anchor) {
+            // The cursor is still within the symbol range the current info
+            // popovers describe; re-requesting would produce the same contents.
             return None;
-        } else {
+        }
+
+        // If the cursor moved within the range of the currently displayed
+        // diagnostic, keep the existing popovers visible while the hover
+        // contents refresh, so that info for the new position can appear
+        // without the diagnostic popover flickering. Otherwise dismiss
+        // everything before requesting the new contents.
+        if !same_diagnostic_hover(editor, &snapshot, anchor) {
             hide_hover(editor, cx);
         }
     }
@@ -1267,7 +1273,7 @@ impl InfoPopover {
         let bounds_cell = self.last_bounds.clone();
         div()
             .id("info_popover")
-            .occlude()
+            .block_mouse_except_scroll()
             .elevation_2(cx)
             .child(
                 canvas(
@@ -1299,6 +1305,7 @@ impl InfoPopover {
                 cx.stop_propagation();
             })
             .when_some(self.parsed_content.clone(), |this, markdown| {
+                let scroll_handle = self.scroll_handle.clone();
                 this.child(
                     div()
                         .id("info-md-container")
@@ -1306,6 +1313,14 @@ impl InfoPopover {
                         .max_w(max_size.width)
                         .max_h(max_size.height)
                         .track_scroll(&self.scroll_handle)
+                        // Only consume the scroll wheel when the popover's
+                        // content overflows; otherwise let the wheel pass
+                        // through and scroll the editor behind, as in VSCode.
+                        .on_scroll_wheel(move |_event, _window, cx| {
+                            if scroll_handle.max_offset().y > px(0.) {
+                                cx.stop_propagation();
+                            }
+                        })
                         .child(
                             MarkdownElement::new(markdown, hover_markdown_style(window, cx))
                                 .scroll_handle(self.scroll_handle.clone())
@@ -1373,7 +1388,7 @@ impl DiagnosticPopover {
         let bounds_cell = self.last_bounds.clone();
         div()
             .id("diagnostic")
-            .occlude()
+            .block_mouse_except_scroll()
             .elevation_2_borderless(cx)
             .child(
                 canvas(
@@ -1429,6 +1444,17 @@ impl DiagnosticPopover {
                             .max_h(max_size.height)
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
+                            // Only consume the scroll wheel when the popover's
+                            // content overflows; otherwise let the wheel pass
+                            // through and scroll the editor behind, as in VSCode.
+                            .on_scroll_wheel({
+                                let scroll_handle = self.scroll_handle.clone();
+                                move |_event, _window, cx| {
+                                    if scroll_handle.max_offset().y > px(0.) {
+                                        cx.stop_propagation();
+                                    }
+                                }
+                            })
                             .child(
                                 MarkdownElement::new(
                                     self.markdown.clone(),
@@ -1452,15 +1478,58 @@ impl DiagnosticPopover {
                                 ),
                             ),
                     )
-                    .child(div().absolute().top_1().right_1().child({
+                    .child({
                         let message = self
                             .local_diagnostic
                             .diagnostic
                             .message
                             .as_shared_string()
                             .clone();
-                        CopyButton::new("copy-diagnostic", message).tooltip_label("Copy Diagnostic")
-                    }))
+                        let range = self.local_diagnostic.range.clone();
+                        div()
+                            .absolute()
+                            .top_1()
+                            .right_1()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_0p5()
+                            .child(
+                                CopyButton::new("copy-diagnostic", message.clone())
+                                    .tooltip_label("Copy Diagnostic"),
+                            )
+                            .child(
+                                IconButton::new("add-diagnostic-to-thread", IconName::Thread)
+                                    .icon_size(IconSize::Small)
+                                    .icon_color(Color::Muted)
+                                    .tooltip(Tooltip::text("Add Diagnostic to Thread"))
+                                    .on_click(cx.listener(move |editor, _event, window, cx| {
+                                        editor.change_selections(
+                                            SelectionEffects::no_scroll(),
+                                            window,
+                                            cx,
+                                            |selections| {
+                                                selections.select_anchor_ranges([range.clone()]);
+                                            },
+                                        );
+                                        cx.notify();
+                                        // Defer so the action handler isn't invoked while this
+                                        // editor is already being updated.
+                                        window.defer(cx, {
+                                            let message = message.clone();
+                                            move |window, cx| {
+                                                window.dispatch_action(
+                                                    AddDiagnosticToThread {
+                                                        diagnostic_text: message,
+                                                    }
+                                                    .boxed_clone(),
+                                                    cx,
+                                                );
+                                            }
+                                        });
+                                    })),
+                            )
+                    })
                     .custom_scrollbars(
                         Scrollbars::for_settings::<EditorSettingsScrollbarProxy>()
                             .tracked_scroll_handle(&self.scroll_handle),
