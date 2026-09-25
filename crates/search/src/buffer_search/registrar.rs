@@ -131,6 +131,10 @@ impl SearchActionsRegistrar for Workspace {
                         } else {
                             cx.propagate();
                         }
+                    } else {
+                        // No buffer search bar in the toolbar: let other
+                        // handlers process the action.
+                        cx.propagate();
                     }
                 })
             });

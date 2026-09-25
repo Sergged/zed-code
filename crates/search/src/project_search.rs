@@ -1,8 +1,8 @@
 use crate::{
-    BufferSearchBar, EXCLUDE_PLACEHOLDER, FocusSearch, HighlightKey, INCLUDE_PLACEHOLDER,
-    NextHistoryQuery, PreviousHistoryQuery, REPLACE_PLACEHOLDER, ReplaceAll, ReplaceNext,
-    SearchOption, SearchOptions, SearchSource, SelectNextMatch, SelectPreviousMatch,
-    ToggleCaseSensitive, ToggleIncludeIgnored, ToggleRegex, ToggleReplace, ToggleWholeWord,
+    BufferSearchBar, EXCLUDE_PLACEHOLDER, HighlightKey, INCLUDE_PLACEHOLDER, NextHistoryQuery,
+    PreviousHistoryQuery, REPLACE_PLACEHOLDER, ReplaceAll, ReplaceNext, SearchOption,
+    SearchOptions, SearchSource, SelectNextMatch, SelectPreviousMatch, ToggleCaseSensitive,
+    ToggleIncludeIgnored, ToggleRegex, ToggleReplace, ToggleWholeWord,
     buffer_search::Deploy,
     search_bar::{
         ActionButtonState, HistoryNavigationDirection, alignment_element, input_base_styles,
@@ -115,9 +115,6 @@ pub fn init(cx: &mut App) {
     cx.set_global(ActiveSettings::default());
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         register_workspace_action(workspace, move |search_bar, _: &Deploy, window, cx| {
-            search_bar.focus_search(window, cx);
-        });
-        register_workspace_action(workspace, move |search_bar, _: &FocusSearch, window, cx| {
             search_bar.focus_search(window, cx);
         });
         register_workspace_action(
@@ -2260,10 +2257,16 @@ impl ProjectSearchView {
                 } else {
                     Autoscroll::fit()
                 };
+                let start_scroll = editor.scroll_position(cx);
                 editor.unfold_ranges(std::slice::from_ref(&range_to_select), false, true, cx);
-                editor.change_selections(SelectionEffects::scroll(autoscroll), window, cx, |s| {
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
                     s.select_ranges([range_to_select])
                 });
+                if cx.reduce_motion() {
+                    editor.request_autoscroll(autoscroll, cx);
+                } else {
+                    editor.smooth_scroll_to(autoscroll, start_scroll, window, cx);
+                }
             });
             self.highlight_matches(&match_ranges, Some(new_index), cx);
         }
