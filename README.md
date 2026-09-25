@@ -22,6 +22,18 @@ target/aarch64-apple-darwin/release/bundle/osx/           # Zed Dev.app (bundle)
 
 `-j 6` because the machine has 16 GiB RAM. The full `script/bundle-mac` does the same bundle plus git binary, ad-hoc signature, and DMG, but takes ~1.5 h locally (three separate builds). Once a full Xcode is installed, revert `crates/gpui_macos/Cargo.toml` to restore the canonical AOT shader build.
 
+### Settings added in this branch
+
+Custom settings introduced or extended on the `zed-code` branch (defaults live in `assets/settings/default.json`; personal overrides are in `assets/settings/initial_user_settings.json`):
+
+- `git_panel.message_editor_min_lines` (default `6`): minimum height, in lines, of the commit message editor in the git panel; the maximum height is twice this value.
+- `tabs.show_full_tab_titles` (default `false`): expand tabs to fit the full file name instead of truncating it.
+- `scrollbar.track` (default `"track"`): `"track"` reserves space for a scrollbar track next to the content, `"thumb"` floats the scrollbar over it.
+- `completion_menu_item_kind` (default `"off"`): gains an `"icon"` value that shows a syntax-colored symbol icon per completion entry.
+- `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
+
+Personal values in this checkout (`assets/settings/initial_user_settings.json`): `message_editor_min_lines: 2`, `show_full_tab_titles: true`, `project_panel.scrollbar.show: "auto"`, and an `available_models` entry for DeepSeek V4 Flash Vision under `language_models.opencode`.
+
 # Zed
 
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
