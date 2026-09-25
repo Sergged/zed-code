@@ -1,25 +1,24 @@
 use std::collections::HashSet;
 use std::ops::Range;
-use std::time::Duration;
 
 use editor::actions::FindAllReferences;
 use editor::{Editor, EditorSettings};
 use file_icons::FileIcons;
 use gpui::{
-    Action, Animation, AnimationExt, App, AsyncWindowContext, ClickEvent, Context, Entity,
-    EventEmitter, FocusHandle, Focusable, KeyContext, ListHorizontalSizingBehavior,
-    ListSizingBehavior, Pixels, Render, ScrollStrategy, UniformListScrollHandle, WeakEntity,
-    Window, actions, uniform_list,
+    Action, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter,
+    ExternalDragPayload, FileDragPaths, FocusHandle, Focusable, Hsla, KeyContext,
+    ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent, Pixels, Point,
+    Render, ScrollStrategy, UniformListScrollHandle, WeakEntity, Window, actions, uniform_list,
 };
 use language::ToPoint;
 use lsp_locations::{LocationMatch, build_location_matches, render_matched_line};
 use menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::{Project, ProjectPath};
+use project_panel::ProjectPanel;
+use project_panel::project_panel_settings::ProjectPanelSettings;
+use theme_settings::ThemeSettings;
 use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
-use ui::{
-    CommonAnimationExt, ListItem, ListItemSpacing, ScrollAxes, Scrollbars, Tab, Tooltip,
-    WithScrollbar, prelude::*,
-};
+use ui::{CommonAnimationExt, ScrollAxes, Scrollbars, Tab, Tooltip, WithScrollbar, prelude::*};
 use util::ResultExt as _;
 use workspace::Workspace;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
@@ -46,6 +45,46 @@ struct ReferencesPanelScrollbarAccessor;
 impl ScrollbarVisibility for ReferencesPanelScrollbarAccessor {
     fn visibility(&self, cx: &App) -> ShowScrollbar {
         EditorSettings::get_global(cx).scrollbar.show
+    }
+}
+
+/// Selected and hovered row backgrounds, matching the thread panel rows
+/// (`ThreadItem`). Both blend over the panel background at render time.
+fn row_backgrounds(cx: &App) -> (Hsla, Hsla) {
+    let colors = cx.theme().colors();
+    (
+        colors.element_active,
+        colors
+            .element_active
+            .blend(colors.element_background.opacity(0.2)),
+    )
+}
+
+/// Preview shown while dragging a file header out of the panel, mirroring the
+/// drag previews of the git and project panels.
+struct DraggedFileView {
+    filename: String,
+    click_offset: Point<Pixels>,
+}
+
+impl Render for DraggedFileView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
+        h_flex()
+            .font(ui_font)
+            .pl(self.click_offset.x + px(12.))
+            .pt(self.click_offset.y + px(12.))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .items_center()
+                    .py_1()
+                    .px_2()
+                    .rounded_lg()
+                    .bg(cx.theme().colors().background)
+                    .child(Label::new(self.filename.clone())),
+            )
     }
 }
 
@@ -313,7 +352,8 @@ impl ReferencesPanel {
         };
         results.entries = build_entries(&results.matches, &self.collapsed_files);
         self.selected_entry = None;
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        // Keep the current scroll position: collapsing or expanding a group
+        // must not jump back to the top of the list.
         cx.notify();
     }
 
@@ -392,6 +432,34 @@ impl ReferencesPanel {
         self.open_entry(entry_index, window, cx);
     }
 
+    /// Opens the project panel's context menu for the file behind `path`.
+    /// The menu is built by `ProjectPanel`, so any changes to the project
+    /// panel's context menu apply here as well.
+    fn deploy_context_menu_for_path(
+        &self,
+        path: &ProjectPath,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry_id = {
+            let Some(entry) = self.project.read(cx).entry_for_path(path, cx) else {
+                return;
+            };
+            entry.id
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            if let Some(project_panel) = workspace.panel::<ProjectPanel>(cx) {
+                project_panel.update(cx, |panel, cx| {
+                    panel.deploy_context_menu(position, entry_id, window, cx);
+                });
+            }
+        });
+    }
+
     /// Opens the location of the match at `entry_index`. Files open in a
     /// preview tab that is reused for every reference whose file has no
     /// permanent tab; files already open (e.g. promoted out of preview by the
@@ -454,7 +522,7 @@ impl ReferencesPanel {
         let collapse_button = IconButton::new(
             "collapse-all",
             if is_collapsed {
-                IconName::ExpandDown
+                IconName::ListExpand
             } else {
                 IconName::ListCollapse
             },
@@ -514,39 +582,21 @@ impl ReferencesPanel {
     }
 
     fn render_searching(&self, _window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
+        // A plain rotating spinner like the agent panel's, using the muted
+        // color the other agent spinners use (`loading_contents_spinner` in
+        // `thread_view` uses the accent color).
         v_flex()
             .size_full()
             .flex_1()
             .items_center()
             .justify_center()
-            .gap_1p5()
             .child(
                 Icon::new(IconName::LoadCircle)
                     .size(IconSize::Small)
                     .color(Color::Muted)
-                    .with_rotate_animation(2),
+                    .with_rotate_animation(3),
             )
-            .child(Self::render_loading_label())
             .into_any_element()
-    }
-
-    fn render_loading_label() -> impl IntoElement {
-        Label::new("Loading references")
-            .color(Color::Muted)
-            .size(LabelSize::Small)
-            .with_animations(
-                "loading_references_label",
-                vec![Animation::new(Duration::from_secs(1)).repeat()],
-                |mut label, _animation_ix, delta| {
-                    match delta {
-                        ..0.25 => {}
-                        ..0.5 => label.set_text("Loading references."),
-                        ..0.75 => label.set_text("Loading references.."),
-                        _ => label.set_text("Loading references..."),
-                    }
-                    label
-                },
-            )
     }
 
     fn render_empty_state(&self, lines: &[&'static str]) -> AnyElement {
@@ -628,6 +678,11 @@ impl ReferencesPanel {
             .custom_scrollbars(
                 Scrollbars::for_settings::<ReferencesPanelScrollbarAccessor>()
                     .tracked_scroll_handle(&self.scroll_handle.clone())
+                    .with_track_along_for(
+                        ScrollAxes::Vertical,
+                        EditorSettings::get_global(cx).scrollbar.track,
+                        cx.theme().colors().panel_background,
+                    )
                     .with_track_along(ScrollAxes::Horizontal, cx.theme().colors().panel_background)
                     .tracked_entity(cx.entity_id()),
                 window,
@@ -686,17 +741,62 @@ impl ReferencesPanel {
                     .size(IconSize::Small)
             });
         let path = path.clone();
+        let path_for_context_menu = path.clone();
+        let (_, hover_background) = row_backgrounds(cx);
         h_flex()
             .id(path.path.as_std_path().to_string_lossy().into_owned())
             .w_full()
             .min_w_0()
             .px(DynamicSpacing::Base06.rems(cx))
-            .py_1()
+            // Fixed row height, same as the match rows: `uniform_list` applies
+            // one measured row to every row, so header and match heights must
+            // match or collapsing/expanding files would reflow the whole list.
+            .h_7()
             .gap_1p5()
             .cursor_pointer()
+            .hover(|style| style.bg(hover_background))
+            .on_drag(
+                path.clone(),
+                move |path: &ProjectPath, click_offset, _window, cx| {
+                    cx.new(|_| DraggedFileView {
+                        filename: path
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string())
+                            .unwrap_or_default(),
+                        click_offset,
+                    })
+                },
+            )
+            .external_drag_payload({
+                let project = self.project.clone();
+                move |path: &ProjectPath, _window, cx| {
+                    let project = project.read(cx);
+                    let worktree = project.worktree_for_id(path.worktree_id, cx)?;
+                    let worktree = worktree.read(cx);
+                    if !worktree.is_local() {
+                        return None;
+                    }
+                    Some(ExternalDragPayload::Files(FileDragPaths::new([(
+                        worktree.absolutize(&path.path),
+                        false,
+                    )])))
+                }
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_group(path.clone(), cx);
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.deploy_context_menu_for_path(
+                        &path_for_context_menu,
+                        event.position,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .children(file_icon)
             .child(
                 h_flex()
@@ -727,13 +827,22 @@ impl ReferencesPanel {
             return div().into_any_element();
         };
         let selected = self.selected_entry == Some(entry_index);
-        ListItem::new(entry_index)
-            .spacing(ListItemSpacing::Sparse)
-            .inset(true)
-            // Don't apply the hover style on top of the selected item: the
-            // active row keeps its selected background while hovered.
-            .selectable(!selected)
-            .toggle_state(selected)
+        let (selected_background, hover_background) = row_backgrounds(cx);
+        h_flex()
+            .id(entry_index)
+            .w_full()
+            .min_w_0()
+            .px_1p5()
+            .h_7()
+            .gap_2p5()
+            .text_sm()
+            .cursor_pointer()
+            // The active row keeps its selected background while hovered, like
+            // the thread panel rows.
+            .when(selected, |this| this.bg(selected_background))
+            .when(!selected, |this| {
+                this.hover(|style| style.bg(hover_background))
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.selected_entry = Some(entry_index);
                 this.open_selected_entry(window, cx);
@@ -800,8 +909,8 @@ impl Panel for ReferencesPanel {
     ) {
     }
 
-    fn default_size(&self, _window: &Window, _cx: &App) -> Pixels {
-        px(320.)
+    fn default_size(&self, _window: &Window, cx: &App) -> Pixels {
+        ProjectPanelSettings::get_global(cx).default_width
     }
 
     fn icon(&self, _window: &Window, _cx: &App) -> Option<ui::IconName> {

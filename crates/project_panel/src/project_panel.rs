@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result};
 use client::{ErrorCode, ErrorExt};
 use collections::{BTreeSet, HashMap, hash_map};
 use editor::{
-    Editor, EditorEvent, MultiBufferOffset,
+    Editor, EditorEvent, EditorSettings, MultiBufferOffset,
     items::{
         entry_diagnostic_aware_icon_decoration_and_color,
         entry_diagnostic_aware_icon_name_and_color, entry_git_aware_label_color,
@@ -68,7 +68,7 @@ use util::{
     ResultExt, TakeUntilExt, TryFutureExt,
     markdown::MarkdownInlineCode,
     maybe,
-    paths::{PathExt, PathStyle, compare_paths},
+    paths::{PathStyle, compare_paths},
     rel_path::{RelPath, RelPathBuf},
 };
 use workspace::{
@@ -1077,7 +1077,7 @@ impl ProjectPanel {
         }
     }
 
-    fn deploy_context_menu(
+    pub fn deploy_context_menu(
         &mut self,
         position: Point<Pixels>,
         entry_id: ProjectEntryId,
@@ -5906,11 +5906,11 @@ impl ProjectPanel {
             .project
             .read(cx)
             .worktree_for_id(worktree_id, cx)
+            .filter(|_| !path.is_empty())
             .map(|worktree| {
                 worktree
                     .read(cx)
-                    .absolutize(&path)
-                    .compact()
+                    .full_path(&path)
                     .to_string_lossy()
                     .into_owned()
             });
@@ -5920,20 +5920,8 @@ impl ProjectPanel {
             .relative()
             .group(GROUP_NAME)
             .when_some(
-                tooltip_path.and_then(|path| {
-                    let delay = match settings.title_tooltip_delay {
-                        settings::ProjectPanelTitleTooltipDelay::Default => 1500,
-                        settings::ProjectPanelTitleTooltipDelay::Custom(delay_ms) => delay_ms.0,
-                        settings::ProjectPanelTitleTooltipDelay::Disabled => {
-                            return None;
-                        }
-                    };
-                    Some((path, delay))
-                }),
-                |this, (path, delay)| {
-                    this.tooltip_show_delay(Duration::from_millis(delay))
-                        .tooltip(Tooltip::text(path))
-                },
+                tooltip_path.zip(settings.title_tooltip_delay.show_delay()),
+                |this, (path, delay)| this.tooltip_show_delay(delay).tooltip(Tooltip::text(path)),
             )
             .cursor_pointer()
             .rounded_none()
@@ -7845,6 +7833,11 @@ impl Render for ProjectPanel {
                                                 cx.theme().colors().panel_background,
                                             );
                                         }
+                                        scrollbars = scrollbars.with_track_along_for(
+                                            ScrollAxes::Vertical,
+                                            EditorSettings::get_global(cx).scrollbar.track,
+                                            cx.theme().colors().panel_background,
+                                        );
                                         scrollbars.notify_content()
                                     },
                                     window,
