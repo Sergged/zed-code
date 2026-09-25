@@ -1,7 +1,7 @@
 use super::*;
 use collections::{HashMap, HashSet};
 use editor::{
-    DisplayPoint, EditorSettings, Inlay, MultiBufferOffset,
+    DisplayPoint, EditorSettings, Inlay, MultiBufferOffset, ToOffset as _,
     actions::{GoToDiagnostic, GoToPreviousDiagnostic, Hover, MoveToBeginning},
     display_map::DisplayRow,
     test::{
@@ -1704,6 +1704,278 @@ async fn test_hover_diagnostic_and_info_popovers(cx: &mut gpui::TestAppContext) 
         hover_state.diagnostic_popover.is_some() && hover_state.info_task.is_some()
     });
 }
+
+#[gpui::test]
+async fn test_hover_updates_while_diagnostic_popover_is_open(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+
+    // A coarse diagnostic covers the whole function and a more specific one
+    // covers just the `word` binding, so moving the cursor across the function
+    // should update both the diagnostic and the info popover.
+    cx.set_state(indoc! { "
+        fn ˇmain() {
+            let number = 1;
+            let word = \"hello\";
+            println!(\"{number}\");
+        }
+    " });
+
+    let function_range = cx.lsp_range(indoc! { "
+        «fn main() {
+            let number = 1;
+            let word = \"hello\";
+            println!(\"{number}\");
+        }»
+    " });
+    let word_range = cx.lsp_range(indoc! { "
+        fn main() {
+            let number = 1;
+            let «word» = \"hello\";
+            println!(\"{number}\");
+        }
+    " });
+    let lsp_store =
+        cx.update_editor(|editor, _, cx| editor.project().unwrap().read(cx).lsp_store());
+    cx.update(|_, cx| {
+        lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.update_diagnostics(
+                LanguageServerId(0),
+                lsp::PublishDiagnosticsParams {
+                    uri: lsp::Uri::from_file_path(path!("/root/dir/file.rs")).unwrap(),
+                    version: None,
+                    diagnostics: vec![
+                        lsp::Diagnostic {
+                            range: function_range,
+                            severity: Some(lsp::DiagnosticSeverity::ERROR),
+                            message: lsp::DiagnosticMessage::from("function diagnostic"),
+                            ..Default::default()
+                        },
+                        lsp::Diagnostic {
+                            range: word_range,
+                            severity: Some(lsp::DiagnosticSeverity::WARNING),
+                            message: lsp::DiagnosticMessage::from("word diagnostic"),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                None,
+                DiagnosticSourceKind::Pushed,
+                &[],
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Hover responses carry symbol-specific docs and ranges, so hovering a
+    // different symbol inside the coarse diagnostic produces distinct contents.
+    let number_range = cx.lsp_range(indoc! { "
+        fn main() {
+            let «number» = 1;
+            let word = \"hello\";
+            println!(\"{number}\");
+        }
+    " });
+    cx.set_request_handler::<lsp::request::HoverRequest, _, _>(move |_, params, _| {
+        let at_number = params.text_document_position_params.position.line == 1;
+        let range = if at_number { number_range } else { word_range };
+        let text = if at_number {
+            "number docs"
+        } else {
+            "word docs"
+        };
+        async move {
+            Ok(Some(lsp::Hover {
+                contents: lsp::HoverContents::Markup(lsp::MarkupContent {
+                    kind: lsp::MarkupKind::Markdown,
+                    value: text.to_string(),
+                }),
+                range: Some(range),
+            }))
+        }
+    });
+
+    let hover_delay = cx.update(|_, cx| EditorSettings::get_global(cx).hover_popover_delay.0 + 1);
+
+    // Hover over `number`: the coarse diagnostic plus an info popover show.
+    let number_point = cx.display_point(indoc! { "
+        fn main() {
+            let nuˇmber = 1;
+            let word = \"hello\";
+            println!(\"{number}\");
+        }
+    " });
+    let number_anchor = cx.update_editor(|editor, window, cx| {
+        let snapshot = editor.snapshot(window, cx);
+        let anchor = snapshot
+            .buffer_snapshot()
+            .anchor_before(number_point.to_offset(&snapshot, editor::Bias::Left));
+        editor::hover_popover::hover_at(editor, Some(anchor), None, window, cx);
+        anchor
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(hover_delay));
+    cx.background_executor.run_until_parked();
+    cx.editor(|editor, _, cx| {
+        let hover_state = &editor.hover_state;
+        let snapshot = editor.buffer().read(cx).snapshot(cx);
+        let diagnostic_anchor = hover_state
+            .diagnostic_popover
+            .as_ref()
+            .expect("coarse diagnostic popover should be shown")
+            .anchor;
+        assert_eq!(
+            diagnostic_anchor.to_offset(&snapshot),
+            number_anchor.to_offset(&snapshot)
+        );
+        assert_eq!(hover_state.info_popovers.len(), 1);
+    });
+
+    // Move the cursor to `word`, still inside the coarse diagnostic's range: a
+    // new request must run so that the popovers follow the cursor. Previously
+    // the open diagnostic popover blocked every subsequent hover.
+    let word_point = cx.display_point(indoc! { "
+        fn main() {
+            let number = 1;
+            let woˇrd = \"hello\";
+            println!(\"{number}\");
+        }
+    " });
+    let word_anchor = cx.update_editor(|editor, window, cx| {
+        let snapshot = editor.snapshot(window, cx);
+        let anchor = snapshot
+            .buffer_snapshot()
+            .anchor_before(word_point.to_offset(&snapshot, editor::Bias::Left));
+        editor::hover_popover::hover_at(editor, Some(anchor), None, window, cx);
+        anchor
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(hover_delay));
+    cx.background_executor.run_until_parked();
+
+    cx.editor(|editor, _, cx| {
+        let hover_state = &editor.hover_state;
+        let snapshot = editor.buffer().read(cx).snapshot(cx);
+        let word_offset = word_anchor.to_offset(&snapshot);
+
+        // The diagnostic popover is re-created for the new position instead of
+        // staying pinned on the coarse diagnostic from the previous hover.
+        let diagnostic_anchor = hover_state
+            .diagnostic_popover
+            .as_ref()
+            .expect("a diagnostic popover should still be shown at the new position")
+            .anchor;
+        assert_eq!(
+            diagnostic_anchor.to_offset(&snapshot),
+            word_offset,
+            "diagnostic popover should follow the cursor to the new position"
+        );
+
+        // The info popover follows the cursor to the new symbol.
+        assert_eq!(hover_state.info_popovers.len(), 1);
+        let info_range = hover_state.info_popovers[0]
+            .symbol_range
+            .as_text_range()
+            .expect("info popover should be over text");
+        let range = info_range.start.to_offset(&snapshot)..info_range.end.to_offset(&snapshot);
+        assert!(
+            range.start <= word_offset && word_offset <= range.end,
+            "info popover should cover the newly hovered symbol"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_hover_popover_scrolls_editor_when_not_scrollable(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+
+    // Many lines so the editor has room to scroll.
+    let body_start = "fn ˇtest() { println!(); }\n".to_string();
+    let body_rest = (0..40)
+        .map(|i| format!("fn function_{i}() {{}}\n"))
+        .collect::<String>();
+    cx.set_state(&format!("{body_start}{body_rest}"));
+
+    let hover_delay = cx.update(|_, cx| EditorSettings::get_global(cx).hover_popover_delay.0 + 1);
+
+    // First hover over `println!` with short docs, so the popover does not overflow.
+    let println_range = cx.lsp_range(&format!("fn test() {{ «println!»(); }}\n{body_rest}"));
+    cx.set_request_handler::<lsp::request::HoverRequest, _, _>(move |_, _, _| async move {
+        Ok(Some(lsp::Hover {
+            contents: lsp::HoverContents::Markup(lsp::MarkupContent {
+                kind: lsp::MarkupKind::Markdown,
+                value: "short docs".to_string(),
+            }),
+            range: Some(println_range),
+        }))
+    });
+    let println_point = cx.display_point(&format!("fn test() {{ printˇln!(); }}\n{body_rest}"));
+    cx.update_editor(|editor, window, cx| {
+        let snapshot = editor.snapshot(window, cx);
+        let anchor = snapshot
+            .buffer_snapshot()
+            .anchor_before(println_point.to_offset(&snapshot, editor::Bias::Left));
+        editor::hover_popover::hover_at(editor, Some(anchor), None, window, cx)
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(hover_delay));
+    cx.background_executor.run_until_parked();
+
+    let popover_bounds = cx
+        .editor(|editor, _, _| {
+            editor
+                .hover_state
+                .info_popovers
+                .first()
+                .unwrap()
+                .last_bounds
+                .get()
+        })
+        .expect("popover should have been drawn");
+    let scroll_before =
+        cx.update_editor(|editor, window, cx| editor.snapshot(window, cx).scroll_position().y);
+
+    // Wheel over the (non-scrollable) popover must scroll the editor.
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position: popover_bounds.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-200.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            }),
+            cx,
+        );
+    });
+    cx.background_executor.run_until_parked();
+
+    let scroll_after =
+        cx.update_editor(|editor, window, cx| editor.snapshot(window, cx).scroll_position().y);
+    assert!(
+        scroll_after > scroll_before,
+        "editor should scroll when the popover is not scrollable: {scroll_before:?} -> {scroll_after:?}"
+    );
+}
+
 #[gpui::test]
 async fn test_diagnostics_with_code(cx: &mut TestAppContext) {
     init_test(cx);

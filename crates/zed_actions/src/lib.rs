@@ -605,6 +605,19 @@ pub mod agent {
         ]
     );
 
+    /// Adds the current selection (the diagnostic's range) as context for
+    /// threads in the agent panel, followed by the diagnostic text.
+    ///
+    /// Used by the editor's diagnostic hover popover to send a diagnostic
+    /// together with its source code to the agent.
+    #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+    #[action(namespace = agent)]
+    #[serde(deny_unknown_fields)]
+    pub struct AddDiagnosticToThread {
+        /// The diagnostic message text to insert after the selection.
+        pub diagnostic_text: SharedString,
+    }
+
     /// Selects the agent used for new threads in the agent panel, without
     /// opening the panel. The selected agent is launched the next time the
     /// panel is opened.

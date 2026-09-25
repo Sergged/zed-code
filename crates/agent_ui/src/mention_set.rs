@@ -17,7 +17,7 @@ use gpui::{
 };
 use http_client::{AsyncBody, HttpClientWithUrl};
 use itertools::Either;
-use language::Buffer;
+use language::{Buffer, DiskState};
 use language_model::{LanguageModelImage, LanguageModelImageExt};
 use multi_buffer::MultiBufferRow;
 use postage::stream::Stream as _;
@@ -544,10 +544,7 @@ impl MentionSet {
             let range = snapshot.anchor_after(offset + range_to_fold.start)
                 ..snapshot.anchor_after(offset + range_to_fold.end);
 
-            let abs_path = buffer
-                .read(cx)
-                .project_path(cx)
-                .and_then(|project_path| project.read(cx).absolute_path(&project_path, cx));
+            let abs_path = Self::selection_buffer_abs_path(&project, &buffer, cx);
             let snapshot = buffer.read(cx).snapshot();
 
             let text = snapshot
@@ -603,6 +600,25 @@ impl MentionSet {
                 });
             });
         });
+    }
+
+    /// The absolute path of the file a selection mention refers to. Historic
+    /// buffers — such as the read-only index text shown in staged diff views —
+    /// have no project path but still know the file they display, so fall back
+    /// to that file's full path instead of producing an untitled mention.
+    fn selection_buffer_abs_path(
+        project: &Entity<Project>,
+        buffer: &Entity<Buffer>,
+        cx: &App,
+    ) -> Option<PathBuf> {
+        buffer
+            .read(cx)
+            .project_path(cx)
+            .and_then(|project_path| project.read(cx).absolute_path(&project_path, cx))
+            .or_else(|| {
+                let file = buffer.read(cx).file()?;
+                matches!(file.disk_state(), DiskState::Historic { .. }).then(|| file.full_path(cx))
+            })
     }
 
     fn confirm_mention_for_thread(
