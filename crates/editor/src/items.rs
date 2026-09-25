@@ -43,7 +43,7 @@ use std::{
 };
 use text::{BufferId, BufferSnapshot, OffsetRangeExt, Selection, ToPoint as _};
 use ui::{IconDecorationKind, prelude::*};
-use util::{ResultExt, TryFutureExt, debug_panic, paths::PathExt, rel_path::RelPath};
+use util::{ResultExt, TryFutureExt, debug_panic, rel_path::RelPath};
 use workspace::item::{Dedup, ItemSettings, SerializableItem, TabContentParams};
 use workspace::{
     CollaboratorId, ItemId, ItemNavHistory, ToolbarItemLocation, ViewId, Workspace, WorkspaceId,
@@ -699,8 +699,7 @@ impl Item for Editor {
             Some(
                 file.worktree
                     .read(cx)
-                    .absolutize(&file.path)
-                    .compact()
+                    .full_path(&file.path)
                     .to_string_lossy()
                     .into_owned()
                     .into(),
@@ -1867,14 +1866,20 @@ impl SearchableItem for Editor {
         } else {
             Autoscroll::fit()
         };
+        let start_scroll = self.scroll_position(cx);
         self.change_selections(
-            SelectionEffects::scroll(autoscroll).from_search(true),
+            SelectionEffects::no_scroll().from_search(true),
             window,
             cx,
             |s| {
                 s.select_ranges([range]);
             },
-        )
+        );
+        if cx.reduce_motion() {
+            self.request_autoscroll(autoscroll, cx);
+        } else {
+            self.smooth_scroll_to(autoscroll, start_scroll, window, cx);
+        }
     }
 
     fn select_matches(

@@ -2493,16 +2493,19 @@ impl Editor {
         let Some(end) = multibuffer.buffer_point_to_anchor(&buffer, range.end, cx) else {
             return;
         };
+        let autoscroll = Autoscroll::for_go_to_definition(self.cursor_top_offset(cx), cx);
+        let start_scroll = self.scroll_position(cx);
         self.change_selections(
-            SelectionEffects::scroll(Autoscroll::for_go_to_definition(
-                self.cursor_top_offset(cx),
-                cx,
-            ))
-            .nav_history(record_nav_history),
+            SelectionEffects::no_scroll().nav_history(record_nav_history),
             window,
             cx,
             |s| s.select_anchor_ranges([start..end]),
         );
+        if cx.reduce_motion() {
+            self.request_autoscroll(autoscroll, cx);
+        } else {
+            self.smooth_scroll_to(autoscroll, start_scroll, window, cx);
+        }
     }
 
     fn go_to_document_highlight_before_or_after_position(

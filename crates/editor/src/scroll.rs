@@ -664,7 +664,7 @@ impl Editor {
     /// `smooth_scroll_to_position`. The animation is frame-driven, so it is
     /// deterministic in tests, where the scheduler clock is virtualized and
     /// frames are simulated explicitly.
-    pub(crate) fn smooth_scroll_to(
+    pub fn smooth_scroll_to(
         &mut self,
         autoscroll: Autoscroll,
         start_scroll: gpui::Point<ScrollOffset>,
