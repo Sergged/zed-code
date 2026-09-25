@@ -11,7 +11,7 @@ pub use settings::{
     SeedQuerySetting, ShowMinimap, SnippetSortOrder,
 };
 use settings::{RegisterSetting, RelativeLineNumbers, Settings};
-use ui::scrollbars::ShowScrollbar;
+use ui::scrollbars::{ScrollbarTrack, ShowScrollbar};
 
 /// Imports from the VSCode settings at
 /// https://code.visualstudio.com/docs/reference/default-settings
@@ -111,6 +111,7 @@ pub struct Toolbar {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Scrollbar {
     pub show: ShowScrollbar,
+    pub track: ScrollbarTrack,
     pub git_diff: bool,
     pub selected_text: bool,
     pub selected_symbol: bool,
@@ -248,6 +249,7 @@ impl Settings for EditorSettings {
             },
             scrollbar: Scrollbar {
                 show: scrollbar.show.map(ui_scrollbar_settings_from_raw).unwrap(),
+                track: scrollbar.track.map(ui_scrollbar_track_from_raw).unwrap(),
                 git_diff: scrollbar.git_diff.unwrap()
                     && content
                         .git
@@ -364,5 +366,12 @@ pub fn ui_scrollbar_settings_from_raw(
         settings::ShowScrollbar::System => ShowScrollbar::System,
         settings::ShowScrollbar::Always => ShowScrollbar::Always,
         settings::ShowScrollbar::Never => ShowScrollbar::Never,
+    }
+}
+
+pub fn ui_scrollbar_track_from_raw(value: settings::ScrollbarTrack) -> ScrollbarTrack {
+    match value {
+        settings::ScrollbarTrack::Track => ScrollbarTrack::Track,
+        settings::ScrollbarTrack::Thumb => ScrollbarTrack::Thumb,
     }
 }

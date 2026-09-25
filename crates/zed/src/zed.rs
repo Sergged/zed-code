@@ -25,7 +25,7 @@ use breadcrumbs::Breadcrumbs;
 use client::zed_urls;
 use collections::VecDeque;
 use debugger_ui::debugger_panel::DebugPanel;
-use editor::{Editor, MultiBuffer};
+use editor::{Editor, EditorSettings, MultiBuffer};
 use extension_host::ExtensionStore;
 use feature_flags::{FeatureFlagAppExt as _, PanicFeatureFlag};
 use fs::Fs;
@@ -91,7 +91,10 @@ use std::{
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, SystemAppearance, ThemeRegistry, deserialize_icon_theme};
 use theme_settings::{ThemeSettings, load_user_theme};
-use ui::{Navigable, NavigableEntry, PopoverMenuHandle, TintColor, prelude::*};
+use ui::{
+    Navigable, NavigableEntry, PopoverMenuHandle, TintColor, prelude::*,
+    scrollbars::ContextMenuScrollbarVisibility,
+};
 use util::markdown::MarkdownString;
 use util::rel_path::RelPath;
 use util::{ResultExt, asset_str, maybe};
@@ -192,6 +195,12 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
+    // Context menus show their scrollbar according to the global `scrollbar`
+    // setting, just like editors do.
+    cx.set_global(ContextMenuScrollbarVisibility(|cx| {
+        EditorSettings::get_global(cx).scrollbar.show
+    }));
+
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &Hide, cx| cx.hide());
     #[cfg(target_os = "macos")]

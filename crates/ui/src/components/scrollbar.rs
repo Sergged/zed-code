@@ -17,7 +17,7 @@ use theme::ActiveTheme as _;
 
 use std::ops::Range;
 
-use crate::scrollbars::{ScrollbarAutoHide, ScrollbarVisibility, ShowScrollbar};
+use crate::scrollbars::{ScrollbarAutoHide, ScrollbarTrack, ScrollbarVisibility, ShowScrollbar};
 
 const SCROLLBAR_HIDE_DELAY_INTERVAL: Duration = Duration::from_secs(1);
 const SCROLLBAR_HIDE_DURATION: Duration = Duration::from_millis(400);
@@ -54,6 +54,20 @@ pub mod scrollbars {
         fn visibility(&self, cx: &App) -> ShowScrollbar;
     }
 
+    /// Whether a scrollbar reserves space for a track next to the content
+    /// ("track") or floats over it ("thumb").
+    ///
+    /// Default: track
+    #[derive(Copy, Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ScrollbarTrack {
+        /// Reserve space for a track next to the content.
+        #[default]
+        Track,
+        /// Float the scrollbar over the content.
+        Thumb,
+    }
+
     #[derive(Default)]
     pub struct ScrollbarAutoHide(pub bool);
 
@@ -64,6 +78,20 @@ pub mod scrollbars {
     }
 
     impl Global for ScrollbarAutoHide {}
+
+    /// Controls when context menus show their scrollbar, driven by the
+    /// application's global `scrollbar` setting. The app sets this global at
+    /// startup; when it is unset, menus fall back to [`ShowScrollbar::Auto`].
+    #[derive(Clone, Copy)]
+    pub struct ContextMenuScrollbarVisibility(pub fn(&App) -> ShowScrollbar);
+
+    impl Default for ContextMenuScrollbarVisibility {
+        fn default() -> Self {
+            Self(|_| ShowScrollbar::Auto)
+        }
+    }
+
+    impl Global for ContextMenuScrollbarVisibility {}
 }
 
 fn get_scrollbar_state<T>(
@@ -494,6 +522,20 @@ impl<ScrollHandle: ScrollableHandle> Scrollbars<ScrollHandle> {
         self.visibility = along.apply_to(self.visibility, ReservedSpace::Track);
         self.track_color = Some(background_color);
         self
+    }
+
+    /// Configures the scrollbar along `along` as a track when `track` is
+    /// [`ScrollbarTrack::Track`], or leaves it as a floating thumb otherwise.
+    pub fn with_track_along_for(
+        self,
+        along: ScrollAxes,
+        track: ScrollbarTrack,
+        background_color: Hsla,
+    ) -> Self {
+        match track {
+            ScrollbarTrack::Track => self.with_track_along(along, background_color),
+            ScrollbarTrack::Thumb => self,
+        }
     }
 
     pub fn with_stable_track_along(mut self, along: ScrollAxes, background_color: Hsla) -> Self {
