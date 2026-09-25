@@ -124,6 +124,8 @@ impl RenderOnce for Tab {
             ),
         };
 
+        let has_close_button = self.end_slot.is_some();
+
         let (start_slot, end_slot) = {
             let start_slot = h_flex()
                 .size(START_TAB_SLOT_SIZE)
@@ -139,6 +141,24 @@ impl RenderOnce for Tab {
                 TabCloseSide::End => (start_slot, end_slot),
                 TabCloseSide::Start => (end_slot, start_slot),
             }
+        };
+
+        // When the close button is present, give its side the same amount of
+        // reserved space as the indicator side (start slot + padding) so the
+        // button doesn't sit flush against the tab's border.
+        let (pl, pr) = match (has_close_button, self.close_side) {
+            (true, TabCloseSide::End) => (
+                DynamicSpacing::Base04.px(cx),
+                DynamicSpacing::Base04.px(cx) + START_TAB_SLOT_SIZE,
+            ),
+            (true, TabCloseSide::Start) => (
+                DynamicSpacing::Base04.px(cx) + START_TAB_SLOT_SIZE,
+                DynamicSpacing::Base04.px(cx),
+            ),
+            (false, _) => (
+                DynamicSpacing::Base04.px(cx),
+                DynamicSpacing::Base04.px(cx),
+            ),
         };
 
         self.div
@@ -170,7 +190,8 @@ impl RenderOnce for Tab {
                     .group("")
                     .relative()
                     .h(Tab::content_height(cx))
-                    .px(DynamicSpacing::Base04.px(cx))
+                    .pl(pl)
+                    .pr(pr)
                     .gap(DynamicSpacing::Base04.rems(cx))
                     .text_color(text_color)
                     .child(start_slot)

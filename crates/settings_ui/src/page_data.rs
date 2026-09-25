@@ -5381,7 +5381,7 @@ fn panels_page() -> SettingsPage {
             SettingsPageItem::DynamicItem(DynamicItem {
                 discriminant: SettingItem {
                     title: "Project Panel Title Tooltips Delay",
-                    description: "Delay in milliseconds before tooltips appear for project panel titles.",
+                    description: "Delay in milliseconds before tooltips appear for project panel titles. Also applies to the tooltip shown when hovering over editor tabs.",
                     field: Box::new(SettingField {
                         organization_override: None,
                         json_path: Some("project_panel.title_tooltip_delay$"),
@@ -5441,7 +5441,7 @@ fn panels_page() -> SettingsPage {
                             vec![SettingItem {
                                 files: USER,
                                 title: "Custom Delay",
-                                description: "Delay in milliseconds of the project panel title tooltips.",
+                                description: "Delay in milliseconds of project panel, editor tab, and git panel title tooltips.",
                                 field: Box::new(SettingField {
                                     organization_override: None,
                                     json_path: Some("project_panel.title_tooltip_delay"),
