@@ -1,17 +1,17 @@
-use crate::{git_panel::GitStatusEntry, git_panel_settings::GitPanelSettings, git_status_icon};
-use anyhow::{Context as _, Result};
+use crate::{
+    git_panel::GitStatusEntry, git_panel_settings::GitPanelSettings, git_status_icon,
+    staged_diff::StagedDiffHunkRenderer, unstaged_diff::UnstagedDiffHunkRenderer,
+};
+use anyhow::Result;
 use buffer_diff::DiffHunkSecondaryStatus;
 use editor::{
-    DiffStyleControls, Direction, Editor, EditorEvent, EditorSettings, SplittableEditor,
-    ToggleSplitDiff,
+    DefaultDiffHunkRenderer, DiffHunkRenderer, DiffStyleControls, Direction, Editor, EditorEvent,
+    EditorSettings, SplittableEditor, ToggleSplitDiff,
     actions::{GoToHunk, GoToPreviousHunk},
     file_status_label_color,
 };
 use file_icons::FileIcons;
-use git::{
-    Commit, Restore, StageAndNext, StageFile, ToggleStaged, UnstageAndNext, UnstageFile,
-    repository::RepoPath, status::StageStatus,
-};
+use git::{Restore, StageAndNext, ToggleStaged, UnstageAndNext, ViewFile, repository::RepoPath};
 use gpui::{
     Action, App, AppContext as _, Context, Empty, Entity, EventEmitter, FocusHandle, Focusable,
     HighlightStyle, IntoElement, Render, Subscription, Task, WeakEntity, Window,
@@ -30,12 +30,11 @@ use std::{
     sync::Arc,
 };
 use ui::{DiffStat, Divider, Tooltip, prelude::*};
-use util::paths::{PathExt as _, PathStyle};
+use util::paths::PathStyle;
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ItemSettings, ToolbarItemEvent, ToolbarItemLocation,
     ToolbarItemView, Workspace,
     item::{ItemEvent, PreviewTabsSettings, SaveOptions, TabContentParams},
-    notifications::NotifyTaskExt,
     searchable::SearchableItemHandle,
 };
 
@@ -242,6 +241,18 @@ impl SoloDiffView {
             editor
         });
 
+        // Mirror the hunk rendering of the corresponding multibuffer view: the
+        // default renderer classifies hunks without a secondary (staged) diff as
+        // staged, so the index-based view would paint its unstaged hunks hollow.
+        editor.update(cx, |editor, cx| {
+            let renderer: Arc<dyn DiffHunkRenderer> = match base {
+                SoloDiffBase::Head => Arc::new(DefaultDiffHunkRenderer),
+                SoloDiffBase::Index => Arc::new(UnstagedDiffHunkRenderer),
+                SoloDiffBase::Staged => Arc::new(StagedDiffHunkRenderer),
+            };
+            editor.set_diff_hunk_renderer(Some(renderer), cx);
+        });
+
         let mut previous_diff_view_style = EditorSettings::get_global(cx).diff_view_style;
         let settings_subscription =
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
@@ -414,21 +425,12 @@ impl SoloDiffView {
             }
         }
 
-        let stage_status = self
-            .repository
-            .read(cx)
-            .status_for_path(&self.repo_path)
-            .map(|entry| entry.status.staging())
-            .unwrap_or(StageStatus::Unstaged);
-
         SoloDiffButtonStates {
             stage,
             unstage,
             restore: stage || unstage,
             prev_next,
             selection,
-            stage_file: stage_status.has_unstaged(),
-            unstage_file: stage_status.has_staged(),
         }
     }
 
@@ -453,29 +455,23 @@ impl SoloDiffView {
         FileIcons::get_icon(&path, cx)
     }
 
-    fn change_file_stage(&self, stage: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let repository = self.repository.clone();
-        let repo_path = self.repo_path.clone();
-        let workspace = self.workspace.clone();
-        let task = cx.spawn(async move |_, cx| {
-            repository
-                .update(cx, |repository, cx| {
-                    if stage {
-                        repository.stage_entries(vec![repo_path], cx)
-                    } else {
-                        repository.unstage_entries(vec![repo_path], cx)
-                    }
-                })
-                .await
-                .with_context(|| {
-                    if stage {
-                        "failed to stage file"
-                    } else {
-                        "failed to unstage file"
-                    }
-                })
+    /// Opens the working-tree file this diff shows in the editor.
+    pub(crate) fn view_file(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let Some(project_path) = self
+            .repository
+            .read(cx)
+            .repo_path_to_project_path(&self.repo_path, cx)
+        else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .open_path_preview(project_path, None, false, false, true, window, cx)
+                .detach_and_log_err(cx);
         });
-        task.detach_and_notify_err(workspace, window, cx);
     }
 }
 
@@ -544,7 +540,7 @@ impl Item for SoloDiffView {
             self.buffer
                 .read(cx)
                 .file()
-                .map(|file| file.full_path(cx).compact().to_string_lossy().into_owned())
+                .map(|file| file.full_path(cx).to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
                     self.repo_path
                         .as_ref()
@@ -812,22 +808,6 @@ impl SoloDiffGitToolbar {
             });
         }
     }
-
-    fn stage_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(solo_diff) = self.solo_diff() {
-            solo_diff.update(cx, |solo_diff, cx| {
-                solo_diff.change_file_stage(true, window, cx);
-            });
-        }
-    }
-
-    fn unstage_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(solo_diff) = self.solo_diff() {
-            solo_diff.update(cx, |solo_diff, cx| {
-                solo_diff.change_file_stage(false, window, cx);
-            });
-        }
-    }
 }
 
 impl EventEmitter<ToolbarItemEvent> for SoloDiffGitToolbar {}
@@ -856,8 +836,6 @@ struct SoloDiffButtonStates {
     restore: bool,
     prev_next: bool,
     selection: bool,
-    stage_file: bool,
-    unstage_file: bool,
 }
 
 #[cfg(test)]
@@ -1012,37 +990,19 @@ impl Render for SoloDiffGitToolbar {
                     ),
             )
             .child(Divider::vertical())
-            .child(h_group_sm().child(if button_states.stage_file {
-                Button::new("stage-file", "Stage All")
-                    .width(rems_from_px(80_f32))
-                    .disabled(!button_states.stage_file)
-                    .tooltip(Tooltip::for_action_title_in(
-                        "Stage All",
-                        &StageFile,
-                        &focus_handle,
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| this.stage_file(window, cx)))
-            } else {
-                Button::new("unstage-file", "Unstage All")
-                    .width(rems_from_px(80_f32))
-                    .disabled(!button_states.unstage_file)
-                    .tooltip(Tooltip::for_action_title_in(
-                        "Unstage All",
-                        &UnstageFile,
-                        &focus_handle,
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| this.unstage_file(window, cx)))
-            }))
-            .child(Divider::vertical())
             .child(
-                Button::new("commit", "Commit")
+                Button::new("view-file", "View File")
                     .tooltip(Tooltip::for_action_title_in(
-                        "Commit",
-                        &Commit,
+                        "View File",
+                        &ViewFile,
                         &focus_handle,
                     ))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.dispatch_action(&Commit, window, cx);
+                        if let Some(solo_diff) = this.solo_diff() {
+                            solo_diff.update(cx, |solo_diff, cx| {
+                                solo_diff.view_file(window, cx);
+                            });
+                        }
                     })),
             )
             .into_any_element()

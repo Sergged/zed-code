@@ -23,7 +23,6 @@ use std::{
     time::Duration,
 };
 use ui::{Color, Icon, IconName, SharedString};
-use util::paths::PathExt;
 
 use workspace::{
     Item, ItemNavHistory, Workspace,
@@ -217,7 +216,7 @@ impl TextDiffView {
             .and_then(|b| {
                 b.read(cx)
                     .file()
-                    .map(|f| f.full_path(cx).compact().to_string_lossy().into_owned())
+                    .map(|f| f.full_path(cx).to_string_lossy().into_owned())
             })
             .unwrap_or(MultiBuffer::DEFAULT_TITLE.into());
 
