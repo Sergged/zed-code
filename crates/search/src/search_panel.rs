@@ -7,7 +7,8 @@ use file_icons::FileIcons;
 use futures::StreamExt;
 use gpui::{
     Action, AnyElement, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, KeyContext, ListHorizontalSizingBehavior, ListSizingBehavior, Pixels,
+    ExternalDragPayload, FileDragPaths, FocusHandle, Focusable, Hsla, KeyContext,
+    ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent, Pixels, Point,
     Render, ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle, WeakEntity,
     Window, actions, px, uniform_list,
 };
@@ -18,11 +19,14 @@ use project::{
     Project, ProjectPath, SearchResults,
     search::{SearchQuery, SearchResult},
 };
+use project_panel::ProjectPanel;
+use project_panel::project_panel_settings::ProjectPanelSettings;
 use settings::Settings;
 use text::Anchor;
+use theme_settings::ThemeSettings;
 use ui::{
-    CommonAnimationExt, IconButton, IconButtonShape, ListItem, ListItemSpacing, LoadingLabel,
-    ScrollAxes, Scrollbars, Tab, Toggleable, Tooltip, WithScrollbar,
+    CommonAnimationExt, IconButton, IconButtonShape, LoadingLabel, ScrollAxes, Scrollbars, Tab,
+    Toggleable, Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{ScrollbarVisibility, ShowScrollbar},
 };
@@ -34,8 +38,9 @@ use workspace::{
 };
 
 use crate::{
-    EXCLUDE_PLACEHOLDER, INCLUDE_PLACEHOLDER, SEARCH_ICON, SearchOption, SearchOptions,
-    SearchSource, ToggleCaseSensitive, ToggleIncludeIgnored, ToggleRegex, ToggleWholeWord,
+    EXCLUDE_PLACEHOLDER, FocusSearch, INCLUDE_PLACEHOLDER, SEARCH_ICON, SearchOption,
+    SearchOptions, SearchSource, ToggleCaseSensitive, ToggleIncludeIgnored, ToggleRegex,
+    ToggleWholeWord,
     project_search::{ToggleFilters, split_glob_patterns},
     search_bar::{input_base_styles, render_text_input},
 };
@@ -63,6 +68,46 @@ impl ScrollbarVisibility for SearchPanelScrollbarProxy {
     }
 }
 
+/// Selected and hovered row backgrounds, matching the thread panel rows
+/// (`ThreadItem`). Both blend over the panel background at render time.
+fn row_backgrounds(cx: &App) -> (Hsla, Hsla) {
+    let colors = cx.theme().colors();
+    (
+        colors.element_active,
+        colors
+            .element_active
+            .blend(colors.element_background.opacity(0.2)),
+    )
+}
+
+/// Preview shown while dragging a file header out of the panel, mirroring the
+/// drag previews of the git and project panels.
+struct DraggedFileView {
+    filename: String,
+    click_offset: Point<Pixels>,
+}
+
+impl Render for DraggedFileView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
+        h_flex()
+            .font(ui_font)
+            .pl(self.click_offset.x + px(12.))
+            .pt(self.click_offset.y + px(12.))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .items_center()
+                    .py_1()
+                    .px_2()
+                    .rounded_lg()
+                    .bg(cx.theme().colors().background)
+                    .child(Label::new(self.filename.clone())),
+            )
+    }
+}
+
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
@@ -72,6 +117,11 @@ pub fn init(cx: &mut App) {
             if !workspace.toggle_panel_focus::<SearchPanel>(window, cx) {
                 workspace.close_panel::<SearchPanel>(window, cx);
             }
+        });
+        // `search::FocusSearch` (cmd-shift-f) focuses the search panel, like
+        // `project_panel::ToggleFocus` (cmd-shift-e) focuses the project panel.
+        workspace.register_action(|workspace, _: &FocusSearch, window, cx| {
+            workspace.toggle_panel_focus::<SearchPanel>(window, cx);
         });
     })
     .detach();
@@ -229,8 +279,21 @@ impl SearchPanel {
     }
 
     /// Runs a search with the panel's current query, options and filters,
-    /// listing the matches in the panel.
+    /// listing the matches in the panel. An empty query resets the panel to
+    /// its empty state and cancels any in-flight search.
     fn search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.query_editor.read(cx).text(cx).is_empty() {
+            self.query_error = None;
+            self.include_error = None;
+            self.exclude_error = None;
+            self.pending_search = None;
+            self.searching = false;
+            self.results = None;
+            self.selected_entry = None;
+            self.limit_reached = false;
+            cx.notify();
+            return;
+        }
         let Some(query) = self.build_search_query(cx) else {
             return;
         };
@@ -345,7 +408,8 @@ impl SearchPanel {
         };
         results.entries = build_entries(&results.matches, &self.collapsed_files);
         self.selected_entry = None;
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        // Keep the current scroll position: collapsing or expanding a group
+        // must not jump back to the top of the list.
         cx.notify();
     }
 
@@ -422,6 +486,34 @@ impl SearchPanel {
             return;
         };
         self.open_entry(entry_index, window, cx);
+    }
+
+    /// Opens the project panel's context menu for the file behind `path`.
+    /// The menu is built by `ProjectPanel`, so any changes to the project
+    /// panel's context menu apply here as well.
+    fn deploy_context_menu_for_path(
+        &self,
+        path: &ProjectPath,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry_id = {
+            let Some(entry) = self.project.read(cx).entry_for_path(path, cx) else {
+                return;
+            };
+            entry.id
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            if let Some(project_panel) = workspace.panel::<ProjectPanel>(cx) {
+                project_panel.update(cx, |panel, cx| {
+                    panel.deploy_context_menu(position, entry_id, window, cx);
+                });
+            }
+        });
     }
 
     /// Opens the location of the match at `entry_index`. Files open in a
@@ -669,11 +761,15 @@ impl SearchPanel {
         let query_input = input_base_styles(border_color(self.query_error.is_some(), cx), |div| {
             div.flex_1()
         })
-        .child(div().flex_1().py_1().child(render_text_input(
-            &self.query_editor,
-            None,
-            cx,
-        )));
+        // The shared input styles' min width doesn't fit the narrow panel at
+        // large UI font sizes; keep the inputs half as wide at minimum.
+        .min_w_16()
+        .child(
+            div()
+                .flex_1()
+                .py_1()
+                .child(render_text_input(&self.query_editor, None, cx)),
+        );
 
         let options_row = h_flex()
             .gap_1()
@@ -719,11 +815,13 @@ impl SearchPanel {
                 input_base_styles(border_color(self.include_error.is_some(), cx), |div| {
                     div.flex_1()
                 })
+                .min_w_16()
                 .child(render_text_input(&self.included_files_editor, None, cx));
             let exclude_input =
                 input_base_styles(border_color(self.exclude_error.is_some(), cx), |div| {
                     div.flex_1()
                 })
+                .min_w_16()
                 .child(render_text_input(&self.excluded_files_editor, None, cx));
 
             let mode_buttons = h_flex()
@@ -913,7 +1011,12 @@ impl SearchPanel {
             .custom_scrollbars(
                 Scrollbars::for_settings::<SearchPanelScrollbarProxy>()
                     .tracked_scroll_handle(&self.scroll_handle.clone())
-                    .with_track_along(ScrollAxes::Both, cx.theme().colors().panel_background)
+                    .with_track_along_for(
+                        ScrollAxes::Vertical,
+                        EditorSettings::get_global(cx).scrollbar.track,
+                        cx.theme().colors().panel_background,
+                    )
+                    .with_track_along(ScrollAxes::Horizontal, cx.theme().colors().panel_background)
                     .tracked_entity(cx.entity_id()),
                 window,
                 cx,
@@ -966,17 +1069,62 @@ impl SearchPanel {
                     .size(IconSize::Small)
             });
         let path = path.clone();
+        let path_for_context_menu = path.clone();
+        let (_, hover_background) = row_backgrounds(cx);
         h_flex()
             .id(path.path.as_std_path().to_string_lossy().into_owned())
             .w_full()
             .min_w_0()
             .px(DynamicSpacing::Base06.rems(cx))
-            .py_1()
+            // Fixed row height, same as the match rows: `uniform_list` applies
+            // one measured row to every row, so header and match heights must
+            // match or collapsing/expanding files would reflow the whole list.
+            .h_7()
             .gap_1p5()
             .cursor_pointer()
+            .hover(|style| style.bg(hover_background))
+            .on_drag(
+                path.clone(),
+                move |path: &ProjectPath, click_offset, _window, cx| {
+                    cx.new(|_| DraggedFileView {
+                        filename: path
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string())
+                            .unwrap_or_default(),
+                        click_offset,
+                    })
+                },
+            )
+            .external_drag_payload({
+                let project = self.project.clone();
+                move |path: &ProjectPath, _window, cx| {
+                    let project = project.read(cx);
+                    let worktree = project.worktree_for_id(path.worktree_id, cx)?;
+                    let worktree = worktree.read(cx);
+                    if !worktree.is_local() {
+                        return None;
+                    }
+                    Some(ExternalDragPayload::Files(FileDragPaths::new([(
+                        worktree.absolutize(&path.path),
+                        false,
+                    )])))
+                }
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_group(path.clone(), cx);
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.deploy_context_menu_for_path(
+                        &path_for_context_menu,
+                        event.position,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .children(file_icon)
             .child(
                 h_flex()
@@ -1007,13 +1155,22 @@ impl SearchPanel {
             return div().into_any_element();
         };
         let selected = self.selected_entry == Some(entry_index);
-        ListItem::new(entry_index)
-            .spacing(ListItemSpacing::Sparse)
-            .inset(true)
-            // Don't apply the hover style on top of the selected item: the
-            // active row keeps its selected background while hovered.
-            .selectable(!selected)
-            .toggle_state(selected)
+        let (selected_background, hover_background) = row_backgrounds(cx);
+        h_flex()
+            .id(entry_index)
+            .w_full()
+            .min_w_0()
+            .px_1p5()
+            .h_7()
+            .gap_2p5()
+            .text_sm()
+            .cursor_pointer()
+            // The active row keeps its selected background while hovered, like
+            // the thread panel rows.
+            .when(selected, |this| this.bg(selected_background))
+            .when(!selected, |this| {
+                this.hover(|style| style.bg(hover_background))
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.selected_entry = Some(entry_index);
                 this.open_selected_entry(window, cx);
@@ -1095,8 +1252,8 @@ impl Panel for SearchPanel {
     ) {
     }
 
-    fn default_size(&self, _window: &Window, _cx: &App) -> Pixels {
-        px(320.)
+    fn default_size(&self, _window: &Window, cx: &App) -> Pixels {
+        ProjectPanelSettings::get_global(cx).default_width
     }
 
     fn icon(&self, _window: &Window, cx: &App) -> Option<ui::IconName> {
@@ -1306,6 +1463,57 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_focus_search_action_focuses_panel(cx: &mut TestAppContext) {
+        let (window, workspace) = build_workspace(cx).await;
+        let panel = add_panel(&window, &workspace, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        // `search::FocusSearch` (cmd-shift-f) focuses the search panel like
+        // `project_panel::ToggleFocus` (cmd-shift-e) focuses the project panel.
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(FocusSearch), cx);
+            })
+            .unwrap();
+
+        let (dock_open, query_focused) = cx.update(|window, cx| {
+            (
+                workspace.read(cx).left_dock().read(cx).is_open(),
+                panel
+                    .read(cx)
+                    .query_editor
+                    .focus_handle(cx)
+                    .is_focused(window),
+            )
+        });
+        assert!(dock_open, "focus search should open the search panel");
+        assert!(query_focused, "focus search should focus the query input");
+
+        // Dispatching again returns focus to the workspace center while the
+        // panel stays open, exactly like the project panel toggle.
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(FocusSearch), cx);
+            })
+            .unwrap();
+        let (dock_open, query_focused) = cx.update(|window, cx| {
+            (
+                workspace.read(cx).left_dock().read(cx).is_open(),
+                panel
+                    .read(cx)
+                    .query_editor
+                    .focus_handle(cx)
+                    .is_focused(window),
+            )
+        });
+        assert!(
+            dock_open,
+            "the panel stays open like the project panel toggle"
+        );
+        assert!(!query_focused, "focus returns to the workspace center");
+    }
+
+    #[gpui::test]
     async fn test_confirm_runs_search_and_shows_results(cx: &mut TestAppContext) {
         let (window, workspace) = build_workspace(cx).await;
         let panel = add_panel(&window, &workspace, cx);
@@ -1325,6 +1533,33 @@ mod tests {
         assert!(!searching, "search should have completed");
         assert_eq!(matches_len, 1, "ONEROUS appears once");
         assert_eq!(entries_len, 2, "one file header plus the match row");
+    }
+
+    #[gpui::test]
+    async fn test_confirm_with_empty_query_resets_panel(cx: &mut TestAppContext) {
+        let (window, workspace) = build_workspace(cx).await;
+        let panel = add_panel(&window, &workspace, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        run_search(&panel, "ONEROUS", cx);
+        let has_results = cx.update(|_window, cx| panel.read(cx).results.is_some());
+        assert!(has_results, "the search should have produced results");
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.query_editor.update(cx, |editor, cx| {
+                editor.set_text("", window, cx);
+            });
+            panel.confirm(&Confirm, window, cx);
+        });
+
+        cx.update(|_window, cx| {
+            let panel = panel.read(cx);
+            assert!(
+                panel.results.is_none(),
+                "entering an empty query should reset the panel"
+            );
+            assert!(!panel.searching);
+        });
     }
 
     #[gpui::test]

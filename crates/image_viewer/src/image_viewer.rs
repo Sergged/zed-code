@@ -25,7 +25,7 @@ use project::{
 use settings::Settings;
 use theme_settings::ThemeSettings;
 use ui::{Tooltip, prelude::*};
-use util::{ResultExt as _, paths::PathExt};
+use util::ResultExt as _;
 use workspace::{
     ItemId, ItemSettings, Pane, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
     WorkspaceId, delete_unloaded_items,
@@ -558,8 +558,18 @@ impl Item for ImageView {
     }
 
     fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
-        let abs_path = self.image_item.read(cx).abs_path(cx)?;
-        let file_path = abs_path.compact().to_string_lossy().into_owned();
+        let project_path = self.image_item.read(cx).project_path(cx);
+        let file_path = self
+            .project
+            .read(cx)
+            .worktree_for_id(project_path.worktree_id, cx)
+            .map(|worktree| {
+                worktree
+                    .read(cx)
+                    .full_path(&project_path.path)
+                    .to_string_lossy()
+                    .into_owned()
+            })?;
         Some(file_path.into())
     }
 
