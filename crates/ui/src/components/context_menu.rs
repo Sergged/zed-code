@@ -1,6 +1,9 @@
 use crate::{
     ButtonCommon, ButtonStyle, IconButtonShape, KeyBinding, List, ListItem, ListSeparator,
-    ListSubHeader, Tooltip, prelude::*, utils::WithRemSize,
+    ListSubHeader, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    prelude::*,
+    scrollbars::{ContextMenuScrollbarVisibility, ScrollbarVisibility, ShowScrollbar},
+    utils::WithRemSize,
 };
 use gpui::{
     Action, Anchor, AnyElement, App, Bounds, DismissEvent, Entity, EventEmitter, FocusHandle,
@@ -2190,6 +2193,16 @@ impl ContextMenuItem {
     }
 }
 
+#[derive(Default)]
+struct ContextMenuScrollbarSetting;
+
+impl ScrollbarVisibility for ContextMenuScrollbarSetting {
+    fn visibility(&self, cx: &App) -> ShowScrollbar {
+        cx.try_global::<ContextMenuScrollbarVisibility>()
+            .map_or(ShowScrollbar::Auto, |visibility| visibility.0(cx))
+    }
+}
+
 impl Render for ContextMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme_settings = theme::theme_settings(cx);
@@ -2367,6 +2380,12 @@ impl Render for ContextMenu {
                                     .enumerate()
                                     .map(|(ix, item)| self.render_menu_item(ix, item, window, cx)),
                             ),
+                        )
+                        .custom_scrollbars(
+                            Scrollbars::for_settings::<ContextMenuScrollbarSetting>()
+                                .show_along(ScrollAxes::Vertical),
+                            window,
+                            cx,
                         ),
                 )
         };

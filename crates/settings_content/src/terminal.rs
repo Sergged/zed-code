@@ -335,6 +335,33 @@ pub enum ShowScrollbar {
     Never,
 }
 
+/// Whether a scrollbar reserves space for a track next to the content
+/// (`track`) or floats over it (`thumb`).
+///
+/// Default: track
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    PartialEq,
+    Eq,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollbarTrack {
+    /// Reserve space for a track next to the content.
+    #[default]
+    Track,
+    /// Float the scrollbar over the content.
+    Thumb,
+}
+
 #[derive(
     Clone,
     Copy,

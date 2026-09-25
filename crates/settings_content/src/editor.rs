@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
 
 use crate::{
-    DelayMs, DiagnosticSeverityContent, ShowScrollbar, serialize_f32_with_two_decimal_places,
+    DelayMs, DiagnosticSeverityContent, ScrollbarTrack, ShowScrollbar,
+    serialize_f32_with_two_decimal_places,
 };
 
 #[with_fallible_options]
@@ -413,6 +414,11 @@ pub struct ScrollbarContent {
     ///
     /// Default: auto
     pub show: Option<ShowScrollbar>,
+    /// Whether the scrollbar reserves space for a track next to the content
+    /// ("track") or floats over it ("thumb").
+    ///
+    /// Default: track
+    pub track: Option<ScrollbarTrack>,
     /// Whether to show git diff indicators in the scrollbar.
     ///
     /// Default: true

@@ -646,6 +646,9 @@
     // 4. Never show the scrollbar:
     //    "never"
     "show": "auto",
+    // Whether the scrollbar in panels reserves space for a track next to the
+    // content ("track", default) or floats over it ("thumb").
+    "track": "track",
     // Whether to show cursor positions in the scrollbar.
     "cursors": true,
     // Whether to show git diff indicators in the scrollbar.
