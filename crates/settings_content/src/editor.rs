@@ -271,6 +271,8 @@ pub struct EditorSettingsContent {
     /// - "off": do not display item kinds (default).
     /// - "symbol": display a single-letter badge, colorized based on the
     ///   active syntax theme.
+    /// - "icon": display a symbol icon, colorized based on the active syntax
+    ///   theme.
     ///
     /// Default: off
     pub completion_menu_item_kind: Option<CompletionMenuItemKind>,
@@ -349,6 +351,7 @@ pub enum CompletionMenuItemKind {
     #[default]
     Off,
     Symbol,
+    Icon,
 }
 
 impl RelativeLineNumbers {
