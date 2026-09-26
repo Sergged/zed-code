@@ -37,13 +37,15 @@ use util::ResultExt;
 use crate::hover_popover::{hover_markdown_style, open_markdown_url};
 use crate::{
     CodeActionProvider, CompletionId, CompletionProvider, DisplayRow, Editor, EditorStyle,
-    ResolvedTasks,
+    ResolvedTasks, SuggestMemory,
     actions::{ConfirmCodeAction, ConfirmCompletion},
     split_words, styled_runs_for_code_label,
 };
 use crate::{CodeActionSource, EditorSettings};
 use collections::{HashSet, VecDeque};
-use settings::{CompletionDetailAlignment, CompletionMenuItemKind, Settings, SnippetSortOrder};
+use settings::{
+    CompletionDetailAlignment, CompletionMenuItemKind, Settings, SnippetSortOrder, SuggestSelection,
+};
 
 pub const MENU_GAP: Pixels = px(4.);
 pub const MENU_ASIDE_X_PADDING: Pixels = px(16.);
@@ -269,9 +271,11 @@ pub struct CompletionsMenu {
     last_rendered_range: Rc<RefCell<Option<Range<usize>>>>,
     markdown_cache: Rc<RefCell<VecDeque<(MarkdownCacheKey, Entity<Markdown>)>>>,
     language_registry: Option<Arc<LanguageRegistry>>,
-    language: Option<LanguageName>,
+    pub(crate) language: Option<LanguageName>,
     display_options: CompletionDisplayOptions,
     snippet_sort_order: SnippetSortOrder,
+    pub(crate) suggest_selection: SuggestSelection,
+    suggest_memory: Rc<SuggestMemory>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -349,7 +353,7 @@ impl ui::scrollbars::ScrollbarVisibility for CompletionMenuScrollBarSetting {
 }
 
 impl CompletionsMenu {
-    pub fn new(
+    pub(crate) fn new(
         id: CompletionId,
         source: CompletionsMenuSource,
         sort_completions: bool,
@@ -362,6 +366,8 @@ impl CompletionsMenu {
         scroll_handle: Option<UniformListScrollHandle>,
         display_options: CompletionDisplayOptions,
         snippet_sort_order: SnippetSortOrder,
+        suggest_selection: SuggestSelection,
+        suggest_memory: Rc<SuggestMemory>,
         language_registry: Option<Arc<LanguageRegistry>>,
         language: Option<LanguageName>,
         cx: &mut Context<Editor>,
@@ -400,6 +406,8 @@ impl CompletionsMenu {
             language,
             display_options,
             snippet_sort_order,
+            suggest_selection,
+            suggest_memory,
         };
 
         completions_menu.start_markdown_parse_for_nearby_entries(cx);
@@ -481,6 +489,8 @@ impl CompletionsMenu {
             language: None,
             display_options: CompletionDisplayOptions::default(),
             snippet_sort_order,
+            suggest_selection: SuggestSelection::First,
+            suggest_memory: Rc::new(SuggestMemory::new()),
         }
     }
 
@@ -1347,7 +1357,7 @@ impl CompletionsMenu {
     ) {
         self.cancel_filter.store(true, Ordering::Relaxed);
         self.cancel_filter = Arc::new(AtomicBool::new(false));
-        let matches = self.do_async_filtering(query, query_end, buffer, cx);
+        let matches = self.do_async_filtering(query.clone(), query_end, buffer, cx);
         let id = self.id;
         self.filter_task = cx.spawn_in(window, async move |editor, cx| {
             let matches = matches.await;
@@ -1355,7 +1365,7 @@ impl CompletionsMenu {
                 .update_in(cx, |editor, window, cx| {
                     editor.with_completions_menu_matching_id(id, |this| {
                         if let Some(this) = this {
-                            this.set_filter_results(matches, provider, window, cx);
+                            this.set_filter_results(matches, query, provider, window, cx);
                         }
                     });
                 })
@@ -1484,6 +1494,7 @@ impl CompletionsMenu {
     pub fn set_filter_results(
         &mut self,
         match_results: CompletionMatchResults,
+        query: Arc<String>,
         provider: Option<Rc<dyn CompletionProvider>>,
         window: &mut Window,
         cx: &mut Context<Editor>,
@@ -1494,8 +1505,11 @@ impl CompletionsMenu {
         } = match_results;
         let completions = self.completions.borrow();
         let mut entries: Vec<CompletionMenuEntry> = Vec::with_capacity(filter_matches.len());
+        // Maps each match index to its index in `entries` after group headers and dividers
+        // were inserted, so that a preselected match can be mapped back to an entry.
+        let mut match_entry_indices = Vec::with_capacity(filter_matches.len());
         let mut last_group: Option<&CompletionGroup> = None;
-        for mat in filter_matches {
+        for mat in &filter_matches {
             let group = completions[mat.candidate_id].group.as_ref();
             if group != last_group {
                 if group.is_some() || last_group.is_some() {
@@ -1508,12 +1522,27 @@ impl CompletionsMenu {
                 }
                 last_group = group;
             }
-            entries.push(CompletionMenuEntry::Match(mat));
+            match_entry_indices.push(entries.len());
+            entries.push(CompletionMenuEntry::Match(mat.clone()));
         }
+        let selected_match_index = self
+            .suggest_memory
+            .select(
+                self.suggest_selection,
+                self.language.as_ref(),
+                &query,
+                &filter_matches,
+                &completions,
+            )
+            .unwrap_or(0);
+        let selected_item = match_entry_indices
+            .get(selected_match_index)
+            .copied()
+            .unwrap_or(0);
         drop(completions);
         *self.label_match_state.label_matches.borrow_mut() = label_matches;
         *self.entries.borrow_mut() = entries.into_boxed_slice();
-        self.selected_item = self.find_selectable_entry(0, true).unwrap_or(0);
+        self.selected_item = selected_item;
         self.handle_selection_changed(provider.as_deref(), window, cx);
     }
 
@@ -1525,7 +1554,7 @@ impl CompletionsMenu {
     ) -> Vec<StringMatch> {
         let mut matches = matches;
 
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq)]
         enum MatchTier<'a> {
             WordStartMatch {
                 sort_exact: Reverse<i32>,
@@ -1552,67 +1581,135 @@ impl CompletionsMenu {
                 .retain(|string_match| !completions[string_match.candidate_id].is_snippet_kind());
         }
 
-        matches.sort_unstable_by_key(|string_match| {
-            let completion = &completions[string_match.candidate_id];
+        let mut matches: Vec<(MatchTier<'_>, StringMatch)> = matches
+            .into_iter()
+            .map(|string_match| {
+                let completion = &completions[string_match.candidate_id];
 
-            let sort_text = match &completion.source {
-                CompletionSource::Lsp { lsp_completion, .. } => lsp_completion.sort_text.as_deref(),
-                CompletionSource::Dap { sort_text } => Some(sort_text.as_str()),
-                _ => None,
-            };
-
-            let (sort_kind, sort_label) = completion.sort_key();
-
-            let score = string_match.score;
-            let sort_score = Reverse(OrderedFloat(score));
-
-            // Snippets do their own first-letter matching logic elsewhere.
-            let is_snippet = completion.is_snippet_kind();
-            let query_start_doesnt_match_split_words = !is_snippet
-                && query_start_lower
-                    .map(|query_char| {
-                        !split_words(&string_match.string).any(|word| {
-                            word.chars().next().and_then(|c| c.to_lowercase().next())
-                                == Some(query_char)
-                        })
-                    })
-                    .unwrap_or(false);
-
-            if query_start_doesnt_match_split_words {
-                MatchTier::OtherMatch { sort_score }
-            } else {
-                let sort_snippet = match snippet_sort_order {
-                    SnippetSortOrder::Top => Reverse(if is_snippet { 1 } else { 0 }),
-                    SnippetSortOrder::Bottom => Reverse(if is_snippet { 0 } else { 1 }),
-                    SnippetSortOrder::Inline => Reverse(0),
-                    SnippetSortOrder::None => Reverse(0),
+                let sort_text = match &completion.source {
+                    CompletionSource::Lsp { lsp_completion, .. } => {
+                        lsp_completion.sort_text.as_deref()
+                    }
+                    CompletionSource::Dap { sort_text } => Some(sort_text.as_str()),
+                    _ => None,
                 };
-                let sort_positions = string_match.positions.clone();
-                let sort_exact_case_matches = Reverse(exact_case_match_count(
-                    query.unwrap_or_default(),
-                    string_match,
-                ));
-                // This exact matching won't work for multi-word snippets, but it's fine
-                let sort_exact = Reverse(if Some(completion.filter_text()) == query {
-                    1
-                } else {
-                    0
-                });
 
-                MatchTier::WordStartMatch {
-                    sort_exact,
-                    sort_snippet,
-                    sort_score,
-                    sort_positions,
-                    sort_exact_case_matches,
-                    sort_text,
-                    sort_kind,
-                    sort_label,
+                let (sort_kind, sort_label) = completion.sort_key();
+
+                let score = string_match.score;
+                let sort_score = Reverse(OrderedFloat(score));
+
+                // Snippets do their own first-letter matching logic elsewhere.
+                let is_snippet = completion.is_snippet_kind();
+                let query_start_doesnt_match_split_words = !is_snippet
+                    && query_start_lower
+                        .map(|query_char| {
+                            !split_words(&string_match.string).any(|word| {
+                                word.chars().next().and_then(|c| c.to_lowercase().next())
+                                    == Some(query_char)
+                            })
+                        })
+                        .unwrap_or(false);
+
+                let tier = if query_start_doesnt_match_split_words {
+                    MatchTier::OtherMatch { sort_score }
+                } else {
+                    let sort_snippet = match snippet_sort_order {
+                        SnippetSortOrder::Top => Reverse(if is_snippet { 1 } else { 0 }),
+                        SnippetSortOrder::Bottom => Reverse(if is_snippet { 0 } else { 1 }),
+                        SnippetSortOrder::Inline => Reverse(0),
+                        SnippetSortOrder::None => Reverse(0),
+                    };
+                    let sort_positions = string_match.positions.clone();
+                    let sort_exact_case_matches = Reverse(exact_case_match_count(
+                        query.unwrap_or_default(),
+                        &string_match,
+                    ));
+                    // This exact matching won't work for multi-word snippets, but it's fine
+                    let sort_exact = Reverse(if Some(completion.filter_text()) == query {
+                        1
+                    } else {
+                        0
+                    });
+
+                    MatchTier::WordStartMatch {
+                        sort_exact,
+                        sort_snippet,
+                        sort_score,
+                        sort_positions,
+                        sort_exact_case_matches,
+                        sort_text,
+                        sort_kind,
+                        sort_label,
+                    }
+                };
+
+                (tier, string_match)
+            })
+            .collect();
+
+        matches.sort_unstable_by(|(a, _), (b, _)| {
+            use std::cmp::Ordering;
+            match (a, b) {
+                (MatchTier::WordStartMatch { .. }, MatchTier::OtherMatch { .. }) => Ordering::Less,
+                (MatchTier::OtherMatch { .. }, MatchTier::WordStartMatch { .. }) => {
+                    Ordering::Greater
+                }
+                (
+                    MatchTier::OtherMatch { sort_score: a },
+                    MatchTier::OtherMatch { sort_score: b },
+                ) => a.cmp(b),
+                (
+                    MatchTier::WordStartMatch {
+                        sort_exact: a_exact,
+                        sort_snippet: a_snippet,
+                        sort_score: a_score,
+                        sort_positions: a_positions,
+                        sort_exact_case_matches: a_case,
+                        sort_text: a_text,
+                        sort_kind: a_kind,
+                        sort_label: a_label,
+                    },
+                    MatchTier::WordStartMatch {
+                        sort_exact: b_exact,
+                        sort_snippet: b_snippet,
+                        sort_score: b_score,
+                        sort_positions: b_positions,
+                        sort_exact_case_matches: b_case,
+                        sort_text: b_text,
+                        sort_kind: b_kind,
+                        sort_label: b_label,
+                    },
+                ) => {
+                    // Same field order as the previous derived `Ord`, except that `sort_text`
+                    // is compared right after the fuzzy score. Per the LSP spec, `sortText`
+                    // orders a server's items among themselves, so when the fuzzy scores tie,
+                    // the server's ordering now wins over match positions and kind. Items
+                    // without a `sort_text` keep sorting first, which is relied upon by the
+                    // snippet completions: they carry a `char::MAX` sentinel `sort_text` to
+                    // sink to the bottom of equal-scoring groups.
+                    a_exact
+                        .cmp(b_exact)
+                        .then_with(|| a_snippet.cmp(b_snippet))
+                        .then_with(|| a_score.cmp(b_score))
+                        .then_with(|| match (a_text, b_text) {
+                            (Some(a), Some(b)) => a.to_lowercase().cmp(&b.to_lowercase()),
+                            (None, Some(_)) => Ordering::Less,
+                            (Some(_), None) => Ordering::Greater,
+                            (None, None) => Ordering::Equal,
+                        })
+                        .then_with(|| a_positions.cmp(b_positions))
+                        .then_with(|| a_case.cmp(b_case))
+                        .then_with(|| a_kind.cmp(b_kind))
+                        .then_with(|| a_label.cmp(b_label))
                 }
             }
         });
 
         matches
+            .into_iter()
+            .map(|(_, string_match)| string_match)
+            .collect()
     }
 
     pub fn preserve_markdown_cache(&mut self, prev_menu: CompletionsMenu) {

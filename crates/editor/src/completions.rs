@@ -1,4 +1,9 @@
 use super::*;
+use collections::HashMap;
+use language::LanguageName;
+use lsp::CompletionItemKind;
+use settings::SuggestSelection;
+use std::cell::Cell;
 
 impl Editor {
     pub fn set_completion_provider(&mut self, provider: Option<Rc<dyn CompletionProvider>>) {
@@ -380,6 +385,7 @@ impl Editor {
             .map(|language| language.name());
         let language_settings = multibuffer_snapshot.language_settings_at(multibuffer_position, cx);
         let completion_settings = language_settings.completions.clone();
+        let suggest_selection = completion_settings.suggest_selection;
 
         let show_completions_on_input = self
             .show_completions_on_input_override
@@ -696,6 +702,11 @@ impl Editor {
             let menu = if completions.is_empty() {
                 None
             } else {
+                let filter_query = if filter_completions {
+                    query.clone()
+                } else {
+                    None
+                };
                 let Ok((mut menu, matches_task)) = editor.update(cx, |editor, cx| {
                     let languages = editor
                         .workspace
@@ -723,14 +734,15 @@ impl Editor {
                             .map(|menu| menu.primary_scroll_handle()),
                         display_options,
                         snippet_sort_order,
+                        suggest_selection,
+                        editor.suggest_memory.clone(),
                         languages,
                         language,
                         cx,
                     );
 
-                    let query = if filter_completions { query } else { None };
                     let matches_task = menu.do_async_filtering(
-                        query.unwrap_or_default(),
+                        filter_query.clone().unwrap_or_default(),
                         buffer_position,
                         &buffer,
                         cx,
@@ -771,7 +783,13 @@ impl Editor {
                         }
                     };
 
-                    menu.set_filter_results(matches, provider, window, cx);
+                    menu.set_filter_results(
+                        matches,
+                        filter_query.clone().unwrap_or_default(),
+                        provider,
+                        window,
+                        cx,
+                    );
                 }) else {
                     return;
                 };
@@ -880,6 +898,15 @@ impl Editor {
         let multibuffer_snapshot = self.buffer.read(cx).snapshot(cx);
         let (initial_position, _) =
             multibuffer_snapshot.anchor_to_buffer_anchor(completions_menu.initial_position)?;
+
+        self.suggest_memory.memorize(
+            completions_menu.suggest_selection,
+            completions_menu.language.as_ref(),
+            Self::completion_query(&multibuffer_snapshot, completions_menu.initial_position)
+                .as_deref()
+                .unwrap_or_default(),
+            &completion,
+        );
 
         let CompletionEdit {
             new_text,
@@ -1590,4 +1617,193 @@ pub(crate) fn snippet_candidate_suffixes<'a>(
                 Some(chunk)
             }
         })
+}
+
+/// Maximum number of completions remembered for the `recently_used` mode.
+const RECENTLY_USED_LIMIT: usize = 300;
+/// Maximum number of completions remembered for the `recently_used_by_prefix` mode.
+const RECENTLY_USED_BY_PREFIX_LIMIT: usize = 200;
+/// Completions within this delta of the top fuzzy score are considered part of the
+/// top-scoring group used by the `recently_used` mode.
+const SCORE_EPSILON: f64 = 1e-6;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemItem {
+    kind: Option<CompletionItemKind>,
+    new_text: String,
+    touch: u64,
+}
+
+impl MemItem {
+    fn matches(&self, completion: &Completion) -> bool {
+        self.kind == completion.kind() && self.new_text == completion.new_text
+    }
+}
+
+/// Remembers which completions were accepted, mirroring VS Code's `editor.suggestSelection`.
+///
+/// The memory never reorders the completion list: it only picks which completion is
+/// preselected (highlighted) when the completions menu opens. Selecting an item based on
+/// recency without reordering avoids the list jumping around under the cursor, which is
+/// why VS Code moved away from recency-based sorting as well.
+pub(crate) struct SuggestMemory {
+    recently_used: RefCell<HashMap<String, MemItem>>,
+    recently_used_by_prefix: RefCell<HashMap<String, MemItem>>,
+    touch: Cell<u64>,
+}
+
+impl Default for SuggestMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SuggestMemory {
+    pub fn new() -> Self {
+        Self {
+            recently_used: RefCell::new(HashMap::default()),
+            recently_used_by_prefix: RefCell::new(HashMap::default()),
+            touch: Cell::new(0),
+        }
+    }
+
+    /// Records that the given completion was accepted so that it can be preselected later.
+    pub fn memorize(
+        &self,
+        mode: SuggestSelection,
+        language: Option<&LanguageName>,
+        prefix: &str,
+        completion: &Completion,
+    ) {
+        match mode {
+            SuggestSelection::First => {}
+            SuggestSelection::RecentlyUsed => {
+                let mut recently_used = self.recently_used.borrow_mut();
+                recently_used.insert(
+                    memory_key(language, &completion.label.text),
+                    MemItem {
+                        kind: completion.kind(),
+                        new_text: completion.new_text.clone(),
+                        touch: self.next_touch(),
+                    },
+                );
+                trim_to_limit(&mut recently_used, RECENTLY_USED_LIMIT);
+            }
+            SuggestSelection::RecentlyUsedByPrefix => {
+                if prefix.is_empty() {
+                    return;
+                }
+                let mut recently_used_by_prefix = self.recently_used_by_prefix.borrow_mut();
+                recently_used_by_prefix.insert(
+                    memory_key(language, prefix),
+                    MemItem {
+                        kind: completion.kind(),
+                        new_text: completion.new_text.clone(),
+                        touch: self.next_touch(),
+                    },
+                );
+                trim_to_limit(&mut recently_used_by_prefix, RECENTLY_USED_BY_PREFIX_LIMIT);
+            }
+        }
+    }
+
+    /// Returns the index into `matches` of the completion that should be preselected, if any.
+    pub fn select(
+        &self,
+        mode: SuggestSelection,
+        language: Option<&LanguageName>,
+        query: &str,
+        matches: &[StringMatch],
+        completions: &[Completion],
+    ) -> Option<usize> {
+        if matches.is_empty() {
+            return None;
+        }
+        match mode {
+            SuggestSelection::First => None,
+            SuggestSelection::RecentlyUsed => {
+                let top_score = matches[0].score;
+                let recently_used = self.recently_used.borrow();
+                let mut best: Option<(usize, u64)> = None;
+                for (index, string_match) in matches.iter().enumerate() {
+                    if top_score - string_match.score > SCORE_EPSILON {
+                        // Only completions in the top-scoring group are considered, so that
+                        // a remembered completion can't jump over clearly better matches.
+                        break;
+                    }
+                    let Some(completion) = completions.get(string_match.candidate_id) else {
+                        continue;
+                    };
+                    if let Some(item) =
+                        recently_used.get(&memory_key(language, &completion.label.text))
+                        && item.matches(completion)
+                        && best.is_none_or(|(_, touch)| item.touch > touch)
+                    {
+                        best = Some((index, item.touch));
+                    }
+                }
+                best.map(|(index, _)| index)
+            }
+            SuggestSelection::RecentlyUsedByPrefix => {
+                if query.is_empty() {
+                    return None;
+                }
+                let recently_used_by_prefix = self.recently_used_by_prefix.borrow();
+                let item = recently_used_by_prefix
+                    .get(&memory_key(language, query))
+                    .or_else(|| {
+                        // The current word may be longer than when the completion was accepted,
+                        // so fall back to the longest remembered prefix of the query.
+                        best_prefix_item(&recently_used_by_prefix, language, query)
+                    })?;
+                matches.iter().position(|string_match| {
+                    completions
+                        .get(string_match.candidate_id)
+                        .is_some_and(|completion| item.matches(completion))
+                })
+            }
+        }
+    }
+
+    fn next_touch(&self) -> u64 {
+        let touch = self.touch.get() + 1;
+        self.touch.set(touch);
+        touch
+    }
+}
+
+fn memory_key(language: Option<&LanguageName>, text: &str) -> String {
+    let language = language
+        .map(|language| language.0.to_string())
+        .unwrap_or_default();
+    format!("{language}/{text}")
+}
+
+/// Finds the remembered item whose key is the longest prefix of `query` for the given language.
+fn best_prefix_item<'a>(
+    entries: &'a HashMap<String, MemItem>,
+    language: Option<&LanguageName>,
+    query: &str,
+) -> Option<&'a MemItem> {
+    let language_prefix = format!("{}/", language.map(|l| l.0.to_string()).unwrap_or_default());
+    entries
+        .iter()
+        .filter(|(key, _)| {
+            key.starts_with(&language_prefix) && query.starts_with(&key[language_prefix.len()..])
+        })
+        .max_by_key(|(key, item)| (key.len(), item.touch))
+        .map(|(_, item)| item)
+}
+
+fn trim_to_limit(entries: &mut HashMap<String, MemItem>, limit: usize) {
+    if entries.len() <= limit {
+        return;
+    }
+    let mut touches = entries.values().map(|item| item.touch).collect::<Vec<_>>();
+    touches.sort_unstable();
+    let min_touch = touches
+        .get(touches.len().saturating_sub(limit))
+        .copied()
+        .unwrap_or(u64::MAX);
+    entries.retain(|_, item| item.touch >= min_touch);
 }
