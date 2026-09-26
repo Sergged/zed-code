@@ -375,6 +375,21 @@
     },
   },
   {
+    "unbind": {
+      "secondary-shift-f": "pane::DeploySearch",
+    },
+  },
+  {
+    "unbind": {
+      "secondary-shift-f": "search::FocusSearch",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-f": "search_panel::Toggle",
+    },
+  },
+  {
     "context": "Editor",
     "unbind": {
       "secondary-\"": "editor::ExpandAllDiffHunks",
