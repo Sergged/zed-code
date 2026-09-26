@@ -20,7 +20,7 @@ pub use settings::{
     EditPredictionDataCollectionChoice, EditPredictionPromptFormatContent, EditPredictionProvider,
     EditPredictionsMode, FormatOnSave, Formatter, FormatterList, InlayHintKind,
     LanguageSettingsContent, LineEndingSetting, LspInsertMode, REST_OF_LANGUAGE_SERVERS,
-    RewrapBehavior, ShowWhitespaceSetting, SoftWrap, WordsCompletionMode,
+    RewrapBehavior, ShowWhitespaceSetting, SoftWrap, SuggestSelection, WordsCompletionMode,
 };
 use settings::{RegisterSetting, Settings, SettingsLocation, SettingsStore, merge_from::MergeFrom};
 use shellexpand;
@@ -208,6 +208,10 @@ pub struct CompletionSettings {
     ///
     /// Default: "replace_suffix"
     pub lsp_insert_mode: LspInsertMode,
+    /// Controls which completion is preselected when the completions menu opens.
+    ///
+    /// Default: "first"
+    pub suggest_selection: SuggestSelection,
 }
 
 /// The settings for indent guides.
@@ -917,6 +921,7 @@ impl settings::Settings for AllLanguageSettings {
                     lsp: completions.lsp.unwrap(),
                     lsp_fetch_timeout_ms: completions.lsp_fetch_timeout_ms.unwrap(),
                     lsp_insert_mode: completions.lsp_insert_mode.unwrap(),
+                    suggest_selection: completions.suggest_selection.unwrap(),
                 },
                 debuggers: settings.debuggers.unwrap(),
                 word_diff_enabled: settings.word_diff_enabled.unwrap(),

@@ -1,10 +1,11 @@
 use crate::code_context_menus::CompletionsMenu;
+use crate::completions::SuggestMemory;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::TestAppContext;
 use language::CodeLabel;
 use lsp::{CompletionItem, CompletionItemKind, LanguageServerId};
 use project::{Completion, CompletionSource};
-use settings::SnippetSortOrder;
+use settings::{SnippetSortOrder, SuggestSelection};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use text::{Anchor, BufferId};
@@ -195,7 +196,7 @@ async fn test_sort_exact(cx: &mut TestAppContext) {
 
 #[gpui::test]
 async fn test_sort_positions(cx: &mut TestAppContext) {
-    // positions take precedence over fuzzy score and sort_text
+    // exact match takes precedence
     let completions = vec![
         CompletionBuilder::function("rounded-full", None, "15788"),
         CompletionBuilder::variable("rounded-t-full", None, "15846"),
@@ -212,9 +213,22 @@ async fn test_sort_positions(cx: &mut TestAppContext) {
     .await;
     assert_eq!(matches[0].string, "rounded-full");
 
+    // When the fuzzy scores tie, sort_text (the server's ordering) takes precedence
+    // over match positions.
     let matches =
         filter_and_sort_matches("roundedfull", &completions, SnippetSortOrder::default(), cx).await;
-    assert_eq!(matches[0].string, "rounded-full");
+    assert_eq!(
+        matches
+            .iter()
+            .map(|m| m.string.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "rounded-b-full",
+            "rounded-full",
+            "rounded-t-full",
+            "rounded-tr-full",
+        ]
+    );
 }
 
 #[gpui::test]
@@ -285,6 +299,183 @@ async fn test_case_sensitive_match_tie_breaker(cx: &mut TestAppContext) {
             .map(|m| m.string.as_str())
             .collect::<Vec<_>>(),
         vec!["aBc", "Abc"]
+    );
+}
+
+/// Builds a `StringMatch` list whose entries all have the given scores, mirroring the
+/// output of fuzzy matching against completions in the same order.
+fn make_matches(labels_and_scores: &[(&str, f64)]) -> Vec<StringMatch> {
+    labels_and_scores
+        .iter()
+        .enumerate()
+        .map(|(candidate_id, (string, score))| StringMatch {
+            candidate_id,
+            score: *score,
+            positions: vec![],
+            string: string.to_string(),
+        })
+        .collect()
+}
+
+#[gpui::test]
+async fn test_suggest_memory_recently_used(_cx: &mut TestAppContext) {
+    let completions = vec![
+        CompletionBuilder::function("parse", None, "0"),
+        CompletionBuilder::function("persist", None, "0"),
+        CompletionBuilder::function("prepare", None, "0"),
+    ];
+    let matches = make_matches(&[("parse", 1.0), ("persist", 1.0), ("prepare", 1.0)]);
+    let memory = SuggestMemory::new();
+
+    // No completions accepted yet: nothing is preselected.
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "p",
+            &matches,
+            &completions
+        ),
+        None
+    );
+
+    // Accepting a completion records it, and the next menu preselects it.
+    memory.memorize(SuggestSelection::RecentlyUsed, None, "p", &completions[1]);
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "p",
+            &matches,
+            &completions
+        ),
+        Some(1)
+    );
+
+    // A more recently accepted completion wins over an older one.
+    memory.memorize(SuggestSelection::RecentlyUsed, None, "p", &completions[2]);
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "p",
+            &matches,
+            &completions
+        ),
+        Some(2)
+    );
+
+    // Completions outside the top-scoring group are never preselected, so that a
+    // remembered item can't jump over clearly better matches.
+    let matches = make_matches(&[("parse", 2.0), ("persist", 1.0), ("prepare", 1.0)]);
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "p",
+            &matches,
+            &completions
+        ),
+        None
+    );
+}
+
+#[gpui::test]
+async fn test_suggest_memory_recently_used_matches_kind_and_insert_text(_cx: &mut TestAppContext) {
+    // Two completions with the same label but different kinds and insert text. The memory
+    // keys by label but only preselects when kind and insert text still match, so it can't
+    // pick up an unrelated completion that happens to share the label.
+    let completions = vec![
+        CompletionBuilder::function("foo", None, "0"),
+        CompletionBuilder::variable("foo", None, "0"),
+    ];
+    let matches = make_matches(&[("foo", 1.0), ("foo", 1.0)]);
+    let memory = SuggestMemory::new();
+
+    memory.memorize(SuggestSelection::RecentlyUsed, None, "f", &completions[0]);
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "f",
+            &matches,
+            &completions
+        ),
+        Some(0)
+    );
+
+    memory.memorize(SuggestSelection::RecentlyUsed, None, "f", &completions[1]);
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "f",
+            &matches,
+            &completions
+        ),
+        Some(1)
+    );
+}
+
+#[gpui::test]
+async fn test_suggest_memory_recently_used_by_prefix(_cx: &mut TestAppContext) {
+    let completions = vec![
+        CompletionBuilder::function("format", None, "0"),
+        CompletionBuilder::function("formula", None, "0"),
+    ];
+    let matches = make_matches(&[("format", 1.0), ("formula", 1.0)]);
+    let memory = SuggestMemory::new();
+
+    // No completion accepted for this prefix yet.
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsedByPrefix,
+            None,
+            "form",
+            &matches,
+            &completions
+        ),
+        None
+    );
+
+    memory.memorize(
+        SuggestSelection::RecentlyUsedByPrefix,
+        None,
+        "form",
+        &completions[1],
+    );
+    // Exact prefix match.
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsedByPrefix,
+            None,
+            "form",
+            &matches,
+            &completions
+        ),
+        Some(1)
+    );
+    // Typing more of the word falls back to the longest remembered prefix.
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsedByPrefix,
+            None,
+            "formul",
+            &matches,
+            &completions
+        ),
+        Some(1)
+    );
+    // A different prefix has nothing remembered.
+    assert_eq!(
+        memory.select(
+            SuggestSelection::RecentlyUsedByPrefix,
+            None,
+            "struc",
+            &matches,
+            &completions
+        ),
+        None
     );
 }
 
@@ -382,11 +573,10 @@ async fn test_semver_label_sort_by_latest_version(cx: &mut TestAppContext) {
         "10.4.21",
         "10.4.20+20210327",
         "10.4.20",
-        // Versions with non-exact patch versions are ordered by fuzzy score
-        // Higher fuzzy score than 112 patch version since "2" appears before "1"
-        // in "12", making it rank higher than "112"
-        "10.4.12",
+        // Versions with non-exact patch versions tie on fuzzy score and are ordered by the
+        // server's sort_text (semver descending), so "10.4.112" ranks above "10.4.12".
         "10.4.112",
+        "10.4.12",
     ];
     for (match_item, expected) in matches.iter().zip(expected_versions.iter()) {
         assert_eq!(match_item.string.as_ref() as &str, *expected);
