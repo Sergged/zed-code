@@ -79,6 +79,28 @@ Tasks can be defined:
 - on the fly with [oneshot tasks](#oneshot-tasks). These tasks are project-specific and do not persist across sessions.
 - by language extension.
 
+### Operating system specific overrides
+
+A task may override parts of itself per operating system with the `osx`, `linux`, and `windows` keys. Fields set there replace the base fields on the matching platform; fields left out keep their base value. This mirrors the `osx`/`linux`/`windows` blocks of [VS Code tasks](#vs-code-task-format).
+
+The overridable fields are `command`, `args`, `cwd`, and `env` (the last one is merged on top of the base `env`).
+
+The base `command` may be omitted when the platform blocks provide one; a task that has no command for the platform it runs on is ignored.
+
+```json [tasks]
+[
+  {
+    "label": "Open External Terminal",
+    "osx": {
+      "command": "open -a Terminal \"$ZED_ACTIVE_WORKTREE_ROOT\""
+    },
+    "windows": {
+      "command": "start cmd /k \"cd /d $ZED_ACTIVE_WORKTREE_ROOT\""
+    }
+  }
+]
+```
+
 ## Variables
 
 Zed tasks act just like your shell; that also means that you can reference environmental variables via sh-esque `$VAR_NAME` syntax. A couple of additional environmental variables are set for your convenience.
@@ -96,6 +118,7 @@ These variables allow you to pull information from the current editor and use it
 - `ZED_SELECTED_TEXT`: currently selected text
 - `ZED_LANGUAGE`: language of the currently opened buffer (e.g. `Rust`, `Python`, `Shell Script`)
 - `ZED_WORKTREE_ROOT`: absolute path to the root of the current worktree. (e.g. `/Users/my-user/path/to/project`)
+- `ZED_ACTIVE_WORKTREE_ROOT`: absolute path to the worktree selected in the title bar's branch/worktree switcher (the project's active git repository, as picked in the title bar or the git panel). Unlike `ZED_WORKTREE_ROOT`, it follows the UI selection rather than the currently focused file. Useful when a project contains multiple folders and you want tasks to run in the folder you switched to.
 - `ZED_MAIN_GIT_WORKTREE`: absolute path to the main git worktree's working directory. For normal checkouts this equals `ZED_WORKTREE_ROOT`; for linked git worktrees this is the original repository's working directory.
 - `ZED_CUSTOM_RUST_PACKAGE`: (Rust-specific) name of the parent package of $ZED_FILE source file.
 

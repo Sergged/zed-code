@@ -428,6 +428,16 @@ pub fn task_contexts(
         })
         .collect::<HashMap<_, _>>();
 
+    // The worktree selected in the title bar's branch/worktree switcher (and the
+    // git panel's repository selector), which follows the project's active git
+    // repository rather than the currently focused file. Exposed to tasks via the
+    // `$ZED_ACTIVE_WORKTREE_ROOT` variable, injected into the active contexts below.
+    let active_repository_worktree_abs_path = workspace
+        .project()
+        .read(cx)
+        .active_repository_worktree(cx)
+        .map(|worktree| worktree.read(cx).abs_path());
+
     cx.background_spawn(async move {
         let mut task_contexts = TaskContexts::default();
 
@@ -458,6 +468,26 @@ pub fn task_contexts(
                 .into_iter()
                 .map(|(id, abs_path)| (id, worktree_context(&abs_path))),
         );
+
+        if let Some(active_repository_worktree_abs_path) = &active_repository_worktree_abs_path {
+            let active_worktree_root = active_repository_worktree_abs_path
+                .to_string_lossy()
+                .into_owned();
+            if let Some((_, _, active_item_context)) = task_contexts.active_item_context.as_mut() {
+                active_item_context.task_variables.insert(
+                    VariableName::ActiveWorktreeRoot,
+                    active_worktree_root.clone(),
+                );
+            }
+            if let Some((_, active_worktree_context)) =
+                task_contexts.active_worktree_context.as_mut()
+            {
+                active_worktree_context
+                    .task_variables
+                    .insert(VariableName::ActiveWorktreeRoot, active_worktree_root);
+            }
+        }
+
         task_contexts
     })
 }
@@ -482,7 +512,7 @@ fn worktree_context(worktree_abs_path: &Path) -> TaskContext {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
     use editor::{Editor, MultiBufferOffset, SelectionEffects};
     use gpui::TestAppContext;
@@ -540,6 +570,92 @@ mod tests {
                 )]),
                 project_env: HashMap::default(),
             }
+        );
+    }
+
+    #[gpui::test]
+    async fn test_active_worktree_root_follows_active_repository(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "repo_a": { ".git": {}, "a.txt": "buffer_text_a" },
+                "repo_b": { ".git": {}, "b.txt": "buffer_text_b" },
+            }),
+        )
+        .await;
+        fs.set_head_for_repo(
+            path!("/root/repo_a/.git").as_ref(),
+            &[("a.txt", "buffer_text_a".to_string())],
+            "aaaa",
+        );
+        fs.set_head_for_repo(
+            path!("/root/repo_b/.git").as_ref(),
+            &[("b.txt", "buffer_text_b".to_string())],
+            "bbbb",
+        );
+
+        let project = Project::test(
+            fs,
+            [
+                path!("/root/repo_a").as_ref(),
+                path!("/root/repo_b").as_ref(),
+            ],
+            cx,
+        )
+        .await;
+        cx.executor().run_until_parked();
+
+        let worktree_b_id = project.read_with(cx, |project, cx| {
+            project
+                .visible_worktrees(cx)
+                .find(|worktree| {
+                    worktree.read(cx).abs_path().to_string_lossy().as_ref() == "/root/repo_b"
+                })
+                .expect("worktree B should exist")
+                .read(cx)
+                .id()
+        });
+        project.update(cx, |project, cx| {
+            project.git_store().update(cx, |git_store, cx| {
+                git_store.set_active_repo_for_worktree(worktree_b_id, cx);
+            });
+        });
+        cx.executor().run_until_parked();
+
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+
+        let contexts = workspace
+            .update_in(cx, |workspace, window, cx| {
+                task_contexts(workspace, window, cx)
+            })
+            .await;
+
+        let active_context = contexts
+            .active_context()
+            .expect("active worktree should provide a task context");
+        let expected_active_worktree_root = PathBuf::from(path!("/root/repo_b"));
+        let expected_active_worktree_root = expected_active_worktree_root.to_string_lossy();
+        assert_eq!(
+            active_context
+                .task_variables
+                .get(&VariableName::ActiveWorktreeRoot),
+            Some(expected_active_worktree_root.as_ref())
+        );
+        // The regular `$ZED_WORKTREE_ROOT` still points at the first visible worktree
+        // (there is no focused file here), which is exactly why `$ZED_ACTIVE_WORKTREE_ROOT`
+        // exists: it follows the repository selected in the title bar / git panel.
+        let expected_worktree_root = PathBuf::from(path!("/root/repo_a"));
+        let expected_worktree_root = expected_worktree_root.to_string_lossy();
+        assert_eq!(
+            active_context
+                .task_variables
+                .get(&VariableName::WorktreeRoot),
+            Some(expected_worktree_root.as_ref())
         );
     }
 

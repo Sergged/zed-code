@@ -24,7 +24,10 @@ use crate::{
 pub struct TaskTemplate {
     /// Human readable name of the task to display in the UI.
     pub label: String,
-    /// Executable command to spawn.
+    /// Executable command to spawn. May be omitted when the `osx`/`linux`/`windows`
+    /// override provides one for the platform the task is resolved on; without any
+    /// command the task is not resolvable and is ignored.
+    #[serde(default)]
     pub command: String,
     /// Arguments to the command.
     #[serde(default)]
@@ -78,6 +81,15 @@ pub struct TaskTemplate {
     /// Hooks that this task runs when emitted.
     #[serde(default)]
     pub hooks: HashSet<TaskHook>,
+    /// Overrides applied when the task runs on macOS. Mirrors VS Code's `osx` task block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osx: Option<Box<TaskTemplatePlatformOverride>>,
+    /// Overrides applied when the task runs on Linux. Mirrors VS Code's `linux` task block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux: Option<Box<TaskTemplatePlatformOverride>>,
+    /// Overrides applied when the task runs on Windows. Mirrors VS Code's `windows` task block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<Box<TaskTemplatePlatformOverride>>,
 }
 
 #[derive(Deserialize, Eq, PartialEq, Clone, Debug)]
@@ -136,9 +148,66 @@ pub enum SaveStrategy {
     None,
 }
 
+/// The parts of a task that may differ between operating systems.
+///
+/// Any field set here replaces the corresponding base field of the task; fields
+/// left out keep their base value. Mirrors the `osx`/`linux`/`windows` blocks of
+/// VS Code tasks.
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskTemplatePlatformOverride {
+    /// Executable command to spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Arguments to the command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Current working directory to spawn the command into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Env overrides for the command, merged on top of the task's base `env`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+}
+
+/// The operating system a task template is resolved for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskPlatform {
+    MacOs,
+    Linux,
+    Windows,
+}
+
+impl TaskPlatform {
+    /// The operating system Zed is currently running on.
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
 /// A group of Tasks defined in a JSON file.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TaskTemplates(pub Vec<TaskTemplate>);
+
+impl<'de> Deserialize<'de> for TaskTemplates {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut templates = Vec::<TaskTemplate>::deserialize(deserializer)?;
+        let platform = TaskPlatform::current();
+        for template in &mut templates {
+            template.apply_platform_overrides(platform);
+        }
+        Ok(Self(templates))
+    }
+}
 
 impl TaskTemplates {
     pub const FILE_NAME: &str = "tasks.json";
@@ -155,6 +224,38 @@ impl TaskTemplates {
 }
 
 impl TaskTemplate {
+    /// Replaces the base fields with the ones from the override for `platform`, if any,
+    /// and clears all per-platform overrides.
+    ///
+    /// Called right after deserializing a tasks file, so that the rest of Zed only ever
+    /// observes templates that match the operating system it runs on.
+    pub fn apply_platform_overrides(&mut self, platform: TaskPlatform) {
+        let overrides = match platform {
+            TaskPlatform::MacOs => self.osx.take(),
+            TaskPlatform::Linux => self.linux.take(),
+            TaskPlatform::Windows => self.windows.take(),
+        };
+        self.osx = None;
+        self.linux = None;
+        self.windows = None;
+
+        let Some(overrides) = overrides else {
+            return;
+        };
+        if let Some(command) = overrides.command {
+            self.command = command;
+        }
+        if let Some(args) = overrides.args {
+            self.args = args;
+        }
+        if let Some(cwd) = overrides.cwd {
+            self.cwd = Some(cwd);
+        }
+        if let Some(env) = overrides.env {
+            self.env.extend(env);
+        }
+    }
+
     /// Replaces all `VariableName` task variables in the task template string fields.
     ///
     /// Every [`ResolvedTask`] gets a [`TaskId`], based on the `id_base` (to avoid collision with various task sources),
@@ -1235,5 +1336,89 @@ mod tests {
             "args that consist entirely of variables resolved to empty strings should be omitted, \
             while literal empty args and partially substituted args should be preserved"
         );
+    }
+
+    #[test]
+    fn test_platform_overrides_replace_base_fields() {
+        let mut template = TaskTemplate {
+            label: "Open External Terminal".to_string(),
+            command: "open -a Terminal".to_string(),
+            args: vec!["mac".to_string()],
+            cwd: Some("/base".to_string()),
+            env: HashMap::from_iter([("KEEP".to_string(), "1".to_string())]),
+            osx: Some(Box::new(TaskTemplatePlatformOverride {
+                command: Some("open -a Terminal".to_string()),
+                ..Default::default()
+            })),
+            linux: Some(Box::new(TaskTemplatePlatformOverride {
+                command: Some("x-terminal-emulator".to_string()),
+                args: Some(vec!["linux".to_string()]),
+                ..Default::default()
+            })),
+            windows: Some(Box::new(TaskTemplatePlatformOverride {
+                command: Some("start cmd".to_string()),
+                args: Some(vec!["/k".to_string()]),
+                env: Some(HashMap::from_iter([(
+                    "PLATFORM".to_string(),
+                    "windows".to_string(),
+                )])),
+                ..Default::default()
+            })),
+            ..TaskTemplate::default()
+        };
+
+        template.apply_platform_overrides(TaskPlatform::Windows);
+
+        assert_eq!(template.command, "start cmd");
+        assert_eq!(template.args, vec!["/k".to_string()]);
+        // Fields absent from the override keep their base value.
+        assert_eq!(template.cwd, Some("/base".to_string()));
+        // `env` is merged on top of the base one.
+        assert_eq!(
+            template.env.get("PLATFORM").map(String::as_str),
+            Some("windows")
+        );
+        assert_eq!(template.env.get("KEEP").map(String::as_str), Some("1"));
+        assert!(template.osx.is_none() && template.linux.is_none() && template.windows.is_none());
+    }
+
+    #[test]
+    fn test_platform_overrides_are_applied_on_deserialization() {
+        let templates: TaskTemplates = serde_json::from_str(
+            r#"[
+                {
+                    "label": "Open External Terminal",
+                    "command": "base",
+                    "osx": { "command": "mac" },
+                    "linux": { "command": "linux" },
+                    "windows": { "command": "win" }
+                }
+            ]"#,
+        )
+        .expect("failed to deserialize task templates");
+
+        let expected_command = match TaskPlatform::current() {
+            TaskPlatform::MacOs => "mac",
+            TaskPlatform::Linux => "linux",
+            TaskPlatform::Windows => "win",
+        };
+        assert_eq!(templates.0[0].command, expected_command);
+        assert!(templates.0[0].windows.is_none());
+    }
+
+    #[test]
+    fn test_task_with_only_platform_commands() {
+        let templates: TaskTemplates = serde_json::from_str(
+            r#"[{ "label": "t", "osx": { "command": "mac" }, "windows": { "command": "win" } }]"#,
+        )
+        .expect("the base command may be omitted when platform overrides provide one");
+
+        let expected_command = match TaskPlatform::current() {
+            TaskPlatform::MacOs => "mac",
+            TaskPlatform::Windows => "win",
+            // Linux is not covered here, so the task has no command and does not resolve.
+            TaskPlatform::Linux => "",
+        };
+        assert_eq!(templates.0[0].command, expected_command);
     }
 }

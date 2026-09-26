@@ -23,8 +23,9 @@ pub use debug_format::{
     Request, TcpArgumentsTemplate, ZedDebugConfig,
 };
 pub use task_template::{
-    DebugArgsRequest, HideStrategy, RevealStrategy, SaveStrategy, TaskHook, TaskTemplate,
-    TaskTemplates, substitute_variables_in_map, substitute_variables_in_str,
+    DebugArgsRequest, HideStrategy, RevealStrategy, SaveStrategy, TaskHook, TaskPlatform,
+    TaskTemplate, TaskTemplatePlatformOverride, TaskTemplates, substitute_variables_in_map,
+    substitute_variables_in_str,
 };
 pub use util::shell::{Shell, ShellKind};
 pub use util::shell_builder::ShellBuilder;
@@ -166,6 +167,11 @@ pub enum VariableName {
     Stem,
     /// An absolute path of the currently opened worktree, that contains the file.
     WorktreeRoot,
+    /// An absolute path of the worktree selected in the title bar's branch/worktree switcher,
+    /// i.e. the worktree of the project's active git repository, as picked in the title bar
+    /// or the git panel. Unlike [`VariableName::WorktreeRoot`], it follows the UI selection
+    /// rather than the currently focused file.
+    ActiveWorktreeRoot,
     /// A symbol text, that contains latest cursor/selection position.
     Symbol,
     /// A row with the latest cursor/selection position.
@@ -224,6 +230,7 @@ impl FromStr for VariableName {
             "DIRNAME" => Self::Dirname,
             "STEM" => Self::Stem,
             "WORKTREE_ROOT" => Self::WorktreeRoot,
+            "ACTIVE_WORKTREE_ROOT" => Self::ActiveWorktreeRoot,
             "SYMBOL" => Self::Symbol,
             "RUNNABLE_SYMBOL" => Self::RunnableSymbol,
             "SELECTED_TEXT" => Self::SelectedText,
@@ -264,6 +271,7 @@ impl std::fmt::Display for VariableName {
             Self::Dirname => write!(f, "{ZED_VARIABLE_NAME_PREFIX}DIRNAME"),
             Self::Stem => write!(f, "{ZED_VARIABLE_NAME_PREFIX}STEM"),
             Self::WorktreeRoot => write!(f, "{ZED_VARIABLE_NAME_PREFIX}WORKTREE_ROOT"),
+            Self::ActiveWorktreeRoot => write!(f, "{ZED_VARIABLE_NAME_PREFIX}ACTIVE_WORKTREE_ROOT"),
             Self::Symbol => write!(f, "{ZED_VARIABLE_NAME_PREFIX}SYMBOL"),
             Self::Row => write!(f, "{ZED_VARIABLE_NAME_PREFIX}ROW"),
             Self::Column => write!(f, "{ZED_VARIABLE_NAME_PREFIX}COLUMN"),

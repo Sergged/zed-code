@@ -555,21 +555,10 @@ impl TitleBar {
     /// - Prefer the worktree owning the project's active repository
     /// - Fall back to the first visible worktree
     pub fn effective_active_worktree(&self, cx: &App) -> Option<Entity<project::Worktree>> {
-        let project = self.project.read(cx);
-
-        if let Some(repo) = project.active_repository(cx) {
-            let repo = repo.read(cx);
-            let repo_path = &repo.work_directory_abs_path;
-
-            for worktree in project.visible_worktrees(cx) {
-                let worktree_path = worktree.read(cx).abs_path();
-                if worktree_path == *repo_path || worktree_path.starts_with(repo_path.as_ref()) {
-                    return Some(worktree);
-                }
-            }
-        }
-
-        project.visible_worktrees(cx).next()
+        self.project
+            .read(cx)
+            .active_repository_worktree(cx)
+            .or_else(|| self.project.read(cx).visible_worktrees(cx).next())
     }
 
     fn get_repository_for_worktree(
