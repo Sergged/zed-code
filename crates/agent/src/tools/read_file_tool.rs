@@ -99,7 +99,7 @@ fn write_lines_numbered<'a>(
 /// Skill resources are expected to be plain text (Markdown, scripts, configs).
 /// Image rendering, the action log, and the buffer-backed outline path are
 /// intentionally not exercised here — those are project concerns.
-async fn read_global_skill_file(
+async fn read_external_file(
     canonical_path: &Path,
     fs: &dyn fs::Fs,
     start_line: Option<u32>,
@@ -143,7 +143,7 @@ async fn read_global_skill_file(
 
 use super::tool_permissions::{
     ResolvedProjectPath, authorize_symlink_access, canonicalize_worktree_roots,
-    resolve_global_skill_path, resolve_project_path,
+    external_path_excluded_by_settings, resolve_external_path, resolve_project_path,
 };
 use crate::{AgentTool, ToolCallEventStream, ToolInput, outline};
 
@@ -156,12 +156,13 @@ use crate::{AgentTool, ToolCallEventStream, ToolInput, outline};
 /// - This tool supports reading image files. Supported formats: PNG, JPEG, WebP, GIF, BMP, TIFF.
 ///   Image files are returned as visual content that you can analyze directly.
 ///
-/// The only supported path outside the project is `~/.agents/skills` or a descendant, for global agent skills.
+/// The path may be relative to a project root, or an absolute path outside
+/// the project (subject to the user's agent tool permission rules).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadFileToolInput {
-    /// The relative path of the file to read.
+    /// The relative path of the file to read, or an absolute path outside the project.
     ///
-    /// This path should never be absolute, and the first component of the path should always be a root directory in a project, unless it's a global agent skill under `~/.agents/skills`.
+    /// A relative path should always start with a root directory of the project.
     ///
     /// <example>
     /// If the project has the following root directories:
@@ -256,16 +257,26 @@ impl AgentTool for ReadFileTool {
                 .await
                 .map_err(tool_content_err)?;
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
+            let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
-            // Fast path: if the model passes a path that resolves under the
-            // global skills directory, read it directly via the
-            // filesystem. Global skills live outside any worktree, so the
-            // standard project-path machinery would refuse them.
-            if let Some(skill_path) =
-                resolve_global_skill_path(Path::new(&input.path), fs.as_ref()).await
+            // Paths outside every worktree (global agent skills, or any other
+            // absolute path the user's permission rules allow) are read directly
+            // through the filesystem: the project-path machinery only knows about
+            // worktrees and would otherwise refuse them.
+            if let Some(external_path) =
+                resolve_external_path(Path::new(&input.path), &canonical_roots, fs.as_ref()).await
             {
-                return read_global_skill_file(
-                    &skill_path,
+                if let Some(setting) =
+                    cx.update(|cx| external_path_excluded_by_settings(&external_path, cx))
+                {
+                    return Err(tool_content_err(format!(
+                        "Cannot read file because its path matches the user's global `{setting}` setting: {}",
+                        input.path
+                    )));
+                }
+
+                return read_external_file(
+                    &external_path,
                     fs.as_ref(),
                     input.start_line,
                     input.end_line,
@@ -274,8 +285,6 @@ impl AgentTool for ReadFileTool {
                 )
                 .await;
             }
-
-            let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
             let (project_path, symlink_canonical_target) =
                 project.read_with(cx, |project, cx| {
@@ -1071,7 +1080,9 @@ mod test {
         let action_log = cx.new(|_| ActionLog::new(project.clone()));
         let tool = Arc::new(ReadFileTool::new(project, action_log, true));
 
-        // Reading a file outside the project worktree should fail
+        // Reading an absolute file outside the project worktree now succeeds:
+        // file tools can reach the whole filesystem, gated by tool permissions
+        // and the private/exclusion settings.
         let result = cx
             .update(|cx| {
                 let input = ReadFileToolInput {
@@ -1087,8 +1098,8 @@ mod test {
             })
             .await;
         assert!(
-            result.is_err(),
-            "read_file_tool should error when attempting to read an absolute path outside a worktree"
+            result.is_ok(),
+            "read_file_tool should read absolute paths outside a worktree: {result:?}"
         );
 
         // Reading a file within the project should succeed
@@ -2006,12 +2017,11 @@ mod test {
     }
 
     #[gpui::test]
-    async fn test_read_outside_skills_dir_still_rejected(cx: &mut TestAppContext) {
+    async fn test_read_absolute_path_outside_project(cx: &mut TestAppContext) {
         init_test(cx);
 
-        // A path that's neither in the worktree nor under the global skills
-        // dir should still fail — the fast path is gated, not a backdoor for
-        // arbitrary external reads.
+        // An absolute path outside the worktree is read directly through the
+        // filesystem.
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(path!("/root"), json!({})).await;
         fs.create_dir(path!("/etc").as_ref()).await.unwrap();
@@ -2037,9 +2047,11 @@ mod test {
             })
             .await;
 
-        assert!(
-            result.is_err(),
-            "path outside skills dir should be rejected"
-        );
+        let LanguageModelToolResultContent::Text(text) =
+            result.expect("absolute path outside the project should be readable")
+        else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.as_ref(), "     1\ttop secret");
     }
 }

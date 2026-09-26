@@ -1,6 +1,6 @@
 use super::tool_permissions::{
     authorize_symlink_escapes, canonicalize_worktree_roots, collect_symlink_escapes,
-    resolve_creatable_global_skill_descendant_path, resolve_global_skill_descendant_path,
+    is_protected_external_path, resolve_creatable_external_path, resolve_external_path,
     resolves_to_global_skills_dir, sensitive_settings_kind,
 };
 use crate::{
@@ -23,7 +23,7 @@ use util::markdown::MarkdownInlineCode;
 /// If the source and destination directories are the same, but the filename is different, this performs a rename. Otherwise, it performs a move.
 ///
 /// This tool should be used when it's desirable to move or rename a file or directory without changing its contents at all.
-/// The only supported paths outside the project are descendants of `~/.agents/skills`, for global agent skills.
+/// Paths outside the project may be absolute; they are subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MovePathToolInput {
     /// The source path of the file or directory to move/rename.
@@ -131,14 +131,28 @@ impl AgentTool for MovePathTool {
                 );
             }
 
-            let global_source_path =
-                resolve_global_skill_descendant_path(Path::new(&input.source_path), fs.as_ref())
+            let external_source_path =
+                resolve_external_path(Path::new(&input.source_path), &canonical_roots, fs.as_ref())
                     .await;
-            let global_destination_path = resolve_creatable_global_skill_descendant_path(
+            let external_destination_path = resolve_creatable_external_path(
                 Path::new(&input.destination_path),
+                &canonical_roots,
                 fs.as_ref(),
             )
             .await;
+
+            if external_source_path
+                .as_ref()
+                .is_some_and(|path| is_protected_external_path(path, &canonical_roots))
+                || external_destination_path
+                    .as_ref()
+                    .is_some_and(|path| is_protected_external_path(path, &canonical_roots))
+            {
+                return Err(format!(
+                    "Refusing to move to or from a protected path outside the project: {} -> {}",
+                    input.source_path, input.destination_path
+                ));
+            }
 
             let symlink_escapes: Vec<(&str, std::path::PathBuf)> =
                 project.read_with(cx, |project, cx| {
@@ -200,9 +214,9 @@ impl AgentTool for MovePathTool {
                 authorize.await.map_err(|e| e.to_string())?;
             }
 
-            if global_source_path.is_some() || global_destination_path.is_some() {
-                let source_path = if let Some(global_source_path) = global_source_path {
-                    global_source_path
+            if external_source_path.is_some() || external_destination_path.is_some() {
+                let source_path = if let Some(external_source_path) = external_source_path {
+                    external_source_path
                 } else {
                     project.read_with(cx, |project, cx| {
                         let project_path = project.find_project_path(&input.source_path, cx).ok_or_else(|| {
@@ -217,9 +231,10 @@ impl AgentTool for MovePathTool {
                     })?
                 };
 
-                let destination_path = if let Some(global_destination_path) = global_destination_path
+                let destination_path = if let Some(external_destination_path) =
+                    external_destination_path
                 {
-                    global_destination_path
+                    external_destination_path
                 } else {
                     project.read_with(cx, |project, cx| {
                         let project_path = project.find_project_path(&input.destination_path, cx).ok_or_else(|| {

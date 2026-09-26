@@ -1,6 +1,7 @@
 use super::tool_permissions::{
     authorize_symlink_access, canonicalize_worktree_roots, detect_symlink_escape,
-    resolve_global_skill_descendant_path, resolves_to_global_skills_dir, sensitive_settings_kind,
+    is_protected_external_path, resolve_external_path, resolves_to_global_skills_dir,
+    sensitive_settings_kind,
 };
 use crate::{
     AgentTool, ToolCallEventStream, ToolInput, ToolPermissionDecision,
@@ -21,7 +22,7 @@ use util::markdown::MarkdownInlineCode;
 
 /// Deletes the file or directory (and the directory's contents, recursively) at the specified path in the project, and returns confirmation of the deletion.
 ///
-/// The only supported paths outside the project are descendants of `~/.agents/skills`, for global agent skills.
+/// Paths outside the project may be absolute; they are subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeletePathToolInput {
     /// The path of the file or directory to delete.
@@ -104,8 +105,15 @@ impl AgentTool for DeletePathTool {
                 );
             }
 
-            let global_skill_path =
-                resolve_global_skill_descendant_path(Path::new(&path), fs.as_ref()).await;
+            let external_path =
+                resolve_external_path(Path::new(&path), &canonical_roots, fs.as_ref()).await;
+            if let Some(external_path) = &external_path
+                && is_protected_external_path(external_path, &canonical_roots)
+            {
+                return Err(format!(
+                    "Refusing to delete a protected path outside the project: {path}"
+                ));
+            }
 
             let symlink_escape_target = project.read_with(cx, |project, cx| {
                 detect_symlink_escape(project, &path, &canonical_roots, cx)
@@ -159,9 +167,9 @@ impl AgentTool for DeletePathTool {
                 authorize.await.map_err(|e| e.to_string())?;
             }
 
-            if let Some(global_skill_path) = global_skill_path {
+            if let Some(external_path) = external_path {
                 let metadata = fs
-                    .metadata(&global_skill_path)
+                    .metadata(&external_path)
                     .await
                     .map_err(|e| format!("Deleting {path}: {e}"))?
                     .ok_or_else(|| format!("Deleting {path}: path not found"))?;
@@ -170,7 +178,7 @@ impl AgentTool for DeletePathTool {
                     result = async {
                         if metadata.is_dir {
                             fs.remove_dir(
-                                &global_skill_path,
+                                &external_path,
                                 fs::RemoveOptions {
                                     recursive: true,
                                     ..fs::RemoveOptions::default()
@@ -178,7 +186,7 @@ impl AgentTool for DeletePathTool {
                             )
                             .await
                         } else {
-                            fs.remove_file(&global_skill_path, fs::RemoveOptions::default()).await
+                            fs.remove_file(&external_path, fs::RemoveOptions::default()).await
                         }
                     }.fuse() => {
                         result.map_err(|e| format!("Deleting {path}: {e}"))?;
@@ -702,6 +710,41 @@ mod tests {
                 Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "Deny policy should not emit symlink authorization prompt",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_delete_path_outside_project(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/root/project"), json!({})).await;
+        fs.create_dir(path!("/outside").as_ref()).await.unwrap();
+        fs.insert_file(path!("/outside/doomed.txt"), b"bye".to_vec())
+            .await;
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: path!("/outside/doomed.txt").to_string(),
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(result.is_ok(), "expected success, got {result:?}");
+        assert!(
+            !fs.is_file(path!("/outside/doomed.txt").as_ref()).await,
+            "external file should have been deleted"
         );
     }
 }

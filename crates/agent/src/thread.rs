@@ -4122,9 +4122,9 @@ impl Thread {
                                 the project. Returns confirmation that the directory was \
                                 created.\n\nThis tool creates a directory and all necessary \
                                 parent directories. It should be used whenever you need to \
-                                create new directories within the project.\nThe only supported \
-                                path outside the project is `~/.agents/skills` or a descendant, \
-                                for global agent skills."
+                                create new directories within the project.\nPaths outside the \
+                                project may be absolute; they are subject to the user's agent \
+                                tool permission rules."
                                 .to_string();
                             if let Some(properties) = schema
                                 .get_mut("properties")
