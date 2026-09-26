@@ -210,15 +210,6 @@ pub fn init(cx: &mut App) {
             },
         );
 
-        // Both on present and dismissed search, we need to unconditionally handle those actions to focus from the editor.
-        workspace.register_action(move |workspace, action: &DeploySearch, window, cx| {
-            if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-                cx.propagate();
-                return;
-            }
-            ProjectSearchView::deploy_search(workspace, action, window, cx);
-            cx.notify();
-        });
         workspace.register_action(move |workspace, action: &NewSearch, window, cx| {
             if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
                 cx.propagate();
@@ -5831,8 +5822,11 @@ pub mod tests {
             assert_eq!(second_pane.read(cx).items_len(), 2);
         });
 
-        // Deploy a new search
-        cx.dispatch_action(DeploySearch::default());
+        // Deploy a new search (directly, since `pane::DeploySearch` is now bound
+        // to the search panel).
+        workspace.update_in(cx, |workspace, window, cx| {
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx);
+        });
 
         // Both panes should now have a project search in them
         workspace.update_in(cx, |workspace, window, cx| {
@@ -5856,8 +5850,11 @@ pub mod tests {
             })
             .unwrap();
 
-        // Deploy a new search
-        cx.dispatch_action(DeploySearch::default());
+        // Deploy a new search (directly, since `pane::DeploySearch` is now bound
+        // to the search panel).
+        workspace.update_in(cx, |workspace, window, cx| {
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx);
+        });
 
         // The project search view should now be focused in the second pane
         // And the number of items should be unchanged.
