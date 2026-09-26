@@ -6,14 +6,12 @@ use anyhow::Result;
 use cloud_llm_client::WebSearchResponse;
 use futures::FutureExt as _;
 use gpui::{App, Task};
-use language_model::{
-    LanguageModelProviderId, LanguageModelToolResultContent, ZED_CLOUD_PROVIDER_ID,
-};
+use language_model::{LanguageModelProviderId, LanguageModelToolResultContent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 use util::markdown::MarkdownInlineCode;
-use web_search::WebSearchRegistry;
+use web_search::{WebSearchRegistry, WebSearchRequest};
 
 /// Search the web for information using your query.
 /// Use this when you need real-time information, facts, or data that might not be in your training.
@@ -22,6 +20,56 @@ use web_search::WebSearchRegistry;
 pub struct WebSearchToolInput {
     /// The search term or question to query on the web.
     query: String,
+    /// Why this search is being run — the underlying goal or task the results
+    /// will be used for. Improves ranking against your intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    purpose: Option<String>,
+    /// Country code for geo-targeted results (e.g. `US`, `DE`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    location: Option<String>,
+    /// Language code for results (e.g. `en`, `ru`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    /// Restrict results to these domains (e.g. `["docs.rs", "github.com"]`).
+    #[serde(default)]
+    include_domains: Vec<String>,
+    /// Exclude results from these domains.
+    #[serde(default)]
+    exclude_domains: Vec<String>,
+    /// Type of search. One of `web` (default) or `news`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    domain_type: Option<String>,
+    /// Only return results published on or after this date, in `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after_date: Option<String>,
+    /// Only return results published on or before this date, in `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    before_date: Option<String>,
+    /// Only return results from the past N minutes (1 to 5,256,000). Cannot be
+    /// combined with `after_date` or `before_date`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recency_minutes: Option<u32>,
+    /// Page number for pagination, starting from 0 (max 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page: Option<u32>,
+}
+
+impl From<WebSearchToolInput> for WebSearchRequest {
+    fn from(input: WebSearchToolInput) -> Self {
+        Self {
+            query: input.query,
+            purpose: input.purpose,
+            location: input.location,
+            language: input.language,
+            include_domains: input.include_domains,
+            exclude_domains: input.exclude_domains,
+            domain_type: input.domain_type,
+            after_date: input.after_date,
+            before_date: input.before_date,
+            recency_minutes: input.recency_minutes,
+            page: input.page,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,9 +110,10 @@ impl AgentTool for WebSearchTool {
         "Searching the Web".into()
     }
 
-    /// We currently only support Zed Cloud as a provider.
-    fn supports_provider(provider: &LanguageModelProviderId) -> bool {
-        provider == &ZED_CLOUD_PROVIDER_ID
+    /// Web search is backed by a provider-independent service, so the tool is
+    /// available regardless of which language model is selected.
+    fn supports_provider(_provider: &LanguageModelProviderId) -> bool {
+        true
     }
 
     fn run(
@@ -100,7 +149,7 @@ impl AgentTool for WebSearchTool {
                         error: "Web search is not available.".to_string(),
                     });
                 };
-                Ok(provider.search(input.query, cx))
+                Ok(provider.search(input.into(), cx))
             })?;
 
             let response = futures::select! {

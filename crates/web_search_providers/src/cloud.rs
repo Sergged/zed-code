@@ -8,7 +8,7 @@ use cloud_llm_client::{WebSearchBody, WebSearchResponse};
 use futures::AsyncReadExt as _;
 use gpui::{App, AppContext, Context, Entity, Task};
 use http_client::Method;
-use web_search::{WebSearchProvider, WebSearchProviderId};
+use web_search::{WebSearchProvider, WebSearchProviderId, WebSearchRequest};
 
 pub struct CloudWebSearchProvider {
     state: Entity<State>,
@@ -47,7 +47,7 @@ impl WebSearchProvider for CloudWebSearchProvider {
         WebSearchProviderId(ZED_WEB_SEARCH_PROVIDER_ID.into())
     }
 
-    fn search(&self, query: String, cx: &mut App) -> Task<Result<WebSearchResponse>> {
+    fn search(&self, request: WebSearchRequest, cx: &mut App) -> Task<Result<WebSearchResponse>> {
         let state = self.state.read(cx);
         let client = state.client.clone();
         let llm_api_token = state.llm_api_token.clone();
@@ -56,7 +56,11 @@ impl WebSearchProvider for CloudWebSearchProvider {
             .read(cx)
             .current_organization()
             .map(|organization| organization.id.clone());
-        let body = WebSearchBody { query };
+        // Zed Cloud web search only supports the query; the additional request
+        // fields are ignored.
+        let body = WebSearchBody {
+            query: request.query,
+        };
         cx.background_spawn(async move {
             perform_web_search(client, llm_api_token, organization_id, body).await
         })

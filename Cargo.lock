@@ -20863,6 +20863,7 @@ dependencies = [
  "gpui",
  "http_client",
  "language_model",
+ "serde",
  "serde_json",
  "web_search",
 ]
