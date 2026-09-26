@@ -968,6 +968,41 @@ pub struct CompletionSettingsContent {
     ///
     /// Default: "replace_suffix"
     pub lsp_insert_mode: Option<LspInsertMode>,
+    /// Controls which completion is preselected when the completions menu opens.
+    ///
+    /// - "first": always select the first completion.
+    /// - "recently_used": remember recently accepted completions and preselect the most
+    ///   recent one among the top-scoring completions.
+    /// - "recently_used_by_prefix": remember which completion was accepted for a given
+    ///   prefix and preselect it again when the same prefix is typed.
+    ///
+    /// Default: "first"
+    pub suggest_selection: Option<SuggestSelection>,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestSelection {
+    /// Always select the first completion.
+    #[default]
+    First,
+    /// Preselect the most recently accepted completion among the top-scoring completions.
+    RecentlyUsed,
+    /// Preselect the most recently accepted completion for the current prefix.
+    RecentlyUsedByPrefix,
 }
 
 #[derive(

@@ -2393,6 +2393,18 @@
     //   Behaves like `"replace"` if the text after the cursor is a suffix of the completion, and like
     //   `"insert"` otherwise.
     "lsp_insert_mode": "replace_suffix",
+    // Controls which completion is preselected when the completions menu opens.
+    //
+    // Possible values:
+    // 1. "first"
+    //   Always select the first completion.
+    // 2. "recently_used"
+    //   Remember recently accepted completions and preselect the most recent one among the top-scoring completions.
+    // 3. "recently_used_by_prefix"
+    //   Remember which completion was accepted for a given prefix and preselect it again when the same prefix is typed.
+    //
+    // Default: first
+    "suggest_selection": "first",
   },
   // Different settings for specific languages.
   "languages": {
