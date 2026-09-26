@@ -6508,6 +6508,20 @@ impl Project {
         self.git_store.read(cx).active_repository()
     }
 
+    /// Returns the visible worktree corresponding to the project's active git
+    /// repository, i.e. the worktree shown in the title bar's branch/worktree
+    /// switcher and selected in the git panel's repository selector.
+    pub fn active_repository_worktree(&self, cx: &App) -> Option<Entity<Worktree>> {
+        let Some(repo) = self.active_repository(cx) else {
+            return None;
+        };
+        let repo_path = &repo.read(cx).work_directory_abs_path;
+        self.visible_worktrees(cx).find(|worktree| {
+            let worktree_path = worktree.read(cx).abs_path();
+            worktree_path == *repo_path || worktree_path.starts_with(repo_path.as_ref())
+        })
+    }
+
     pub fn repositories<'a>(&self, cx: &'a App) -> &'a HashMap<RepositoryId, Entity<Repository>> {
         self.git_store.read(cx).repositories()
     }

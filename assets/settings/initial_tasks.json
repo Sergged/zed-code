@@ -3,6 +3,21 @@
 // Example:
 [
   {
+    // Opens the system terminal in the folder currently selected in the title
+    // bar's worktree switcher / the git panel's repository selector.
+    "label": "Open External Terminal",
+    "osx": {
+      "command": "open -a Terminal \"$ZED_ACTIVE_WORKTREE_ROOT\"",
+    },
+    "windows": {
+      "command": "start cmd /k \"cd /d $ZED_ACTIVE_WORKTREE_ROOT\"",
+    },
+    // Add the task's tab to the terminal dock without focusing it,
+    "reveal": "never",
+    // and close that tab as soon as the command finishes.
+    "hide": "always",
+  },
+  {
     "label": "Example task",
     "command": "for i in {1..5}; do echo \"Hello $i/5\"; sleep 1; done",
     //"args": [],
