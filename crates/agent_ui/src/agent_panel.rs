@@ -83,7 +83,10 @@ use language::LanguageRegistry;
 use language_model::LanguageModelRegistry;
 use notifications::status_toast::StatusToast;
 use project::{Project, ProjectPath, Worktree};
-use settings::{NotifyWhenAgentWaiting, Settings, TerminalDockPosition, update_settings_file};
+use settings::{
+    NotifyWhenAgentWaiting, Settings, TerminalDockPosition, initial_agents_md_content,
+    update_settings_file,
+};
 
 use search::{BufferSearchBar, buffer_search::Deploy as DeployBufferSearch};
 use terminal::Event as TerminalEvent;
@@ -102,6 +105,7 @@ use util::ResultExt as _;
 use workspace::{
     CollaboratorId, DraggedSelection, DraggedTab, MultiWorkspace, PathList, SerializedPathList,
     ToggleWorkspaceSidebar, ToggleZoom, ToolbarItemView, Workspace, WorkspaceId,
+    create_and_open_local_file,
     dock::{DockPosition, Panel, PanelEvent},
     item::{ItemEvent, ItemHandle},
 };
@@ -261,18 +265,11 @@ fn project_agents_md_path(
         })
 }
 
-fn open_global_rules(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace
-        .open_abs_path(
-            paths::agents_file().clone(),
-            workspace::OpenOptions {
-                focus: Some(true),
-                ..Default::default()
-            },
-            window,
-            cx,
-        )
-        .detach_and_log_err(cx);
+fn open_global_rules(_workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    create_and_open_local_file(paths::agents_file().as_path(), window, cx, || {
+        initial_agents_md_content().as_ref().into()
+    })
+    .detach_and_log_err(cx);
 }
 
 fn open_project_rules(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

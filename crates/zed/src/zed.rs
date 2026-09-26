@@ -2094,14 +2094,18 @@ fn init_reduce_motion(cx: &mut App) {
     cx.observe_global::<SettingsStore>(apply).detach();
 }
 
-/// Starts watching `~/.config/zed/AGENTS.md` (or the platform equivalent) and
-/// surfaces any read errors using the same notification UI as settings errors.
+/// Seeds `~/.config/zed/AGENTS.md` (or the platform equivalent) from the
+/// bundled initial content when it doesn't exist yet, then starts watching it
+/// and surfaces any read errors using the same notification UI as settings
+/// errors.
 ///
 /// The file itself is loaded into [`agent_settings::UserAgentsMd`] for inclusion
 /// in prompts.
 pub fn watch_user_agents_md(fs: Arc<dyn fs::Fs>, cx: &mut App) {
     struct UserAgentsMdParseError;
     let notification_id = NotificationId::unique::<UserAgentsMdParseError>();
+
+    seed_user_agents_md_file(fs.clone(), cx);
 
     init_user_agents_md(fs, cx, move |state, cx| match state {
         UserAgentsMdState::Loaded(_) | UserAgentsMdState::Empty => {
@@ -2118,6 +2122,32 @@ pub fn watch_user_agents_md(fs: Arc<dyn fs::Fs>, cx: &mut App) {
             });
         }
     });
+}
+
+/// Creates the user-global `AGENTS.md` from the bundled initial content when it
+/// is missing, mirroring how the initial settings files are seeded. An existing
+/// file is never overwritten, so user edits are preserved.
+fn seed_user_agents_md_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
+    cx.background_spawn(async move {
+        let path = paths::agents_file().as_path();
+        if fs.is_file(path).await {
+            return;
+        }
+
+        let seed_result = async {
+            if let Some(parent) = path.parent() {
+                fs.create_dir(parent).await?;
+            }
+            let content = settings::initial_agents_md_content();
+            fs.save(path, &Rope::from(content.as_ref()), Default::default())
+                .await?;
+            anyhow::Ok(())
+        };
+        if let Err(error) = seed_result.await {
+            log::error!("Failed to create initial user AGENTS.md: {error:#}");
+        }
+    })
+    .detach();
 }
 
 pub fn watch_settings_files(fs: Arc<dyn fs::Fs>, cx: &mut App) {

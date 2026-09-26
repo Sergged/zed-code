@@ -21,7 +21,7 @@
   {
     "context": "Workspace",
     "bindings": {
-      "cmd-e": "multi_workspace::ToggleWorkspaceSidebar",
+      "secondary-e": "multi_workspace::ToggleWorkspaceSidebar",
     },
   },
   {
@@ -33,25 +33,25 @@
   {
     "context": "Editor && mode == full",
     "unbind": {
-      "cmd-e": "buffer_search::UseSelectionForFind",
+      "secondary-e": "buffer_search::UseSelectionForFind",
     },
   },
   {
     "context": "KeymapEditor",
     "unbind": {
-      "cmd-e": "zed::OpenKeymapFile",
+      "secondary-e": "zed::OpenKeymapFile",
     },
   },
   {
     "context": "Workspace",
     "bindings": {
-      "cmd-shift-b": "workspace::ToggleRightDock",
+      "secondary-shift-b": "workspace::ToggleRightDock",
     },
   },
   {
     "context": "Workspace",
     "unbind": {
-      "cmd-r": "workspace::ToggleRightDock",
+      "secondary-r": "workspace::ToggleRightDock",
     },
   },
   {
@@ -69,7 +69,7 @@
   {
     "context": "ProjectPanel",
     "bindings": {
-      "cmd-r": "project_panel::Rename",
+      "secondary-r": "project_panel::Rename",
     },
   },
   {
@@ -93,13 +93,14 @@
   {
     "context": "Workspace",
     "unbind": {
-      "cmd-w": "workspace::CloseActiveDock",
+      "secondary-w": "workspace::CloseActiveDock",
+      "ctrl-alt-w": "workspace::CloseActiveDock",
     },
   },
   {
     "context": "Pane || Workspace",
     "bindings": {
-      "cmd-w": [
+      "secondary-w": [
         "pane::CloseActiveItem",
         {
           "close_pinned": false,
@@ -110,13 +111,7 @@
   {
     "context": "Editor",
     "bindings": {
-      "cmd-space": "editor::ShowCompletions",
-    },
-  },
-  {
-    "context": "Editor",
-    "unbind": {
-      "ctrl-space": "editor::ShowCompletions",
+      "secondary-space": "editor::ShowCompletions",
     },
   },
   {
@@ -262,7 +257,7 @@
   {
     "context": "Editor && mode == full",
     "bindings": {
-      "cmd-l": "agent::AddSelectionToThread",
+      "secondary-l": "agent::AddSelectionToThread",
     },
   },
   {
@@ -274,7 +269,7 @@
   {
     "context": "AcpThread",
     "bindings": {
-      "cmd-l": "agent::AddSelectionToThread",
+      "secondary-l": "agent::AddSelectionToThread",
     },
   },
   {
@@ -286,7 +281,7 @@
   {
     "context": "Terminal",
     "bindings": {
-      "cmd-l": "agent::AddSelectionToThread",
+      "secondary-l": "agent::AddSelectionToThread",
     },
   },
   {
@@ -298,7 +293,7 @@
   {
     "context": "Pane",
     "bindings": {
-      "cmd--": "pane::GoBack",
+      "secondary--": "pane::GoBack",
     },
   },
   {
@@ -310,7 +305,7 @@
   {
     "context": "Pane",
     "bindings": {
-      "cmd-=": "pane::GoForward",
+      "secondary-=": "pane::GoForward",
     },
   },
   {
@@ -321,78 +316,35 @@
   },
   {
     "unbind": {
-      "cmd--": [
-        "zed::DecreaseBufferFontSize",
-        {
-          "persist": false,
-        },
-      ],
+      "secondary-=": ["zed::IncreaseBufferFontSize", { "persist": false }],
+      "secondary-+": ["zed::IncreaseBufferFontSize", { "persist": false }],
+      "secondary--": ["zed::DecreaseBufferFontSize", { "persist": false }],
+      "secondary-0": ["zed::ResetBufferFontSize", { "persist": false }],
+      "ctrl-shift-=": ["zed::IncreaseBufferFontSize", { "persist": false }],
     },
   },
   {
     "context": "Onboarding",
     "unbind": {
-      "cmd--": [
-        "zed::DecreaseUiFontSize",
-        {
-          "persist": false,
-        },
-      ],
+      "secondary-=": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary-+": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary--": ["zed::DecreaseUiFontSize", { "persist": false }],
+      "secondary-0": ["zed::ResetUiFontSize", { "persist": false }],
     },
   },
   {
     "context": "Welcome",
     "unbind": {
-      "cmd--": [
-        "zed::DecreaseUiFontSize",
-        {
-          "persist": false,
-        },
-      ],
-    },
-  },
-  {
-    "unbind": {
-      "cmd-=": [
-        "zed::IncreaseBufferFontSize",
-        {
-          "persist": false,
-        },
-      ],
-    },
-  },
-  {
-    "context": "Onboarding",
-    "unbind": {
-      "cmd-=": [
-        "zed::IncreaseUiFontSize",
-        {
-          "persist": false,
-        },
-      ],
-    },
-  },
-  {
-    "context": "Welcome",
-    "unbind": {
-      "cmd-=": [
-        "zed::IncreaseUiFontSize",
-        {
-          "persist": false,
-        },
-      ],
+      "secondary-=": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary-+": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary--": ["zed::DecreaseUiFontSize", { "persist": false }],
+      "secondary-0": ["zed::ResetUiFontSize", { "persist": false }],
     },
   },
   {
     "context": "Editor",
     "bindings": {
       "cmd-down": "editor::MoveLineDown",
-    },
-  },
-  {
-    "context": "Editor",
-    "unbind": {
-      "alt-down": "editor::MoveLineDown",
     },
   },
   {
@@ -404,40 +356,34 @@
   {
     "context": "Editor",
     "unbind": {
-      "alt-up": "editor::MoveLineUp",
+      "secondary-l": "editor::SelectLine",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-g": "git_panel::Toggle",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-e": "project_panel::Toggle",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-l": "agent::Toggle",
     },
   },
   {
     "context": "Editor",
     "unbind": {
-      "cmd-l": "editor::SelectLine",
-    },
-  },
-  {
-    "bindings": {
-      "cmd-shift-g": "git_panel::Toggle",
-    },
-  },
-  {
-    "bindings": {
-      "cmd-shift-e": "project_panel::Toggle",
-    },
-  },
-  {
-    "bindings": {
-      "cmd-shift-l": "agent::Toggle",
-    },
-  },
-  {
-    "context": "Editor",
-    "unbind": {
-      "cmd-\"": "editor::ExpandAllDiffHunks",
+      "secondary-\"": "editor::ExpandAllDiffHunks",
     },
   },
   {
     "context": "Editor",
     "bindings": {
-      "cmd-\"": "editor::ToggleAllDiffHunks",
+      "secondary-\"": "editor::ToggleAllDiffHunks",
     },
   },
   {
@@ -457,8 +403,8 @@
   {
     "context": "Editor",
     "bindings": {
-      "cmd-shift-up": "editor::AddSelectionAbove",
-      "cmd-shift-down": "editor::AddSelectionBelow",
+      "secondary-shift-up": "editor::AddSelectionAbove",
+      "secondary-shift-down": "editor::AddSelectionBelow",
     },
   },
   {
@@ -478,55 +424,37 @@
   {
     "context": "Editor",
     "bindings": {
-      "cmd-backspace": "editor::Delete",
+      "secondary-backspace": "editor::Delete",
     },
   },
   {
     "context": "Editor",
     "unbind": {
-      "cmd-backspace": "editor::DeleteToBeginningOfLine",
+      "secondary-backspace": "editor::DeleteToBeginningOfLine",
     },
   },
   {
     "context": "Editor",
     "bindings": {
-      "cmd-shift-d": "editor::DuplicateLineDown",
+      "secondary-shift-d": "editor::DuplicateLineDown",
     },
   },
   {
     "context": "Editor",
     "bindings": {
-      "cmd-r": "editor::Rename",
+      "secondary-r": "editor::Rename",
     },
   },
   {
     "context": "Workspace",
     "bindings": {
-      "cmd-shift-s": "workspace::SaveAll",
+      "secondary-shift-s": "workspace::SaveAll",
     },
   },
   {
     "context": "Workspace",
     "unbind": {
-      "cmd-shift-s": "workspace::SaveAs",
-    },
-  },
-  {
-    "bindings": {
-      "ctrl-=": ["zed::IncreaseUiFontSize", { "persist": false }],
-      "ctrl-+": ["zed::IncreaseUiFontSize", { "persist": false }],
-      "ctrl--": ["zed::DecreaseUiFontSize", { "persist": false }],
-    },
-  },
-  {
-    "context": "Workspace && !Terminal",
-    "bindings": {
-      "cmd-shift-c": ["task::Spawn", { "task_name": "Open External Terminal" }],
-    },
-  },
-  {
-    "unbind": {
-      "cmd-shift-c": "collab_panel::ToggleFocus",
+      "secondary-shift-s": "workspace::SaveAs",
     },
   },
 ]

@@ -19,6 +19,7 @@
     "git_diff": true,
     "cursors": true,
     "show": "always",
+    "track": "track",
   },
   "gutter": {
     "folds": false,
@@ -44,11 +45,12 @@
   },
   "completions": {
     "words": "fallback",
+    "suggest_selection": "recently_used",
   },
   "auto_signature_help": false,
   "show_signature_help_after_edits": true,
   "format_on_save": "modifications_if_available",
-  "completion_menu_item_kind": "symbol",
+  "completion_menu_item_kind": "icon",
   "tabs": {
     "show_close_button": "always",
     "show_diagnostics": "all",
@@ -151,7 +153,7 @@
     "flexible": false,
     "show_turn_stats": false,
     "message_editor_min_lines": 2,
-    "single_file_review": true,
+    "single_file_review": false,
     "expand_terminal_card": false,
     "enable_feedback": false,
     "thinking_display": "auto",
