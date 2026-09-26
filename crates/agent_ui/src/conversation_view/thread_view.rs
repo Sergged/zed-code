@@ -1,5 +1,5 @@
 use crate::{
-    DEFAULT_THREAD_TITLE, SelectPermissionGranularity,
+    AgentDiffView, DEFAULT_THREAD_TITLE, SelectPermissionGranularity,
     agent_configuration::configure_context_server_modal::default_markdown_style,
     conversation_view::thread_search_bar::{ThreadSearchBar, ThreadSearchBarEvent},
     open_abs_path_at_point,
@@ -2941,25 +2941,6 @@ impl ThreadView {
             .detach()
     }
 
-    pub fn open_edited_buffer(
-        &mut self,
-        buffer: &Entity<Buffer>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let thread = &self.thread;
-
-        let Some(diff) =
-            AgentDiffPane::deploy(thread.clone(), self.workspace.clone(), window, cx).log_err()
-        else {
-            return;
-        };
-
-        diff.update(cx, |diff, cx| {
-            diff.move_to_path(PathKey::for_buffer(buffer, cx), window, cx)
-        })
-    }
-
     // thread stuff
 
     pub fn restore_checkpoint(&mut self, client_id: &ClientUserMessageId, cx: &mut Context<Self>) {
@@ -3327,8 +3308,17 @@ impl ThreadView {
                                     })
                                     .on_click({
                                         let buffer = buffer.clone();
+                                        let diff = diff.clone();
+                                        let thread = self.thread.clone();
                                         cx.listener(move |this, _, window, cx| {
-                                            this.open_edited_buffer(&buffer, window, cx);
+                                            AgentDiffView::open_or_focus(
+                                                thread.clone(),
+                                                buffer.clone(),
+                                                diff.clone(),
+                                                this.workspace.clone(),
+                                                window,
+                                                cx,
+                                            );
                                         })
                                     }),
                             )
@@ -3367,16 +3357,6 @@ impl ThreadView {
                 }
                 cx.notify();
             }))
-            .child(
-                Button::new("review", "Review")
-                    .label_size(LabelSize::Small)
-                    .on_click({
-                        let buffer = buffer.clone();
-                        cx.listener(move |this, _, window, cx| {
-                            this.open_edited_buffer(&buffer, window, cx);
-                        })
-                    }),
-            )
             .child(
                 Button::new(("reject-file", index), "Reject")
                     .label_size(LabelSize::Small)

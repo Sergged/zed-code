@@ -1,6 +1,7 @@
 mod agent_configuration;
 pub mod agent_connection_store;
 mod agent_diff;
+mod agent_diff_view;
 mod agent_model_selector;
 mod agent_panel;
 mod agent_registry_ui;
@@ -79,6 +80,7 @@ pub use crate::inline_assistant::InlineAssistant;
 pub use crate::message_editor::MessageEditorEvent;
 pub use crate::thread_metadata_store::ThreadId;
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
+pub use agent_diff_view::{AgentDiffView, AgentDiffViewToolbar};
 pub use conversation_view::open_markdown_in_workspace;
 pub use conversation_view::{ConversationView, StateChange};
 pub use external_source_prompt::ExternalSourcePrompt;
