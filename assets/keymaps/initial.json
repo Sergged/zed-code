@@ -521,7 +521,7 @@
   {
     "context": "Workspace && !Terminal",
     "bindings": {
-      "cmd-shift-c": ["task::Spawn", { "task_name": "Open External Terminal" }],
+      "secondary-shift-c": ["task::Spawn", { "task_name": "Open External Terminal" }],
     },
   },
   {
