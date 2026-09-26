@@ -719,7 +719,7 @@ mod tests {
 
     use collections::HashSet;
     use futures::StreamExt;
-    use gpui::TestAppContext;
+    use gpui::{Entity, TestAppContext, VisualTestContext};
     use indoc::indoc;
     use settings::CodeLens;
     use util::path;
@@ -1800,15 +1800,45 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(500));
         cx.run_until_parked();
 
+        // Lenses resolve lazily as they scroll into view. Derive the expected
+        // set from the editor's actual visible range rather than hardcoding
+        // pixel-dependent row numbers, so that a small layout shift can't make
+        // this test brittle.
+        let visible_lens_lines = |editor: &Entity<Editor>,
+                                  lens_lines: &[u32],
+                                  cx: &mut VisualTestContext|
+         -> HashSet<u32> {
+            editor.update(cx, |editor, cx| {
+                editor
+                    .visible_buffer_ranges(cx)
+                    .into_iter()
+                    .flat_map(|(snapshot, visible_range, _)| {
+                        lens_lines
+                            .iter()
+                            .copied()
+                            .filter(|&line| {
+                                let offset = snapshot.point_to_offset(Point::new(line, 0));
+                                offset >= visible_range.start.0 && offset <= visible_range.end.0
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            })
+        };
+
         let initial_resolved = resolved_lines
             .lock()
             .unwrap()
             .drain(..)
             .collect::<HashSet<_>>();
+        let initially_visible = visible_lens_lines(&editor, &lens_lines, cx);
         assert_eq!(
-            initial_resolved,
-            HashSet::from_iter([0, 10, 20, 30, 40]),
+            initial_resolved, initially_visible,
             "Only lenses visible at the top should be resolved"
+        );
+        assert!(
+            !initially_visible.contains(lens_lines.last().unwrap()),
+            "the last lens should still be off-screen at the top of the buffer"
         );
 
         editor.update_in(cx, |editor, window, cx| {
@@ -1822,15 +1852,25 @@ mod tests {
             .unwrap()
             .drain(..)
             .collect::<HashSet<_>>();
-        // Once the lenses are first applied we insert a placeholder block per
-        // lens row so the line is reserved while the resolve is in flight.
-        // Those placeholder blocks add display height, so after scrolling to
-        // the end the visible buffer-row range is slightly smaller than it
-        // would be without them, and lens row 60 is just outside it.
+        let after_scroll_visible = visible_lens_lines(&editor, &lens_lines, cx);
+        let newly_visible = after_scroll_visible
+            .difference(&initially_visible)
+            .copied()
+            .collect::<HashSet<_>>();
+        // Scrolling must resolve exactly the lenses that scrolled into view at
+        // the bottom, and none of the ones the viewport skipped over in the
+        // middle.
         assert_eq!(
-            after_scroll_resolved,
-            HashSet::from_iter([70, 80, 90]),
+            after_scroll_resolved, newly_visible,
             "Only newly visible lenses at the bottom should be resolved, not middle ones"
+        );
+        assert!(
+            after_scroll_resolved.contains(lens_lines.last().unwrap()),
+            "the last lens should be resolved once scrolled into view"
+        );
+        assert!(
+            !after_scroll_resolved.contains(&lens_lines[0]),
+            "the first lens must not be newly resolved after scrolling away"
         );
     }
 
