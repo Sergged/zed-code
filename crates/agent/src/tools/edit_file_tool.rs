@@ -26,7 +26,7 @@ const DEFAULT_UI_TEXT: &str = "Editing file";
 /// Before using this tool, use the `read_file` tool to understand the file's contents and context.
 /// To create a new file or overwrite an existing one with completely new contents, use the `write_file` tool instead.
 ///
-/// The only supported path outside the project is `~/.agents/skills` or a descendant, for global agent skills.
+/// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
 ///
 /// `read_file` prefixes each line of its output with a line number right-aligned in a
 /// 6-character field followed by a single tab, then the line's actual content. When you

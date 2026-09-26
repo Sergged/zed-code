@@ -1,6 +1,6 @@
 use super::tool_permissions::{
     ResolvedProjectPath, authorize_symlink_access, canonicalize_worktree_roots,
-    resolve_global_skill_path, resolve_project_path,
+    external_path_excluded_by_settings, resolve_external_path, resolve_project_path,
 };
 use crate::{AgentTool, ToolCallEventStream, ToolInput};
 use agent_client_protocol::schema::v1 as acp;
@@ -19,7 +19,7 @@ use util::markdown::MarkdownInlineCode;
 
 /// Lists files and directories in a given path. Prefer the `grep` or `find_path` tools when searching the codebase.
 ///
-/// The only supported path outside the project is `~/.agents/skills` or a descendant, for global agent skills.
+/// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListDirectoryToolInput {
     /// The fully-qualified path of the directory to list in the project.
@@ -59,10 +59,10 @@ impl ListDirectoryTool {
         Self { project }
     }
 
-    /// List the contents of a directory under the global skills tree directly
-    /// via the filesystem. Used for skill resources that live outside any
-    /// worktree.
-    async fn list_global_skill_directory(
+    /// List the contents of a directory that lives outside every worktree
+    /// (global agent skills, or any other allowed absolute path) directly via
+    /// the filesystem.
+    async fn list_external_directory(
         canonical_path: &Path,
         fs: &dyn Fs,
         input_path: &str,
@@ -237,21 +237,27 @@ impl AgentTool for ListDirectoryTool {
             }
 
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
-
-            // Fast path: a global skill resource lives outside any worktree, so
-            // standard project-path resolution would refuse it. If the path
-            // expands and resolves under the global skills tree, list it directly.
-            if let Some(skill_path) =
-                resolve_global_skill_path(Path::new(&input.path), fs.as_ref()).await
-            {
-                return Self::list_global_skill_directory(
-                    &skill_path,
-                    fs.as_ref(),
-                    &input.path,
-                )
-                .await;
-            }
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
+
+            // Paths outside every worktree (global agent skills, or any other
+            // absolute path the user's permission rules allow) are listed directly
+            // through the filesystem: the project-path machinery only knows about
+            // worktrees and would otherwise refuse them.
+            if let Some(external_path) =
+                resolve_external_path(Path::new(&input.path), &canonical_roots, fs.as_ref()).await
+            {
+                if let Some(setting) =
+                    cx.update(|cx| external_path_excluded_by_settings(&external_path, cx))
+                {
+                    return Err(format!(
+                        "Cannot list directory because its path matches the user's global `{setting}` setting: {}",
+                        input.path
+                    ));
+                }
+
+                return Self::list_external_directory(&external_path, fs.as_ref(), &input.path)
+                    .await;
+            }
 
             let (project_path, symlink_canonical_target) =
                 project.read_with(cx, |project, cx| -> anyhow::Result<_> {
@@ -1222,7 +1228,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_list_outside_skills_dir_still_rejected(cx: &mut TestAppContext) {
+    async fn test_list_absolute_path_outside_project(cx: &mut TestAppContext) {
         init_test(cx);
 
         let fs = FakeFs::new(cx.executor());
@@ -1247,9 +1253,10 @@ mod tests {
             })
             .await;
 
+        let output = result.expect("absolute path outside the project should be listed");
         assert!(
-            result.is_err(),
-            "path outside skills dir should be rejected"
+            output.contains("secret"),
+            "listing should include the external file, got: {output}"
         );
     }
 }

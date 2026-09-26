@@ -1,5 +1,6 @@
 use super::tool_permissions::{
     authorize_symlink_access, canonicalize_worktree_roots, detect_symlink_escape,
+    is_protected_external_path, resolve_creatable_external_path,
     resolve_creatable_global_skill_path, sensitive_settings_kind,
 };
 use agent_client_protocol::schema::v1 as acp;
@@ -29,13 +30,13 @@ use std::path::{Path, PathBuf};
     commands are sandboxed, doing so grants those commands write access to exactly that new \
     directory — so, rather than requesting write access to a broad existing parent (e.g. your \
     home directory) just to create something inside it, create the specific directory here \
-    first and then write into it. The only other supported path outside the project is \
-    `~/.agents/skills` or a descendant, for global agent skills."
+    first and then write into it. Paths outside the project may be absolute; they are subject \
+    to the user's agent tool permission rules."
 )]
 #[cfg_attr(
     not(any(target_os = "linux", target_os = "macos")),
-    doc = "The only supported path outside the project is `~/.agents/skills` or a descendant, \
-    for global agent skills."
+    doc = "Paths outside the project may be absolute; they are subject to the user's agent tool \
+    permission rules."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CreateDirectoryToolInput {
@@ -113,24 +114,49 @@ impl AgentTool for CreateDirectoryTool {
             let input = input.recv().await.map_err(|e| e.to_string())?;
 
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
+            let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
-            // Resolve where this directory lives. The global agent-skills dir is a
-            // special case allowed outside the project; anything else outside the
-            // project is handled as a narrow sandbox write grant below.
+            // Resolve where this directory lives. The global agent-skills dir is
+            // always allowed outside the project; any other absolute path that
+            // resolves outside every worktree is treated the same way (created
+            // directly through the filesystem, gated by the tool-permission rules).
             let global_skill_directory =
                 resolve_creatable_global_skill_path(Path::new(&input.path), fs.as_ref()).await;
+            let external_directory = resolve_creatable_external_path(
+                Path::new(&input.path),
+                &canonical_roots,
+                fs.as_ref(),
+            )
+            .await;
+            if let Some(external_directory) = &external_directory
+                && is_protected_external_path(external_directory, &canonical_roots)
+            {
+                return Err(format!(
+                    "Refusing to create a directory at a protected path outside the project: {}",
+                    input.path
+                ));
+            }
             let in_project = project.read_with(cx, |project, cx| {
                 project.find_project_path(&input.path, cx).is_some()
             });
 
-            // A path outside the project (and not the global skills dir) can only
-            // be created as a narrow sandbox write grant: create the directory and
-            // grant sandboxed terminal commands write access to exactly it. The
-            // sandbox approval prompt — which shows the real, canonicalized target
-            // — fully replaces the normal permission and symlink-escape prompts
-            // here.
-            if global_skill_directory.is_none() && !in_project {
+            let out_of_project = !in_project && global_skill_directory.is_none();
+            let sandboxing = project.read_with(cx, |project, cx| {
+                crate::sandboxing::sandboxing_enabled_for_project(project, cx)
+            });
+            let platform_supported = cfg!(any(target_os = "linux", target_os = "macos"));
+
+            // When agent terminal commands are sandboxed, creating a directory
+            // outside the project also grants those commands write access to
+            // exactly it, so route through the sandbox-grant flow (which shows the
+            // real, canonicalized target and fully replaces the normal prompts).
+            // With sandboxing off, the directory is created directly through the
+            // filesystem like any other file tool.
+            if out_of_project && sandboxing && platform_supported && external_directory.is_some() {
                 return create_out_of_project_directory(&project, &input, &event_stream, cx).await;
+            }
+            if out_of_project && external_directory.is_none() {
+                return Err("Path to create was outside the project".to_string());
             }
 
             let decision = cx.update(|cx| {
@@ -142,8 +168,6 @@ impl AgentTool for CreateDirectoryTool {
             }
 
             let destination_path: Arc<str> = input.path.as_str().into();
-
-            let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
             let symlink_escape_target = project.read_with(cx, |project, cx| {
                 detect_symlink_escape(project, &input.path, &canonical_roots, cx)
@@ -198,9 +222,9 @@ impl AgentTool for CreateDirectoryTool {
                 authorize.await.map_err(|e| e.to_string())?;
             }
 
-            if let Some(global_skill_directory) = global_skill_directory {
+            if let Some(external_directory) = external_directory {
                 futures::select! {
-                    result = fs.create_dir(&global_skill_directory).fuse() => {
+                    result = fs.create_dir(&external_directory).fuse() => {
                         result.map_err(|e| format!("Creating directory {destination_path}: {e}"))?;
                     }
                     _ = event_stream.cancelled_by_user().fuse() => {

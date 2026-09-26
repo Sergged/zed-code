@@ -23,12 +23,12 @@ const DEFAULT_UI_TEXT: &str = "Writing file";
 ///
 /// Before using this tool, verify the directory path is correct (only applicable when creating new files). Use the `list_directory` tool to verify the parent directory exists and is the correct location
 ///
-/// The only supported path outside the project is `~/.agents/skills` or a descendant, for global agent skills.
+/// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WriteFileToolInput {
-    /// The full path of the file to create or overwrite in the project.
+    /// The full path of the file to create or overwrite in the project, or an absolute path outside it.
     ///
-    /// WARNING: When specifying which file path need changing, you MUST start each path with one of the project's root directories, unless it's a global agent skill under `~/.agents/skills`.
+    /// WARNING: A relative path MUST start with one of the project's root directories. Absolute paths outside the project are allowed, subject to the user's agent tool permission rules.
     ///
     /// The following examples assume we have two root directories in the project:
     /// - /a/b/backend

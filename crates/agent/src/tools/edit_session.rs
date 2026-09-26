@@ -2,7 +2,9 @@ mod reindent;
 mod streaming_fuzzy_matcher;
 mod streaming_parser;
 
-use super::tool_permissions::resolve_creatable_global_skill_path;
+use super::tool_permissions::{
+    canonicalize_worktree_roots, is_protected_external_path, resolve_creatable_external_path,
+};
 use crate::{Thread, ToolCallEventStream};
 use acp_thread::Diff;
 use action_log::ActionLog;
@@ -686,7 +688,7 @@ impl EditSession {
         cx: &mut AsyncApp,
     ) -> Result<Self, String> {
         let target = if let Some(abs_path) =
-            resolve_global_skill_path_for_edit_session(mode, &path, &context, cx).await?
+            resolve_external_path_for_edit_session(mode, &path, &context, cx).await?
         {
             EditSessionTarget {
                 abs_path,
@@ -1156,19 +1158,18 @@ async fn resolve_dirty_buffer(
     Ok(())
 }
 
-/// Mirrors [`resolve_path`]'s pre-auth validation for the global-skill
-/// branch: returns `Ok(Some(abs_path))` if the path lives under
-/// `~/.agents/skills` and is in a valid state for the requested mode,
-/// `Ok(None)` if the path isn't a global skill at all (so the caller should
-/// fall through to project-path resolution), or `Err(message)` if the path
-/// is a global skill but can't be used (missing in Edit mode, parent
-/// missing in Write mode, etc.).
+/// Mirrors [`resolve_path`]'s pre-auth validation for paths that live outside
+/// every worktree: returns `Ok(Some(abs_path))` if the path is absolute (or
+/// `~`-prefixed) and resolves outside the project, `Ok(None)` if it should go
+/// through normal project-path resolution instead, or `Err(message)` if the
+/// external path can't be used (missing in Edit mode, parent missing in Write
+/// mode, protected root, etc.).
 ///
 /// Errors returned from here surface to the model as tool-result errors
 /// without prompting the user — same contract as [`resolve_path`]. The
 /// idea is that "file doesn't exist" or "parent isn't a directory" are
 /// model mistakes, not decisions the user should be asked to approve.
-async fn resolve_global_skill_path_for_edit_session(
+async fn resolve_external_path_for_edit_session(
     mode: EditSessionMode,
     path: &PathBuf,
     context: &EditSessionContext,
@@ -1177,9 +1178,20 @@ async fn resolve_global_skill_path_for_edit_session(
     let fs = context
         .project
         .read_with(cx, |project, _cx| project.fs().clone());
-    let Some(abs_path) = resolve_creatable_global_skill_path(path, fs.as_ref()).await else {
+    let canonical_roots = canonicalize_worktree_roots(&context.project, &fs, cx).await;
+    let Some(abs_path) = resolve_creatable_external_path(path, &canonical_roots, fs.as_ref()).await
+    else {
         return Ok(None);
     };
+
+    // Out-of-project writes must not target a protected root: the filesystem
+    // root, the user's home directory, or an ancestor of a project worktree.
+    if mode == EditSessionMode::Write && is_protected_external_path(&abs_path, &canonical_roots) {
+        return Err(format!(
+            "Can't write to {}: refusing to modify a protected path outside the project.",
+            path.display()
+        ));
+    }
 
     match mode {
         EditSessionMode::Edit => {

@@ -7,10 +7,11 @@ use agent_skills::is_agents_skills_path;
 use anyhow::{Result, anyhow};
 use fs::Fs;
 use gpui::{App, Entity, Task, WeakEntity};
-use project::{Project, ProjectPath};
+use project::{Project, ProjectPath, WorktreeSettings};
 use settings::Settings;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use util::rel_path::RelPathBuf;
 use util::{normalize_path, paths::component_matches_ignore_ascii_case};
 
 pub enum SensitiveSettingsKind {
@@ -232,6 +233,90 @@ pub async fn resolve_creatable_global_skill_path(path: &Path, fs: &dyn Fs) -> Op
     } else {
         None
     }
+}
+
+/// Resolves a model-supplied path that lives outside every project worktree to a
+/// canonical absolute path.
+///
+/// This is the general counterpart to [`resolve_global_skill_path`]: it accepts
+/// *any* absolute (or `~`-prefixed) path, not only the global skills tree, so
+/// file tools can operate across the whole filesystem. Relative paths are not
+/// resolved here — they stay project-relative and go through the normal
+/// project-path machinery. Paths that canonicalize back into a worktree also
+/// return `None`, so in-project access can't bypass the worktree scanner (and
+/// its `file_scan_exclusions` / `private_files` filtering).
+///
+/// The target must already exist; use [`resolve_creatable_external_path`] for
+/// paths that may not exist yet (creates and overwrites).
+pub async fn resolve_external_path(
+    path: &Path,
+    canonical_worktree_roots: &[PathBuf],
+    fs: &dyn Fs,
+) -> Option<PathBuf> {
+    let normalized_path = expand_and_normalize_absolute_path(path)?;
+    let canonical_path = fs.canonicalize(&normalized_path).await.ok()?;
+    (!is_within_any_worktree(&canonical_path, canonical_worktree_roots)).then_some(canonical_path)
+}
+
+/// Like [`resolve_external_path`], but the target path (and any intermediate
+/// directories) may not exist yet. Used for file/directory creation and
+/// overwrites.
+pub async fn resolve_creatable_external_path(
+    path: &Path,
+    canonical_worktree_roots: &[PathBuf],
+    fs: &dyn Fs,
+) -> Option<PathBuf> {
+    let normalized_path = expand_and_normalize_absolute_path(path)?;
+    let canonical_path = canonicalize_with_ancestors(&normalized_path, fs).await?;
+    (!is_within_any_worktree(&canonical_path, canonical_worktree_roots)).then_some(canonical_path)
+}
+
+/// Builds a project-relative path from an absolute path so the worktree-scoped
+/// `file_scan_exclusions` / `private_files` globs can also be matched against
+/// out-of-project paths. Root and `.` components are dropped; `..` (which
+/// canonical external paths never contain) makes this fail closed.
+fn rel_path_for_external(path: &Path) -> Option<RelPathBuf> {
+    let mut rel_path = RelPathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(component) => {
+                rel_path.push_component(component.to_str()?).ok()?;
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+            Component::ParentDir => return None,
+        }
+    }
+    (!rel_path.is_empty()).then_some(rel_path)
+}
+
+/// Checks the user's global `file_scan_exclusions` and `private_files` settings
+/// against an out-of-project path. Returns the name of the setting that matched,
+/// or `None` when the path is allowed.
+///
+/// Only the global settings apply here: the per-worktree overrides are scoped to
+/// a worktree, which an external path by definition is not part of.
+pub fn external_path_excluded_by_settings(path: &Path, cx: &App) -> Option<&'static str> {
+    let rel_path = rel_path_for_external(path)?;
+    let settings = WorktreeSettings::get_global(cx);
+    if settings.is_path_excluded(&rel_path) {
+        Some("file_scan_exclusions")
+    } else if settings.is_path_private(&rel_path) {
+        Some("private_files")
+    } else {
+        None
+    }
+}
+
+/// Whether `path` is too broad to be the target of a destructive out-of-project
+/// operation (delete/move/overwrite): the filesystem root, the user's home
+/// directory, or an ancestor of a project worktree. Guarding these prevents a
+/// single tool call from wiping out the user's home or the project itself.
+pub fn is_protected_external_path(path: &Path, canonical_worktree_roots: &[PathBuf]) -> bool {
+    path.parent().is_none()
+        || path == util::paths::home_dir()
+        || canonical_worktree_roots
+            .iter()
+            .any(|root| root.as_path() != path && root.starts_with(path))
 }
 
 fn is_strict_descendant(path: &Path, ancestor: &Path) -> bool {
