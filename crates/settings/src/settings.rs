@@ -201,3 +201,7 @@ pub fn initial_debug_tasks_content() -> Cow<'static, str> {
 pub fn initial_local_debug_tasks_content() -> Cow<'static, str> {
     asset_str::<SettingsAssets>("settings/initial_local_debug_tasks.json")
 }
+
+pub fn initial_agents_md_content() -> Cow<'static, str> {
+    asset_str::<SettingsAssets>("settings/initial_agents_md.md")
+}
