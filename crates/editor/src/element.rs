@@ -4840,6 +4840,35 @@ impl EditorElement {
         }
     }
 
+    /// Vertical offset for a hunk's controls overlay (Stage/Unstage/Restore,
+    /// or Keep/Reject for agent edits).
+    ///
+    /// The controls are painted one line above the hunk's first row so they
+    /// don't cover the change itself. They are clipped to the text area (see
+    /// `EditorElement::paint_text`), so the offset is clamped to `sticky_top`:
+    /// when there is no room above — a hunk at the very top of the visible
+    /// text, or one scrolled up under a sticky header — the controls fall back
+    /// into the hunk so they stay visible.
+    fn hunk_controls_offset(
+        hunk_start_y: Pixels,
+        hunk_end_y: Pixels,
+        line_height: Pixels,
+        sticky_top: Pixels,
+    ) -> Pixels {
+        let above_hunk = hunk_start_y - line_height;
+        if above_hunk >= sticky_top {
+            // Normal case: sit exactly one line above the hunk.
+            above_hunk
+        } else if hunk_start_y >= sticky_top {
+            // No room above the hunk: keep the controls on its first row.
+            hunk_start_y
+        } else {
+            // The hunk is scrolled up under the sticky header: pin the controls
+            // to the last row that is still visible.
+            sticky_top.min(hunk_end_y - line_height)
+        }
+    }
+
     fn layout_diff_hunk_controls(
         &self,
         row_range: Range<DisplayRow>,
@@ -4916,17 +4945,16 @@ impl EditorElement {
                         + ScrollPixelOffset::from(text_hitbox.bounds.top())
                         - scroll_pixel_position.y)
                         .into();
-
-                    let y: Pixels = if hunk_start_y >= sticky_top {
-                        hunk_start_y
-                    } else {
-                        let hunk_end_y: Pixels = hunk_start_y
-                            + (display_row_range.len() as f64
-                                * ScrollPixelOffset::from(line_height))
+                    let hunk_end_y: Pixels = hunk_start_y
+                        + (display_row_range.len() as f64 * ScrollPixelOffset::from(line_height))
                             .into();
-                        let max_y = hunk_end_y - line_height;
-                        sticky_top.min(max_y)
-                    };
+
+                    let y = Self::hunk_controls_offset(
+                        hunk_start_y,
+                        hunk_end_y,
+                        line_height,
+                        sticky_top,
+                    );
 
                     let mut element = diff_hunk_renderer.render_hunk_controls(
                         display_row_range.start.0,
@@ -14009,5 +14037,40 @@ mod tests {
         expected.sort_by_key(|(row, x, _)| (*row, *x));
 
         assert_eq!(actual, expected, "scale: {scale}, x offset: {x_offset:?}");
+    }
+
+    #[test]
+    fn hunk_controls_offset_sits_one_line_above_the_hunk() {
+        let line_height = px(20.);
+        let y = EditorElement::hunk_controls_offset(px(100.), px(180.), line_height, px(10.));
+        assert_eq!(y, px(80.), "controls sit one line above the hunk");
+    }
+
+    #[test]
+    fn hunk_controls_offset_falls_back_when_no_room_above() {
+        let line_height = px(20.);
+        // The hunk starts exactly at the sticky top, so nothing fits above it;
+        // the controls stay on the hunk's first row instead of being clipped away.
+        let y = EditorElement::hunk_controls_offset(px(10.), px(90.), line_height, px(10.));
+        assert_eq!(y, px(10.), "falls back to the hunk's first row");
+    }
+
+    #[test]
+    fn hunk_controls_offset_pins_hunk_scrolled_under_sticky_header() {
+        let line_height = px(20.);
+        // The hunk starts above the sticky top: pin the controls to the top of
+        // the visible text area.
+        let y = EditorElement::hunk_controls_offset(px(0.), px(100.), line_height, px(10.));
+        assert_eq!(y, px(10.), "pinned below the sticky header");
+    }
+
+    #[test]
+    fn hunk_controls_offset_handles_adjacent_hunks() {
+        let line_height = px(20.);
+        // Hunk B starts immediately after hunk A: its controls land on A's last
+        // row, i.e. exactly one line above B's first row.
+        let hunk_b_start = px(100.);
+        let y = EditorElement::hunk_controls_offset(hunk_b_start, px(140.), line_height, px(10.));
+        assert_eq!(y, hunk_b_start - line_height, "one line above hunk B");
     }
 }

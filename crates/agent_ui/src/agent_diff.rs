@@ -315,7 +315,7 @@ impl AgentDiffPane {
     }
 }
 
-fn keep_edits_in_selection(
+pub(crate) fn keep_edits_in_selection(
     editor: &mut Editor,
     buffer_snapshot: &MultiBufferSnapshot,
     thread: &Entity<AcpThread>,
@@ -330,7 +330,7 @@ fn keep_edits_in_selection(
     keep_edits_in_ranges(editor, buffer_snapshot, thread, ranges, window, cx)
 }
 
-fn reject_edits_in_selection(
+pub(crate) fn reject_edits_in_selection(
     editor: &mut Editor,
     buffer_snapshot: &MultiBufferSnapshot,
     thread: &Entity<AcpThread>,
@@ -385,7 +385,7 @@ fn keep_edits_in_ranges(
     }
 }
 
-fn reject_edits_in_ranges(
+pub(crate) fn reject_edits_in_ranges(
     editor: &mut Editor,
     buffer_snapshot: &MultiBufferSnapshot,
     thread: &Entity<AcpThread>,
@@ -744,7 +744,7 @@ struct AgentDiffHunkRenderer {
     workspace: WeakEntity<Workspace>,
 }
 
-fn agent_diff_renderer(
+pub(crate) fn agent_diff_renderer(
     thread: &Entity<AcpThread>,
     workspace: WeakEntity<Workspace>,
 ) -> Arc<dyn DiffHunkRenderer> {

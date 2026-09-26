@@ -1291,4 +1291,77 @@ mod tests {
             assert!(editor.has_autoscroll_request());
         });
     }
+
+    #[gpui::test]
+    async fn test_diff_hunk_controls_sit_above_the_hunk_and_follow_hover(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let mut cx = EditorTestContext::new(cx).await;
+
+        // A single modified line. The `ˇ` marker places the cursor inside the
+        // hunk, which keeps it active and makes its controls render on the
+        // first paint.
+        cx.set_state("fn main() {\n    let a = ˇ1;\n}\n");
+        cx.set_head_text("fn main() {\n    let a = 0;\n}\n");
+        cx.update_editor(|editor, window, cx| {
+            editor.expand_all_diff_hunks(&Default::default(), window, cx);
+        });
+        cx.run_until_parked();
+
+        let (line_height, text_bounds, scroll_y, controls) = cx.update_editor(|editor, _, _| {
+            let position_map = editor
+                .last_position_map
+                .as_ref()
+                .expect("editor was laid out");
+            (
+                position_map.line_height,
+                position_map.text_hitbox.bounds,
+                position_map.scroll_pixel_position.y,
+                position_map.diff_hunk_control_bounds.clone(),
+            )
+        });
+
+        let [(hunk_row, control_bounds)] = controls.as_slice() else {
+            panic!("the single hunk should render exactly one controls overlay: {controls:?}");
+        };
+        let (hunk_row, control_bounds) = (*hunk_row, *control_bounds);
+
+        let row_top = |row: u32| text_bounds.top() + line_height * row as f32 - px(scroll_y as f32);
+        assert_eq!(
+            control_bounds.top(),
+            row_top(hunk_row.0) - line_height,
+            "controls should sit one line above the hunk",
+        );
+
+        let modifiers = Modifiers::none();
+        let left_x = text_bounds.left() + px(2.);
+        let row_center = |row: u32| row_top(row) + line_height * 0.5;
+
+        // Hovering the hunk shows its controls.
+        cx.simulate_mouse_move(point(left_x, row_center(hunk_row.0)), None, modifiers);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update_editor(|editor, _, _| editor.hovered_diff_hunk_row),
+            Some(hunk_row),
+            "hovering the hunk should activate it",
+        );
+
+        // Hovering the context line above the hunk (outside the controls) does not.
+        cx.simulate_mouse_move(point(left_x, row_center(hunk_row.0 - 1)), None, modifiers);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update_editor(|editor, _, _| editor.hovered_diff_hunk_row),
+            None,
+            "the line above the hunk should not show the controls",
+        );
+
+        // Hovering the controls themselves keeps the hunk active, so the
+        // controls stay clickable.
+        cx.simulate_mouse_move(control_bounds.center(), None, modifiers);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update_editor(|editor, _, _| editor.hovered_diff_hunk_row),
+            Some(hunk_row),
+            "hovering the controls should keep the hunk active",
+        );
+    }
 }
