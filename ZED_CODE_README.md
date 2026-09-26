@@ -54,9 +54,14 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 - `completions.suggest_selection` (default `"first"`): which completion is preselected when the completions menu opens. `"first"` always selects the first entry; `"recently_used"` preselects the most recently accepted completion among the top-scoring entries; `"recently_used_by_prefix"` remembers the completion accepted for a prefix and preselects it again when that prefix is typed.
 - `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
 
+## Agent changes in Zed Code
+
+Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 
 **Path forms.** A project-relative path normally starts with a worktree root directory name (`zed/crates/foo.rs`); that prefix always resolves. A bare relative path (`crates/foo.rs`) also resolves when it is unambiguous, and a bare path into a gitignored tree (`node_modules/...`) is made to resolve by scanning that directory on demand. Anything outside the project is addressed by an absolute path (or one with a `~` prefix).
+
+### Upstream vs. this branch
 
 - `Project::find_project_path` and its three branches (absolute; relative with an existing entry; root-name strip without an entry). The bare / rooted / absolute behavior described above is upstream's, not ours.
 - The `tool_permissions` model: `default`, `always_allow` / `always_deny` / `always_confirm`, and regex matching of tool input text.
@@ -67,14 +72,36 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 
 #### When an ignored directory gets scanned
 
+The global FIFO ordering across sessions is unchanged and still deliberate: `is_first_tool_call` uses it to decide which single card carries the buttons, so only one prompt is actionable at a time.
+
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
 - `tool_permissions.rs` — `test_real_fs_external_path_resolution_and_protection` exercises the real `RealFs` canonicalization macOS applies to `/tmp`, so the external/protected classification is tested against the actual filesystem rather than a fake. It is a plain `#[test]`, not `#[gpui::test]`, because `RealFs` spawns real threads that the deterministic test scheduler forbids.
 - Symlink-escape authorization per tool, including the confirm-once and deny-policy paths.
 - Settings-blocked calls assert both the error text and that **no** authorization event was emitted, which is what pins the "check before prompt" ordering.
+The toolbar mirrors `SoloDiffView` left to right, which meant splitting it into two registered toolbar items rather than one:
+
+- `AgentDiffViewStyleToolbar` (`PrimaryLeft`, registered **before** `Breadcrumbs`) — Show Full File and the split/unified controls, so the file path follows them.
+- `AgentDiffViewToolbar` (`PrimaryRight`) — the `+`/`-` stat, hunk navigation, Reject / Keep, Reject All / Keep All, and View File.
+
+No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiffStyleToolbar` only match their own item types, and the chain `act_as_type(SplittableEditor) == None` → `uses_hidden_splittable_editor == true` → `needs_expand_collapse_option == false` keeps the search bar from re-rendering the split/unified and fold buttons. The same `false` sends it to `Secondary`, which is the separate plate below the toolbar.
+
+Like `SoloDiffView`, the view returns `None` from `Item::act_as_type` for `SplittableEditor`. That keeps the buffer search bar in its own toolbar row below the buttons — both toolbars stay visible at once instead of the search displacing the review actions — and stops the search bar from re-rendering the split/unified and fold controls the toolbar already owns. Returning `Some` there is what puts the search in `PrimaryLeft` and produces the duplicate controls.
+
+A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand.
+
+### Built-in agent skills
+
+Five skills ship inside the binary next to upstream's `create-skill`: `strict-typescript`, `strict-angular`, `strict-react`, `strict-compose-plan` and `strict-implement-plan`. The seeded `AGENTS.md` tells the agent to load them (see "Agent rules" below).
 
 - **TinyFish** is added as a web-search provider; it is selected independently of the language-model provider, so `search_web` works with any model.
 - The `search_web` tool takes richer parameters — `purpose`, `location`, `language`, `include_domains` / `exclude_domains`, `domain_type` (`web` / `news`), `after_date` / `before_date`, `recency_minutes`, `page` — and each provider uses the fields it supports.
 
+Everything in this section is a `zed-code` change — upstream ships none of it. Where a change extends an upstream primitive (the panel/dock framework, the status bar, the tab bar, the diff-hunk layout, the settings schema), the primitive is upstream and only the behavior described here is ours.
+
+- Diff hunks in a solo diff can be staged from the diff itself.
+- A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
+- Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
+- Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
 ## Recommended initial settings, keymap and agent rules
 
 Unlike "Settings added in this branch" above (options this branch adds to Zed itself), the files below are the branch's **recommended starting setup**. They are seeded on first run:

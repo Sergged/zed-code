@@ -18,6 +18,7 @@ use buffer_diff::BufferDiff;
 use editor::{
     Anchor, DiffStyleControls, Editor, EditorEvent, EditorSettings, SplittableEditor,
     ToggleSplitDiff,
+    actions::{GoToHunk, GoToPreviousHunk},
 };
 use gpui::{
     Action, AnyElement, App, AppContext as _, Context, Empty, Entity, EventEmitter, FocusHandle,
@@ -473,6 +474,20 @@ impl AgentDiffViewToolbar {
             cx.dispatch_action(action.as_ref());
         });
     }
+
+    /// Dispatches an editor action (e.g. hunk navigation) to the diff editor,
+    /// which is what actually handles it.
+    fn dispatch_to_editor(&self, action: &dyn Action, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        let focus_handle = view.read(cx).editor.read(cx).focus_handle(cx);
+        focus_handle.focus(window, cx);
+        let action = action.boxed_clone();
+        cx.defer(move |cx| {
+            cx.dispatch_action(action.as_ref());
+        });
+    }
 }
 
 impl EventEmitter<ToolbarItemEvent> for AgentDiffViewToolbar {}
@@ -503,6 +518,7 @@ impl Render for AgentDiffViewToolbar {
         };
 
         let focus_handle = view.read(cx).focus_handle.clone();
+        let editor_focus_handle = view.read(cx).editor.read(cx).focus_handle(cx);
         let (showing_full_file, editor) = {
             let view = view.read(cx);
             (view.showing_full_file, view.editor.clone())
@@ -527,6 +543,31 @@ impl Render for AgentDiffViewToolbar {
             )
             .child(DiffStyleControls::new(editor))
             .child(Divider::vertical().mr_1())
+            .child(
+                IconButton::new("agent-diff-prev-hunk", IconName::ArrowUp)
+                    .icon_size(IconSize::Small)
+                    .tooltip(Tooltip::for_action_title_in(
+                        "Previous Hunk",
+                        &GoToPreviousHunk,
+                        &editor_focus_handle,
+                    ))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch_to_editor(&GoToPreviousHunk, window, cx)
+                    })),
+            )
+            .child(
+                IconButton::new("agent-diff-next-hunk", IconName::ArrowDown)
+                    .icon_size(IconSize::Small)
+                    .tooltip(Tooltip::for_action_title_in(
+                        "Next Hunk",
+                        &GoToHunk,
+                        &editor_focus_handle,
+                    ))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch_to_editor(&GoToHunk, window, cx)
+                    })),
+            )
+            .child(Divider::vertical())
             .child(
                 Button::new("agent-diff-reject", "Reject")
                     .key_binding(
