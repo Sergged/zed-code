@@ -970,6 +970,48 @@ impl KeymapFile {
             }
         }
 
+        if let KeybindUpdateOperation::RemoveUnbind {
+            target,
+            target_keybind_source,
+        } = &operation
+        {
+            if *target_keybind_source != KeybindSource::User {
+                anyhow::bail!("Can only remove user-defined unbinds");
+            }
+            let target_action_value = target
+                .action_value()
+                .context("Failed to generate target action JSON value")?;
+            let Some(binding_location) = find_unbind(
+                &keymap,
+                target,
+                &target_action_value,
+                keyboard_mapper,
+                deprecated_aliases,
+            ) else {
+                anyhow::bail!("Failed to find unbind to remove");
+            };
+            let is_only_binding = binding_location.is_only_entry_in_section(&keymap);
+            let key_path: &[&str] = if is_only_binding {
+                &[]
+            } else {
+                &[
+                    binding_location.kind.key_path(),
+                    binding_location.keystrokes_str,
+                ]
+            };
+            let (replace_range, replace_value) = replace_top_level_array_value_in_json_text(
+                &keymap_contents,
+                key_path,
+                None,
+                None,
+                binding_location.index,
+                tab_size,
+            );
+            keymap_contents.replace_range(replace_range, &replace_value);
+
+            return Ok(keymap_contents);
+        }
+
         if let KeybindUpdateOperation::Replace { source, target, .. } = operation {
             let target_action_value = target
                 .action_value()
@@ -1171,6 +1213,41 @@ impl KeymapFile {
             None
         }
 
+        /// Searches only the unbind sections of the keymap for an entry matching
+        /// the target, so that a user's own bindings for the same keystrokes are
+        /// never mistaken for the unbind being removed.
+        fn find_unbind<'a, 'b>(
+            keymap: &'b KeymapFile,
+            target: &KeybindUpdateTarget<'a>,
+            target_action_value: &Value,
+            keyboard_mapper: &dyn gpui::PlatformKeyboardMapper,
+            deprecated_aliases: &HashMap<&'static str, &'static str>,
+        ) -> Option<BindingLocation<'b>> {
+            let target_context_parsed =
+                KeyBindingContextPredicate::parse(target.context.unwrap_or("")).ok();
+            for (index, section) in keymap.sections().enumerate() {
+                let section_context_parsed =
+                    KeyBindingContextPredicate::parse(&section.context).ok();
+                if section_context_parsed != target_context_parsed {
+                    continue;
+                }
+
+                if let Some(binding_location) = find_binding_in_entries(
+                    section.unbind.as_ref(),
+                    BindingKind::Unbind,
+                    index,
+                    target,
+                    target_action_value,
+                    keyboard_mapper,
+                    deprecated_aliases,
+                    |action| &action.0,
+                ) {
+                    return Some(binding_location);
+                }
+            }
+            None
+        }
+
         fn find_binding_in_entries<'a, 'b, T>(
             entries: Option<&'b IndexMap<String, T>>,
             kind: BindingKind,
@@ -1304,6 +1381,11 @@ pub enum KeybindUpdateOperation<'a> {
         target: KeybindUpdateTarget<'a>,
         target_keybind_source: KeybindSource,
     },
+    /// Removes a user-defined unbind entry, restoring the bindings it was suppressing.
+    RemoveUnbind {
+        target: KeybindUpdateTarget<'a>,
+        target_keybind_source: KeybindSource,
+    },
 }
 
 impl KeybindUpdateOperation<'_> {
@@ -1325,6 +1407,10 @@ impl KeybindUpdateOperation<'_> {
             } => (Some(source), Some(target), Some(*target_keybind_source)),
             KeybindUpdateOperation::Add { source, .. } => (Some(source), None, None),
             KeybindUpdateOperation::Remove {
+                target,
+                target_keybind_source,
+            }
+            | KeybindUpdateOperation::RemoveUnbind {
                 target,
                 target_keybind_source,
             } => (None, Some(target), Some(*target_keybind_source)),
@@ -2796,6 +2882,78 @@ mod tests {
                 }
               },
             ]
+            "#,
+        );
+    }
+
+    #[test]
+    fn test_remove_unbind() {
+        zlog::init_test();
+
+        // Removing an unbind must not remove a user binding for the same keystrokes.
+        check_keymap_update(
+            r#"
+            [
+              {
+                "bindings": {
+                  "ctrl-a": "zed::SomeAction",
+                }
+              },
+              {
+                "unbind": {
+                  "ctrl-a": "zed::SomeAction",
+                }
+              },
+            ]
+            "#,
+            KeybindUpdateOperation::RemoveUnbind {
+                target: KeybindUpdateTarget {
+                    context: None,
+                    keystrokes: &parse_keystrokes("ctrl-a"),
+                    action_name: "zed::SomeAction",
+                    action_arguments: None,
+                },
+                target_keybind_source: KeybindSource::User,
+            },
+            r#"
+            [
+              {
+                "bindings": {
+                  "ctrl-a": "zed::SomeAction",
+                }
+              },
+            ]
+            "#,
+        );
+
+        // Removing an unbind targeting an action with arguments restores the
+        // default binding by removing the whole section when it is the only entry.
+        check_keymap_update(
+            r#"
+            [
+              {
+                "context": "Editor",
+                "unbind": {
+                  "cmd-right": [
+                    "editor::MoveToEndOfLine",
+                    { "stop_at_soft_wraps": true },
+                  ],
+                }
+              },
+            ]
+            "#,
+            KeybindUpdateOperation::RemoveUnbind {
+                target: KeybindUpdateTarget {
+                    context: Some("Editor"),
+                    keystrokes: &parse_keystrokes("cmd-right"),
+                    action_name: "editor::MoveToEndOfLine",
+                    action_arguments: Some(r#"{"stop_at_soft_wraps": true}"#),
+                },
+                target_keybind_source: KeybindSource::User,
+            },
+            r#"
+            [
+              ]
             "#,
         );
     }

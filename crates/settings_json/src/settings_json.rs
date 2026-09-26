@@ -484,13 +484,21 @@ pub fn replace_top_level_array_value_in_json_text(
             {}
             if cursor.node().kind() == "," {
                 remove_range.end = cursor.node().range().end_byte;
+            } else if text[remove_range.end..].starts_with(',') {
+                // A trailing comma (before `]`) parses as an extra token, so
+                // the sibling walk above skipped over it.
+                remove_range.end += 1;
             }
-            if let Some(next_newline) = &text[remove_range.end + 1..].find('\n')
-                && text[remove_range.end + 1..remove_range.end + next_newline]
-                    .chars()
-                    .all(|c| c.is_ascii_whitespace())
-            {
-                remove_range.end = remove_range.end + next_newline;
+            if let Some(next_newline) = text[remove_range.end + 1..].find('\n') {
+                // The byte range above is empty (and would be backwards) when
+                // the newline immediately follows the removed element, so
+                // consume that newline explicitly.
+                let up_to_newline = (next_newline > 0)
+                    .then(|| &text[remove_range.end + 1..remove_range.end + next_newline])
+                    .unwrap_or("");
+                if up_to_newline.chars().all(|c| c.is_ascii_whitespace()) {
+                    remove_range.end += next_newline.max(1);
+                }
             }
         } else {
             while cursor.goto_previous_sibling()
