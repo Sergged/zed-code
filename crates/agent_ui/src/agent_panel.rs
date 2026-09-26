@@ -88,8 +88,6 @@ use settings::{NotifyWhenAgentWaiting, Settings, TerminalDockPosition, update_se
 use search::{BufferSearchBar, buffer_search::Deploy as DeployBufferSearch};
 use terminal::Event as TerminalEvent;
 use terminal::terminal_settings::TerminalSettings;
-#[cfg(any(test, feature = "test-support"))]
-use terminal::terminal_settings::TerminalSettings;
 use terminal_view::TerminalView;
 use terminal_view::terminal_panel::TerminalPanel;
 use text::OffsetRangeExt;
