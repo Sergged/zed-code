@@ -362,7 +362,7 @@ impl Render for CommitTooltip {
             .flatten();
 
         tooltip_container(cx, move |this, cx| {
-            this.occlude()
+            this.block_mouse_except_scroll()
                 .on_mouse_move(|_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
@@ -394,6 +394,17 @@ impl Render for CommitTooltip {
                                 .py_1p5()
                                 .max_h(message_max_height)
                                 .overflow_y_scroll()
+                                // Only consume the scroll wheel when the commit
+                                // message overflows; otherwise let the wheel
+                                // scroll the editor behind.
+                                .on_scroll_wheel({
+                                    let scroll_handle = self.scroll_handle.clone();
+                                    move |_event, _window, cx| {
+                                        if scroll_handle.max_offset().y > px(0.) {
+                                            cx.stop_propagation();
+                                        }
+                                    }
+                                })
                                 .child(message),
                         )
                         .child(
