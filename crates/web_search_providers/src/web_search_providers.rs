@@ -1,4 +1,5 @@
 mod cloud;
+mod tinyfish;
 
 use client::{Client, UserStore};
 use gpui::{App, Context, Entity};
@@ -26,6 +27,12 @@ fn register_web_search_providers(
         &LanguageModelRegistry::global(cx),
         cx,
     );
+
+    // TinyFish's MCP endpoint works without an account and is not tied to any
+    // model provider, so it takes precedence as the active search provider.
+    registry.set_active_provider(Arc::new(tinyfish::TinyFishWebSearchProvider::new(
+        client.http_client(),
+    )));
 
     cx.subscribe(
         &LanguageModelRegistry::global(cx),

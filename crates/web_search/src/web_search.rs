@@ -13,9 +13,29 @@ pub fn init(cx: &mut App) {
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 pub struct WebSearchProviderId(pub SharedString);
 
+/// A web search request. Providers use the fields they support and ignore the
+/// rest, so adding a parameter here does not require every provider to handle it.
+#[derive(Clone, Debug, Default)]
+pub struct WebSearchRequest {
+    pub query: String,
+    pub purpose: Option<String>,
+    pub location: Option<String>,
+    pub language: Option<String>,
+    pub include_domains: Vec<String>,
+    pub exclude_domains: Vec<String>,
+    /// Either `"web"` or `"news"`.
+    pub domain_type: Option<String>,
+    /// `YYYY-MM-DD`.
+    pub after_date: Option<String>,
+    /// `YYYY-MM-DD`.
+    pub before_date: Option<String>,
+    pub recency_minutes: Option<u32>,
+    pub page: Option<u32>,
+}
+
 pub trait WebSearchProvider {
     fn id(&self) -> WebSearchProviderId;
-    fn search(&self, query: String, cx: &mut App) -> Task<Result<WebSearchResponse>>;
+    fn search(&self, request: WebSearchRequest, cx: &mut App) -> Task<Result<WebSearchResponse>>;
 }
 
 struct GlobalWebSearchRegistry(Entity<WebSearchRegistry>);

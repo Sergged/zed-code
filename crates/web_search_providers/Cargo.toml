@@ -23,5 +23,6 @@ futures.workspace = true
 gpui.workspace = true
 http_client.workspace = true
 language_model.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 web_search.workspace = true
