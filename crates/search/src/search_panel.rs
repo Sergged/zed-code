@@ -20,7 +20,7 @@ use project::{
     search::{SearchQuery, SearchResult},
 };
 use project_panel::ProjectPanel;
-use project_panel::project_panel_settings::ProjectPanelSettings;
+use project_panel::{ContextMenuPlacement, project_panel_settings::ProjectPanelSettings};
 use settings::Settings;
 use text::Anchor;
 use theme_settings::ThemeSettings;
@@ -510,7 +510,12 @@ impl SearchPanel {
         workspace.update(cx, |workspace, cx| {
             if let Some(project_panel) = workspace.panel::<ProjectPanel>(cx) {
                 project_panel.update(cx, |panel, cx| {
-                    panel.deploy_context_menu(position, entry_id, window, cx);
+                    panel.deploy_context_menu(
+                        ContextMenuPlacement::AtMouse(position),
+                        entry_id,
+                        window,
+                        cx,
+                    );
                 });
             }
         });

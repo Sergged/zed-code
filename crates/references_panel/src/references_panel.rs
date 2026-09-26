@@ -15,7 +15,7 @@ use lsp_locations::{LocationMatch, build_location_matches, render_matched_line};
 use menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::{Project, ProjectPath};
 use project_panel::ProjectPanel;
-use project_panel::project_panel_settings::ProjectPanelSettings;
+use project_panel::{ContextMenuPlacement, project_panel_settings::ProjectPanelSettings};
 use theme_settings::ThemeSettings;
 use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
 use ui::{CommonAnimationExt, ScrollAxes, Scrollbars, Tab, Tooltip, WithScrollbar, prelude::*};
@@ -454,7 +454,12 @@ impl ReferencesPanel {
         workspace.update(cx, |workspace, cx| {
             if let Some(project_panel) = workspace.panel::<ProjectPanel>(cx) {
                 project_panel.update(cx, |panel, cx| {
-                    panel.deploy_context_menu(position, entry_id, window, cx);
+                    panel.deploy_context_menu(
+                        ContextMenuPlacement::AtMouse(position),
+                        entry_id,
+                        window,
+                        cx,
+                    );
                 });
             }
         });
