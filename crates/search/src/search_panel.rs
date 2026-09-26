@@ -41,7 +41,7 @@ use crate::{
     EXCLUDE_PLACEHOLDER, FocusSearch, INCLUDE_PLACEHOLDER, SEARCH_ICON, SearchOption,
     SearchOptions, SearchSource, ToggleCaseSensitive, ToggleIncludeIgnored, ToggleRegex,
     ToggleWholeWord,
-    project_search::{ToggleFilters, split_glob_patterns},
+    project_search::{ProjectSearchView, ToggleFilters, split_glob_patterns},
     search_bar::{input_base_styles, render_text_input},
 };
 
@@ -121,6 +121,15 @@ pub fn init(cx: &mut App) {
         // `search::FocusSearch` (cmd-shift-f) focuses the search panel, like
         // `project_panel::ToggleFocus` (cmd-shift-e) focuses the project panel.
         workspace.register_action(|workspace, _: &FocusSearch, window, cx| {
+            workspace.toggle_panel_focus::<SearchPanel>(window, cx);
+        });
+        // `pane::DeploySearch` (cmd-shift-f in the editor) opens the search
+        // panel instead of the project search multibuffer.
+        workspace.register_action(|workspace, _: &DeploySearch, window, cx| {
+            if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
+                cx.propagate();
+                return;
+            }
             workspace.toggle_panel_focus::<SearchPanel>(window, cx);
         });
     })
@@ -275,7 +284,13 @@ impl SearchPanel {
     /// Opens a clean project search multibuffer in the active pane, exactly
     /// like the workspace's project search button used to.
     fn open_search_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
-        window.dispatch_action(Box::new(DeploySearch::default()), cx);
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx);
+            cx.notify();
+        });
     }
 
     /// Runs a search with the panel's current query, options and filters,
@@ -1516,6 +1531,46 @@ mod tests {
             "the panel stays open like the project panel toggle"
         );
         assert!(!query_focused, "focus returns to the workspace center");
+    }
+
+    #[gpui::test]
+    async fn test_deploy_search_action_opens_panel(cx: &mut TestAppContext) {
+        let (window, workspace) = build_workspace(cx).await;
+        let panel = add_panel(&window, &workspace, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        // `pane::DeploySearch` (cmd-shift-f in the editor) opens the search
+        // panel instead of deploying a project search multibuffer.
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(DeploySearch::default()), cx);
+            })
+            .unwrap();
+
+        let (dock_open, query_focused, active_is_project_search) = cx.update(|window, cx| {
+            let pane = workspace.read(cx).active_pane();
+            (
+                workspace.read(cx).left_dock().read(cx).is_open(),
+                panel
+                    .read(cx)
+                    .query_editor
+                    .focus_handle(cx)
+                    .is_focused(window),
+                pane.read(cx)
+                    .active_item()
+                    .map(|item| item.downcast::<ProjectSearchView>().is_some())
+                    .unwrap_or(false),
+            )
+        });
+        assert!(dock_open, "deploy search should open the search panel");
+        assert!(
+            query_focused,
+            "deploy search should focus the search panel's query input"
+        );
+        assert!(
+            !active_is_project_search,
+            "deploy search should not open a project search multibuffer"
+        );
     }
 
     #[gpui::test]
