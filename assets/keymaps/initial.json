@@ -291,6 +291,19 @@
     },
   },
   {
+    "context": "AcpThread",
+    "bindings": {
+      "secondary-enter": "agent::AllowOnce",
+    },
+  },
+  {
+    "context": "AcpThread",
+    "unbind": {
+      "cmd-y": "agent::AllowOnce",
+      "shift-alt-a": "agent::AllowOnce",
+    },
+  },
+  {
     "context": "Pane",
     "bindings": {
       "secondary--": "pane::GoBack",

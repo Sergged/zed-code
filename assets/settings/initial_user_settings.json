@@ -96,7 +96,7 @@
         },
         {
           "name": "deepseek-v4-flash",
-          "display_name": "DeepSeek V4 (Direct)",
+          "display_name": "DeepSeek V4 Flash (Direct)",
           "max_tokens": 1000000,
           "max_output_tokens": 384000,
           "protocol": "openai_chat",
