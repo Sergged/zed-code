@@ -15,16 +15,23 @@ set -euo pipefail
 channel="$(cat crates/zed/RELEASE_CHANNEL)"
 target_triple="$(rustc -vV | awk '/^host/ {print $2}')"
 
+echo "==> Release channel: '${channel}' (from crates/zed/RELEASE_CHANNEL)"
+if [[ "${channel}" != "dev" ]]; then
+    echo "!!! WARNING: channel is '${channel}', not 'dev'."
+    echo "!!! A non-dev bundle shares its data directory and CLI socket with the installed Zed app"
+    echo "!!! (db/0-${channel}, zed-${channel}.sock) and may migrate those databases."
+fi
+
 build_jobs=()
 if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
     build_jobs=(-j "${CARGO_BUILD_JOBS}")
 fi
 
-echo "==> Channel: ${channel}"
 echo "==> Building zed + cli for ${target_triple}..."
 ZED_BUNDLE=true cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target "${target_triple}" "${build_jobs[@]}"
 
 echo "==> Bundling..."
+rm -rf "target/${target_triple}/release/bundle/osx"
 cp crates/zed/Cargo.toml crates/zed/Cargo.toml.backup
 restore_cargo_toml() { mv -f crates/zed/Cargo.toml.backup crates/zed/Cargo.toml; }
 trap restore_cargo_toml EXIT
@@ -42,4 +49,4 @@ codesign --force --deep --sign - "${app_path}"
 restore_cargo_toml
 trap - EXIT
 
-echo "==> Done: ${app_path}"
+echo "==> Done: ${app_path} (channel: ${channel})"
