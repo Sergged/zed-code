@@ -1,11 +1,13 @@
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
-    authorize_symlink_escapes, canonicalize_worktree_roots, collect_symlink_escapes,
-    is_protected_external_path, resolve_creatable_external_path, resolve_external_path,
-    sensitive_settings_kind,
+    PathExistence, authorize_direct_fs_path, authorize_symlink_escapes,
+    canonicalize_worktree_roots, collect_symlink_escapes, ensure_path_not_hidden_by_settings,
+    explain_unresolved_path, is_protected_external_path, permission_path_forms,
+    resolve_direct_fs_path, sensitive_settings_kind,
 };
 use crate::{
     AgentTool, ToolCallEventStream, ToolInput, ToolPermissionDecision,
-    authorize_with_sensitive_settings, decide_permission_for_paths,
+    authorize_with_sensitive_settings, decide_permission_for_path_groups,
 };
 use agent_client_protocol::schema::v1 as acp;
 use agent_settings::AgentSettings;
@@ -19,12 +21,12 @@ use std::path::Path;
 use std::sync::Arc;
 use util::markdown::MarkdownInlineCode;
 
-/// Copies a file or directory in the project, and returns confirmation that the copy succeeded.
+/// Copies a file or directory, and returns confirmation that the copy succeeded.
 /// Directory contents will be copied recursively.
 ///
 /// This tool should be used when it's desirable to create a copy of a file or directory without modifying the original.
 /// It's much more efficient than doing this by separately reading and then writing the file or directory's contents, so this tool should be preferred over that approach whenever copying is the goal.
-/// Paths outside the project may be absolute; they are subject to the user's agent tool permission rules.
+/// Project-relative paths that start with a project root directory always resolve; bare project-relative paths also work when unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CopyPathToolInput {
     /// The source path of the file or directory to copy.
@@ -91,9 +93,12 @@ impl AgentTool for CopyPathTool {
         let project = self.project.clone();
         cx.spawn(async move |cx| {
             let input = input.recv().await.map_err(|e| e.to_string())?;
-            let paths = vec![input.source_path.clone(), input.destination_path.clone()];
             let decision = cx.update(|cx| {
-                decide_permission_for_paths(Self::NAME, &paths, &AgentSettings::get_global(cx))
+                let forms = [
+                    permission_path_forms(project.read(cx), Path::new(&input.source_path), cx),
+                    permission_path_forms(project.read(cx), Path::new(&input.destination_path), cx),
+                ];
+                decide_permission_for_path_groups(Self::NAME, &forms, AgentSettings::get_global(cx))
             });
             if let ToolPermissionDecision::Deny(reason) = decision {
                 return Err(reason);
@@ -102,15 +107,36 @@ impl AgentTool for CopyPathTool {
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
-            let external_source_path =
-                resolve_external_path(Path::new(&input.source_path), &canonical_roots, fs.as_ref())
-                    .await;
-            let external_destination_path = resolve_creatable_external_path(
-                Path::new(&input.destination_path),
+            // A bare relative path into a gitignored directory the worktree
+            // hasn't scanned can't resolve through the snapshot; scan that
+            // directory first so it resolves like the rooted/absolute form.
+            prescan_ignored_ancestor(&project, Path::new(&input.source_path), cx).await;
+            prescan_ignored_ancestor(&project, Path::new(&input.destination_path), cx).await;
+
+            let direct_source = resolve_direct_fs_path(
+                Path::new(&input.source_path),
+                PathExistence::MustExist,
+                &project,
                 &canonical_roots,
                 fs.as_ref(),
+                cx,
             )
             .await;
+            let direct_destination = resolve_direct_fs_path(
+                Path::new(&input.destination_path),
+                PathExistence::MayNotExist,
+                &project,
+                &canonical_roots,
+                fs.as_ref(),
+                cx,
+            )
+            .await;
+            let external_source_path = direct_source
+                .as_ref()
+                .map(|direct_path| direct_path.absolute_path.clone());
+            let external_destination_path = direct_destination
+                .as_ref()
+                .map(|direct_path| direct_path.absolute_path.clone());
 
             if external_source_path
                 .as_ref()
@@ -123,6 +149,49 @@ impl AgentTool for CopyPathTool {
                     "Refusing to copy to or from a protected path outside the project: {} -> {}",
                     input.source_path, input.destination_path
                 ));
+            }
+
+            // `file_scan_exclusions` / `private_files` are hard blocks, so check
+            // this operation before prompting: there is no point asking the user to
+            // approve something that can't run. A target that resolves somewhere
+            // other than the requested path (a symlink) asks the user too.
+            for (direct_path, requested, subject) in [
+                (direct_source.as_ref(), &input.source_path, "copy from"),
+                (
+                    direct_destination.as_ref(),
+                    &input.destination_path,
+                    "copy to",
+                ),
+            ] {
+                let Some(direct_path) = direct_path else {
+                    continue;
+                };
+                authorize_direct_fs_path(
+                    Self::NAME,
+                    requested,
+                    subject,
+                    direct_path,
+                    true,
+                    &event_stream,
+                    cx,
+                )
+                .await?;
+            }
+            if let Some(source) = project.read_with(cx, |project, cx| {
+                project
+                    .find_project_path(&input.source_path, cx)
+                    .filter(|_| external_source_path.is_none())
+            }) {
+                cx.update(|cx| ensure_path_not_hidden_by_settings(&source, "copy from", cx))
+                    .map_err(|error| format!("{error:#}"))?;
+            }
+            if let Some(destination) = project.read_with(cx, |project, cx| {
+                project
+                    .find_project_path(&input.destination_path, cx)
+                    .filter(|_| external_destination_path.is_none())
+            }) {
+                cx.update(|cx| ensure_path_not_hidden_by_settings(&destination, "copy to", cx))
+                    .map_err(|error| format!("{error:#}"))?;
             }
 
             let symlink_escapes: Vec<(&str, std::path::PathBuf)> =
@@ -190,9 +259,16 @@ impl AgentTool for CopyPathTool {
                     external_source_path
                 } else {
                     project.read_with(cx, |project, cx| {
-                        let project_path = project.find_project_path(&input.source_path, cx).ok_or_else(|| {
-                            format!("Source path {} was not found in the project.", input.source_path)
-                        })?;
+                        let project_path = project
+                            .find_project_path(&input.source_path, cx)
+                            .ok_or_else(|| {
+    explain_unresolved_path(project, Path::new(&input.source_path), cx).unwrap_or_else(|| {
+        format!(
+            "Source path {} was not found in the project.",
+            input.source_path
+        )
+    })
+})?;
                         project.entry_for_path(&project_path, cx).ok_or_else(|| {
                             format!("Source path {} was not found in the project.", input.source_path)
                         })?;
@@ -286,12 +362,25 @@ impl AgentTool for CopyPathTool {
 mod tests {
     use super::*;
     use fs::Fs as _;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, UpdateGlobal as _};
     use project::{FakeFs, Project};
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{SettingsStore, SplicingVec};
     use std::path::PathBuf;
     use util::path;
+
+    /// Installs user-level `worktree` settings, which both the in-project and the
+    /// out-of-project settings checks read via `WorktreeSettings::get_global`.
+    fn set_worktree_settings(
+        cx: &mut TestAppContext,
+        update: impl FnOnce(&mut settings::SettingsContent),
+    ) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, update);
+            });
+        });
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -434,6 +523,58 @@ mod tests {
                 .await
                 .unwrap(),
             "content"
+        );
+    }
+
+    /// Copying out of (and into) a directory the worktree never scanned goes
+    /// through the same direct-filesystem route as a path outside the project.
+    #[gpui::test]
+    async fn test_copy_path_gitignored_file_in_unscanned_directory(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+            }),
+        )
+        .await;
+        fs.create_dir(path!("/outside").as_ref()).await.unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CopyPathTool::new(project));
+        let result = cx
+            .update(|cx| {
+                tool.clone().run(
+                    ToolInput::resolved(CopyPathToolInput {
+                        source_path: "node_modules/pkg/index.js".to_string(),
+                        destination_path: path!("/outside/copied.js").to_string(),
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "copying out of a gitignored directory should succeed: {result:?}"
+        );
+        assert_eq!(
+            fs.load(path!("/outside/copied.js").as_ref()).await.unwrap(),
+            "module.exports = 1;"
+        );
+        assert!(
+            fs.is_file(path!("/root/node_modules/pkg/index.js").as_ref())
+                .await,
+            "the source must be left in place"
         );
     }
 
@@ -672,6 +813,206 @@ mod tests {
                 Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "Deny policy should not emit symlink authorization prompt",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_copy_path_external_source_to_project(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "data.json": "outside" }))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CopyPathTool::new(project));
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(CopyPathToolInput {
+                    source_path: path!("/outside/data.json").to_string(),
+                    destination_path: "project/copied.json".to_string(),
+                }),
+                ToolCallEventStream::test().0,
+                cx,
+            )
+        });
+        let result = task.await;
+        assert!(
+            result.is_ok(),
+            "should copy from an absolute out-of-project path: {result:?}"
+        );
+        assert_eq!(
+            fs.load(&PathBuf::from(path!("/root/project/copied.json")))
+                .await
+                .unwrap(),
+            "outside"
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/outside/data.json")))
+                .await,
+            "copying out of the project must not consume the source"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_copy_path_respects_private_files(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "secret.txt": "secret", "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files =
+                Some(vec!["**/secret.txt".to_string()].into());
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CopyPathTool::new(project));
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(CopyPathToolInput {
+                    source_path: "project/secret.txt".to_string(),
+                    destination_path: "project/copy.txt".to_string(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+        let result = task.await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("private_files"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked copy must not prompt for authorization",
+        );
+        assert!(
+            fs.metadata(&PathBuf::from(path!("/root/project/copy.txt")))
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing should be copied when the source is private",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_copy_path_respects_file_scan_exclusions_on_destination(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/generated".to_string()]));
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CopyPathTool::new(project));
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(CopyPathToolInput {
+                    source_path: "project/src/main.rs".to_string(),
+                    destination_path: "project/generated/main.rs".to_string(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+        let result = task.await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked copy must not prompt for authorization",
+        );
+        assert!(
+            !fs.is_dir(&PathBuf::from(path!("/root/project/generated")))
+                .await,
+            "nothing should be created when the destination is excluded",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_copy_path_respects_private_files_outside_project(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "secret.txt": "outside secret" }))
+            .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files =
+                Some(vec!["**/secret.txt".to_string()].into());
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CopyPathTool::new(project));
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(CopyPathToolInput {
+                    source_path: "project/src/main.rs".to_string(),
+                    destination_path: path!("/outside/secret.txt").to_string(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+        let result = task.await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("private_files"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked copy must not prompt for authorization",
+        );
+        assert_eq!(
+            fs.load(&PathBuf::from(path!("/outside/secret.txt")))
+                .await
+                .unwrap(),
+            "outside secret",
+            "a blocked out-of-project destination must be left untouched",
         );
     }
 }

@@ -26,7 +26,7 @@ const DEFAULT_UI_TEXT: &str = "Editing file";
 /// Before using this tool, use the `read_file` tool to understand the file's contents and context.
 /// To create a new file or overwrite an existing one with completely new contents, use the `write_file` tool instead.
 ///
-/// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
+/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
 ///
 /// `read_file` prefixes each line of its output with a line number right-aligned in a
 /// 6-character field followed by a single tab, then the line's actual content. When you
@@ -35,9 +35,7 @@ const DEFAULT_UI_TEXT: &str = "Editing file";
 /// Never include any part of the line number prefix in `old_text` or `new_text`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EditFileToolInput {
-    /// The full path of the file to edit in the project.
-    ///
-    /// WARNING: When specifying which file path need changing, you MUST start each path with one of the project's root directories, unless it's a global agent skill under `~/.agents/skills`.
+    /// The full path of the file to edit. A project-relative path that starts with one of the project's root directories always resolves; a bare project-relative path (`src/main.rs`) also works when it is unambiguous. An absolute path is accepted too, and every form is subject to the user's agent tool permission rules.
     ///
     /// The following examples assume we have two root directories in the project:
     /// - /a/b/backend
@@ -46,7 +44,7 @@ pub struct EditFileToolInput {
     /// <example>
     /// `backend/src/main.rs`
     ///
-    /// Notice how the file path starts with `backend`. Without that, the path would be ambiguous and the call would fail!
+    /// Notice how the file path starts with `backend` — that keeps it unambiguous across multiple roots.
     /// </example>
     ///
     /// <example>
@@ -295,8 +293,29 @@ mod tests {
     use serde_json::json;
     use settings::Settings;
     use settings::SettingsStore;
+    use settings::SplicingVec;
     use util::path;
     use util::rel_path::{RelPath, rel_path};
+
+    /// Overrides the user's worktree file-access settings, which the file tools
+    /// treat as hard blocks (independent of tool permissions).
+    fn set_worktree_settings(
+        cx: &mut TestAppContext,
+        update: impl FnOnce(&mut settings::SettingsContent),
+    ) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    update(settings);
+                    settings
+                        .project
+                        .all_languages
+                        .defaults
+                        .ensure_final_newline_on_save = Some(false);
+                });
+            });
+        });
+    }
 
     #[gpui::test]
     async fn test_streaming_edit_granular_edits(cx: &mut TestAppContext) {
@@ -3074,6 +3093,460 @@ mod tests {
         assert_eq!(err.to_string(), "missing field `old_text`");
     }
 
+    #[gpui::test]
+    async fn test_edit_file_outside_project_absolute_path(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/root"), json!({ "file.txt": "line 1\n" }))
+            .await;
+        fs.create_dir(path!("/outside").as_ref()).await.unwrap();
+        fs.insert_file(path!("/outside/notes.md"), b"outside line\n".to_vec())
+            .await;
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            edit_tool.clone().run(
+                ToolInput::resolved(EditFileToolInput {
+                    path: path!("/outside/notes.md").into(),
+                    edits: vec![Edit {
+                        old_text: "outside line".into(),
+                        new_text: "edited line".into(),
+                    }],
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        // Editing a file outside the project asks for approval first.
+        event_rx.expect_update_fields().await;
+        let auth = event_rx.expect_authorization().await;
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .expect("authorization response should send");
+
+        let EditFileToolOutput::Success { new_text, .. } = task.await.unwrap() else {
+            panic!("expected success editing a file outside the project");
+        };
+        assert_eq!(new_text, "edited line\n");
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/outside/notes.md")))
+                .await
+                .unwrap(),
+            "edited line\n",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_edit_file_respects_file_scan_exclusions(cx: &mut TestAppContext) {
+        init_test(cx);
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/locked".to_string()]));
+        });
+
+        let (edit_tool, _project, _action_log, fs, _thread) = setup_test_with_existing_settings(
+            cx,
+            json!({ "locked": { "file.txt": "old line\n" } }),
+        )
+        .await;
+
+        let result = cx
+            .update(|cx| {
+                edit_tool.clone().run(
+                    ToolInput::resolved(EditFileToolInput {
+                        path: "root/locked/file.txt".into(),
+                        edits: vec![Edit {
+                            old_text: "old line".into(),
+                            new_text: "new line".into(),
+                        }],
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/root/locked/file.txt")))
+                .await
+                .unwrap(),
+            "old line\n",
+            "an excluded file must not be modified"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_edit_file_respects_private_files(cx: &mut TestAppContext) {
+        init_test(cx);
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files =
+                Some(vec!["**/secret.txt".to_string()].into());
+        });
+
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_existing_settings(cx, json!({ "secret.txt": "old line\n" })).await;
+
+        let result = cx
+            .update(|cx| {
+                edit_tool.clone().run(
+                    ToolInput::resolved(EditFileToolInput {
+                        path: "root/secret.txt".into(),
+                        edits: vec![Edit {
+                            old_text: "old line".into(),
+                            new_text: "new line".into(),
+                        }],
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("private_files"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/root/secret.txt")))
+                .await
+                .unwrap(),
+            "old line\n",
+            "a private file must not be modified"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_edit_file_outside_project_respects_private_files(cx: &mut TestAppContext) {
+        init_test(cx);
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files = Some(vec!["**/notes.md".to_string()].into());
+        });
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/root"), json!({ "file.txt": "line 1\n" }))
+            .await;
+        fs.create_dir(path!("/outside").as_ref()).await.unwrap();
+        fs.insert_file(path!("/outside/notes.md"), b"outside line\n".to_vec())
+            .await;
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let result = cx
+            .update(|cx| {
+                edit_tool.clone().run(
+                    ToolInput::resolved(EditFileToolInput {
+                        path: path!("/outside/notes.md").into(),
+                        edits: vec![Edit {
+                            old_text: "outside line".into(),
+                            new_text: "edited line".into(),
+                        }],
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("private_files"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/outside/notes.md")))
+                .await
+                .unwrap(),
+            "outside line\n",
+            "an excluded out-of-project file must not be modified"
+        );
+    }
+
+    /// Known limitation: the mutating tools resolve in-project paths through the
+    /// worktree snapshot, and gitignored directories aren't scanned. A file
+    /// inside one therefore has no entry, so it can't be written or edited even
+    /// by absolute path — while the read tools reach it. The error says so
+    /// instead of leaving the model to conclude the file doesn't exist.
+    /// A file inside a directory the worktree never scanned (gitignored) has no
+    /// snapshot entry, so the tool falls back to the direct-filesystem route it
+    /// uses for out-of-project files.
+    #[gpui::test]
+    async fn test_edit_file_gitignored_file_in_unscanned_directory(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        for path in [
+            path!("/root/node_modules/pkg/index.js"),
+            "root/node_modules/pkg/index.js",
+        ] {
+            let result = cx
+                .update(|cx| {
+                    edit_tool.clone().run(
+                        ToolInput::resolved(EditFileToolInput {
+                            path: path.into(),
+                            edits: vec![Edit {
+                                old_text: "module.exports = 1;".into(),
+                                new_text: "module.exports = 2;".into(),
+                            }],
+                        }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await;
+
+            let EditFileToolOutput::Success { new_text, .. } = result.unwrap_or_else(|error| {
+                panic!("editing the gitignored file as {path} should succeed: {error:?}")
+            }) else {
+                panic!("expected success editing {path}");
+            };
+            assert_eq!(new_text, "module.exports = 2;\n");
+        }
+
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!(
+                "/root/node_modules/pkg/index.js"
+            )))
+            .await
+            .unwrap(),
+            "module.exports = 2;\n"
+        );
+    }
+
+    /// A symlink inside an unscanned directory can point anywhere, and the
+    /// scanner never looked inside it. Whichever form the path takes, the user
+    /// is shown the real target and decides — the same treatment a symlink in a
+    /// scanned part of the project gets.
+    #[gpui::test]
+    async fn test_edit_file_gitignored_symlink_escape_asks_before_following(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        for path in [
+            "root/node_modules/evil.txt",
+            path!("/root/node_modules/evil.txt"),
+        ] {
+            let fs = project::FakeFs::new(cx.executor());
+            fs.insert_tree(
+                path!("/root"),
+                json!({
+                    ".git": {},
+                    ".gitignore": "node_modules/\n",
+                    "src": { "main.rs": "fn main() {}" },
+                    "node_modules": {},
+                }),
+            )
+            .await;
+            fs.insert_tree(path!("/outside"), json!({ "secret.txt": "outside line\n" }))
+                .await;
+            fs.create_symlink(
+                path!("/root/node_modules/evil.txt").as_ref(),
+                PathBuf::from("../../outside/secret.txt"),
+            )
+            .await
+            .unwrap();
+            let (edit_tool, _project, _action_log, fs, _thread) =
+                setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+            let (event_stream, mut event_rx) = ToolCallEventStream::test();
+            let task = cx.update(|cx| {
+                edit_tool.clone().run(
+                    ToolInput::resolved(EditFileToolInput {
+                        path: path.into(),
+                        edits: vec![Edit {
+                            old_text: "outside line".into(),
+                            new_text: "edited line".into(),
+                        }],
+                    }),
+                    event_stream,
+                    cx,
+                )
+            });
+
+            // The prompt names the real target, not the path the model asked for.
+            let auth = event_rx.expect_authorization().await;
+            let title = auth.tool_call.fields.title.as_deref().unwrap_or("");
+            assert!(
+                title.contains(path!("/outside/secret.txt")) && title.contains("symlink"),
+                "the prompt for {path} must name the real target, got: {title}"
+            );
+            drop(auth); // deny by dropping
+
+            let result = task.await;
+            assert!(result.is_err(), "denying the prompt must fail for {path}");
+            assert_eq!(
+                fs.load(&std::path::PathBuf::from(path!("/outside/secret.txt")))
+                    .await
+                    .unwrap(),
+                "outside line\n",
+                "a denied prompt must leave the target untouched"
+            );
+        }
+    }
+
+    /// Approving the prompt edits the symlink target, which is the point of
+    /// asking: the user saw where it leads.
+    #[gpui::test]
+    async fn test_edit_file_gitignored_symlink_escape_allowed(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": {},
+            }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "secret.txt": "outside line\n" }))
+            .await;
+        fs.create_symlink(
+            path!("/root/node_modules/evil.txt").as_ref(),
+            PathBuf::from("../../outside/secret.txt"),
+        )
+        .await
+        .unwrap();
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            edit_tool.clone().run(
+                ToolInput::resolved(EditFileToolInput {
+                    path: "root/node_modules/evil.txt".into(),
+                    edits: vec![Edit {
+                        old_text: "outside line".into(),
+                        new_text: "edited line".into(),
+                    }],
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        let auth = event_rx.expect_authorization().await;
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .expect("authorization response should send");
+
+        assert!(
+            task.await.is_ok(),
+            "an approved edit through the symlink should succeed"
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/outside/secret.txt")))
+                .await
+                .unwrap(),
+            "edited line\n"
+        );
+    }
+
+    /// The fallback route keeps the user's settings: an ignored directory is
+    /// still blocked when the worktree settings match it.
+    #[gpui::test]
+    async fn test_edit_file_gitignored_file_respects_file_scan_exclusions(cx: &mut TestAppContext) {
+        init_test(cx);
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/node_modules".to_string()]));
+        });
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let result = cx
+            .update(|cx| {
+                edit_tool.clone().run(
+                    ToolInput::resolved(EditFileToolInput {
+                        path: "root/node_modules/pkg/index.js".into(),
+                        edits: vec![Edit {
+                            old_text: "module.exports = 1;".into(),
+                            new_text: "module.exports = 2;".into(),
+                        }],
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!(
+                "/root/node_modules/pkg/index.js"
+            )))
+            .await
+            .unwrap(),
+            "module.exports = 1;\n",
+            "an excluded file must not be modified"
+        );
+    }
+
+    /// Like [`setup_test`], but keeps the settings that are already installed, so
+    /// callers can set them up front.
+    async fn setup_test_with_existing_settings(
+        cx: &mut TestAppContext,
+        initial_tree: serde_json::Value,
+    ) -> (
+        Arc<EditFileTool>,
+        Entity<Project>,
+        Entity<ActionLog>,
+        Arc<project::FakeFs>,
+        Entity<Thread>,
+    ) {
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree("/root", initial_tree).await;
+        setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await
+    }
+
     async fn setup_test_with_fs(
         cx: &mut TestAppContext,
         fs: Arc<project::FakeFs>,
@@ -3124,6 +3597,202 @@ mod tests {
         let fs = project::FakeFs::new(cx.executor());
         fs.insert_tree("/root", initial_tree).await;
         setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await
+    }
+
+    /// A bare project-relative path into an unscanned ignored directory is
+    /// scanned on demand, so it edits the file like the rooted form.
+    #[gpui::test]
+    async fn test_edit_file_bare_relative_gitignored_path_scans_and_edits(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}\n" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+        let (edit_tool, _project, _action_log, _fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let edit = |path: &str, cx: &mut TestAppContext, edit_tool: Arc<EditFileTool>| {
+            let path = std::path::PathBuf::from(path);
+            cx.update(|cx| {
+                edit_tool.run(
+                    ToolInput::resolved(EditFileToolInput {
+                        path,
+                        edits: vec![Edit {
+                            old_text: "module.exports = 1;".into(),
+                            new_text: "module.exports = 2;".into(),
+                        }],
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+        };
+
+        assert!(
+            edit("node_modules/pkg/index.js", cx, edit_tool.clone())
+                .await
+                .is_ok(),
+            "the bare form should resolve after scanning the ignored directory"
+        );
+    }
+
+    /// A symlink that the scanner did see is flagged in the snapshot, and the
+    /// tool's own authorization already prompts with the canonical target. The
+    /// direct-filesystem route must not add a second prompt on top.
+    #[gpui::test]
+    async fn test_edit_file_scanned_symlink_absolute_path_prompts_once(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                "src": { "main.rs": "fn main() {}" },
+            }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "config.txt": "old content\n" }))
+            .await;
+        // Created before the scan, so the worktree records it as an external entry.
+        fs.create_symlink(
+            path!("/root/link_to_external").as_ref(),
+            std::path::PathBuf::from("/outside"),
+        )
+        .await
+        .unwrap();
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            edit_tool.clone().run(
+                ToolInput::resolved(EditFileToolInput {
+                    path: path!("/root/link_to_external/config.txt").into(),
+                    edits: vec![Edit {
+                        old_text: "old content".into(),
+                        new_text: "new content".into(),
+                    }],
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        event_rx.expect_update_fields().await;
+        let auth = event_rx.expect_authorization().await;
+        let title = auth.tool_call.fields.title.as_deref().unwrap_or("");
+        assert!(
+            title.contains(path!("/outside/config.txt")) && title.contains("symlink"),
+            "the prompt must name the real target, got: {title}"
+        );
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .expect("authorization response should send");
+
+        assert!(
+            task.await.is_ok(),
+            "an approved edit through the scanned symlink should succeed"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a single prompt is expected, not one per layer",
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/outside/config.txt")))
+                .await
+                .unwrap(),
+            "new content\n"
+        );
+    }
+
+    /// An absolute path outside the project that is itself a symlink must prompt
+    /// once, naming the real target, and not also fall through to the generic
+    /// tool prompt.
+    #[gpui::test]
+    async fn test_edit_file_external_symlink_prompts_once(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                "project": { "src": { "main.rs": "fn main() {}" } },
+                "ext": { "real.txt": "old content\n" },
+            }),
+        )
+        .await;
+        fs.create_symlink(
+            path!("/root/ext/link.txt").as_ref(),
+            std::path::PathBuf::from(path!("/root/ext/real.txt")),
+        )
+        .await
+        .unwrap();
+        let (edit_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root/project").as_ref()]).await;
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            edit_tool.clone().run(
+                ToolInput::resolved(EditFileToolInput {
+                    path: path!("/root/ext/link.txt").into(),
+                    edits: vec![Edit {
+                        old_text: "old content".into(),
+                        new_text: "new content".into(),
+                    }],
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        event_rx.expect_update_fields().await;
+        let auth = event_rx.expect_authorization().await;
+        let title = auth.tool_call.fields.title.as_deref().unwrap_or("");
+        assert!(
+            title.contains("symlink to") && title.contains("real.txt"),
+            "the prompt must name the real target, got: {title}"
+        );
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .expect("authorization response should send");
+
+        assert!(
+            task.await.is_ok(),
+            "an approved edit through the external symlink should succeed"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a single prompt is expected, not one per layer",
+        );
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!("/root/ext/real.txt")))
+                .await
+                .unwrap(),
+            "new content\n"
+        );
     }
 
     fn init_test(cx: &mut TestAppContext) {

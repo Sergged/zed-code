@@ -1,4 +1,6 @@
-use crate::{AgentTool, ToolCallEventStream, ToolInput};
+use crate::{
+    AgentTool, ToolCallEventStream, ToolInput, glob_literal_prefix, prescan_ignored_dirs_for_prefix,
+};
 use acp_thread::MentionUri;
 use agent_client_protocol::schema::v1 as acp;
 use anyhow::Result;
@@ -24,6 +26,7 @@ use util::paths::PathMatcher;
 /// - Pass an `include_pattern` if you know how to narrow your search on the files system
 /// - Never use this tool to search for paths. Only search file contents with this tool.
 /// - Use this tool when you need to find files containing specific patterns
+/// - Gitignored files are searched only when `include_pattern` names into a gitignored directory (e.g. `myproject/node_modules/**`). Without that, ordinary searches neither scan nor match them; only the user's explicit `file_scan_exclusions` / `private_files` settings can block paths outright.
 /// - Results are paginated with 20 matches per page. Use the optional 'offset' parameter to request subsequent pages.
 /// - DO NOT use HTML entities solely to escape characters in the tool parameters.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -129,6 +132,31 @@ impl AgentTool for GrepTool {
                 .await
                 .map_err(|e| e.to_string())?;
 
+            // Wait for each worktree's initial scan so that its gitignored
+            // directories have been discovered before we decide whether the
+            // include pattern reaches into any of them.
+            let worktrees: Vec<_> =
+                project.read_with(cx, |project, cx| project.worktrees(cx).collect());
+            for worktree in worktrees {
+                let scan_complete = worktree.read_with(cx, |worktree, _| {
+                    worktree.as_local().map(|local| local.scan_complete())
+                });
+                if let Some(scan_complete) = scan_complete {
+                    scan_complete.await;
+                }
+            }
+
+            // Ignored content is opt-in: only when the include pattern names
+            // into a gitignored directory do we load it and let the search look
+            // there. Otherwise `node_modules` and friends are left untouched.
+            let include_ignored = match input.include_pattern.as_deref() {
+                Some(pattern) => {
+                    let prefix = glob_literal_prefix(pattern);
+                    prescan_ignored_dirs_for_prefix(&project, prefix.as_rel_path(), cx).await
+                }
+                None => false,
+            };
+
             let results = cx.update(|cx| {
                 let path_style = project.read(cx).path_style(cx);
 
@@ -158,7 +186,11 @@ impl AgentTool for GrepTool {
                     &input.regex,
                     false,
                     input.case_sensitive,
-                    false,
+                    // Set above: gitignored directories are searched only when
+                    // the include pattern names into them. The user's explicit
+                    // `file_scan_exclusions` / `private_files` settings and
+                    // tool-permission rules still gate what is searched.
+                    include_ignored,
                     false,
                     include_matcher,
                     exclude_matcher,
@@ -1032,6 +1064,150 @@ mod tests {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
         });
+    }
+
+    #[gpui::test]
+    async fn test_grep_searches_gitignored_files(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": {
+                    "main.rs": "fn main() {}",
+                },
+                "node_modules": {
+                    "pkg": {
+                        "index.js": "const DEPRECATED_API = 'old';\n",
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let result = run_grep_tool(
+            GrepToolInput {
+                regex: "DEPRECATED_API".to_string(),
+                include_pattern: Some("root/node_modules/**/*.js".to_string()),
+                offset: 0,
+                case_sensitive: false,
+            },
+            project.clone(),
+            cx,
+        )
+        .await;
+        let paths = extract_paths_from_results(&result);
+        assert!(
+            paths.iter().any(|p| p.contains("index.js")),
+            "grep_tool should search gitignored files when the include pattern names them, got: {paths:?}"
+        );
+    }
+
+    /// Ignored content is opt-in: without an include pattern that names a
+    /// gitignored directory, grep neither scans nor matches it.
+    #[gpui::test]
+    async fn test_grep_ignored_content_is_opt_in(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "const DEPRECATED_API = 'old';\n" } },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        // Neither an absent include pattern nor a bare wildcard names into
+        // `node_modules`, so the ignored file must stay invisible.
+        for include_pattern in [None, Some("**/*.js".to_string())] {
+            let result = run_grep_tool(
+                GrepToolInput {
+                    regex: "DEPRECATED_API".to_string(),
+                    include_pattern,
+                    offset: 0,
+                    case_sensitive: false,
+                },
+                project.clone(),
+                cx,
+            )
+            .await;
+            let paths = extract_paths_from_results(&result);
+            assert!(
+                !paths.iter().any(|p| p.contains("index.js")),
+                "grep_tool must not pull in ignored content without naming it, got: {paths:?}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_grep_searches_gitignored_files_in_second_worktree(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        // Two independent repositories, each with its own ignored directory.
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "frontend": {
+                    ".git": {},
+                    ".gitignore": "dist/\n",
+                    "dist": { "bundle.js": "const FRONTEND_MARKER = 1;\n" },
+                },
+                "backend": {
+                    ".git": {},
+                    ".gitignore": "target/\n",
+                    "target": { "debug.txt": "const BACKEND_MARKER = 2;\n" },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(
+            fs.clone(),
+            [
+                path!("/root/frontend").as_ref(),
+                path!("/root/backend").as_ref(),
+            ],
+            cx,
+        )
+        .await;
+        cx.executor().run_until_parked();
+
+        for (marker, include_pattern) in [
+            ("FRONTEND_MARKER", "frontend/dist/**/*.js"),
+            ("BACKEND_MARKER", "backend/target/**/*.txt"),
+        ] {
+            let result = run_grep_tool(
+                GrepToolInput {
+                    regex: marker.to_string(),
+                    include_pattern: Some(include_pattern.to_string()),
+                    offset: 0,
+                    case_sensitive: false,
+                },
+                project.clone(),
+                cx,
+            )
+            .await;
+            let paths = extract_paths_from_results(&result);
+            assert!(
+                !paths.is_empty(),
+                "grep_tool should search gitignored files for {marker}, got: {paths:?}"
+            );
+        }
     }
 
     #[gpui::test]

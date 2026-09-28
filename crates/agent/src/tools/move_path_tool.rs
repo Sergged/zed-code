@@ -1,11 +1,14 @@
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
-    authorize_symlink_escapes, canonicalize_worktree_roots, collect_symlink_escapes,
-    is_protected_external_path, resolve_creatable_external_path, resolve_external_path,
-    resolves_to_global_skills_dir, sensitive_settings_kind,
+    DirectFsPath, PathExistence, authorize_direct_fs_path, authorize_symlink_escapes,
+    canonicalize_worktree_roots, collect_symlink_escapes, ensure_path_not_hidden_by_settings,
+    explain_unresolved_path, explain_unscanned_ignored_path, is_protected_external_path,
+    permission_path_forms, resolve_direct_fs_path, resolves_to_global_skills_dir,
+    sensitive_settings_kind,
 };
 use crate::{
     AgentTool, ToolCallEventStream, ToolInput, ToolPermissionDecision,
-    authorize_with_sensitive_settings, decide_permission_for_paths,
+    authorize_with_sensitive_settings, decide_permission_for_path_groups,
 };
 use agent_client_protocol::schema::v1 as acp;
 use agent_settings::AgentSettings;
@@ -18,12 +21,12 @@ use settings::Settings;
 use std::{path::Path, sync::Arc};
 use util::markdown::MarkdownInlineCode;
 
-/// Moves or rename a file or directory in the project, and returns confirmation that the move succeeded.
+/// Moves or renames a file or directory, and returns confirmation that the move succeeded.
 ///
 /// If the source and destination directories are the same, but the filename is different, this performs a rename. Otherwise, it performs a move.
 ///
 /// This tool should be used when it's desirable to move or rename a file or directory without changing its contents at all.
-/// Paths outside the project may be absolute; they are subject to the user's agent tool permission rules.
+/// Project-relative paths that start with a project root directory always resolve; bare project-relative paths also work when unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MovePathToolInput {
     /// The source path of the file or directory to move/rename.
@@ -107,9 +110,12 @@ impl AgentTool for MovePathTool {
                 .recv()
                 .await
                 .map_err(|e| e.to_string())?;
-            let paths = vec![input.source_path.clone(), input.destination_path.clone()];
             let decision = cx.update(|cx| {
-                decide_permission_for_paths(Self::NAME, &paths, AgentSettings::get_global(cx))
+                let forms = [
+                    permission_path_forms(project.read(cx), Path::new(&input.source_path), cx),
+                    permission_path_forms(project.read(cx), Path::new(&input.destination_path), cx),
+                ];
+                decide_permission_for_path_groups(Self::NAME, &forms, AgentSettings::get_global(cx))
             });
             if let ToolPermissionDecision::Deny(reason) = decision {
                 return Err(reason);
@@ -117,6 +123,12 @@ impl AgentTool for MovePathTool {
 
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
+
+            // A bare relative path into a gitignored directory the worktree
+            // hasn't scanned can't resolve through the snapshot; scan that
+            // directory first so it resolves like the rooted/absolute form.
+            prescan_ignored_ancestor(&project, Path::new(&input.source_path), cx).await;
+            prescan_ignored_ancestor(&project, Path::new(&input.destination_path), cx).await;
 
             if resolves_to_global_skills_dir(Path::new(&input.source_path), fs.as_ref()).await
                 || resolves_to_global_skills_dir(
@@ -131,15 +143,53 @@ impl AgentTool for MovePathTool {
                 );
             }
 
-            let external_source_path =
-                resolve_external_path(Path::new(&input.source_path), &canonical_roots, fs.as_ref())
-                    .await;
-            let external_destination_path = resolve_creatable_external_path(
-                Path::new(&input.destination_path),
+            let mut direct_source = resolve_direct_fs_path(
+                Path::new(&input.source_path),
+                PathExistence::MustExist,
+                &project,
                 &canonical_roots,
                 fs.as_ref(),
+                cx,
             )
             .await;
+            let direct_destination = resolve_direct_fs_path(
+                Path::new(&input.destination_path),
+                PathExistence::MayNotExist,
+                &project,
+                &canonical_roots,
+                fs.as_ref(),
+                cx,
+            )
+            .await;
+
+            // A symlink names the link, not its target: move the link itself,
+            // the way `mv` does and the way an in-project source already behaves.
+            // Only the leaf matters — an intermediate symlink is still followed.
+            // The escape prompt still fires (as it does for a scanned in-project
+            // symlink): the path does resolve outside the project.
+            let move_leaf_symlink = match &direct_source {
+                Some(direct) => fs
+                    .metadata(&direct.named_path)
+                    .await
+                    .map_err(|e| format!("Moving {}: {e}", input.source_path))?
+                    .is_some_and(|metadata| metadata.is_symlink),
+                None => false,
+            };
+            if move_leaf_symlink && let Some(direct) = &direct_source {
+                direct_source = Some(DirectFsPath {
+                    absolute_path: direct.named_path.clone(),
+                    named_path: direct.named_path.clone(),
+                    project_path: direct.project_path.clone(),
+                    symlink_escape: direct.symlink_escape.clone(),
+                });
+            }
+
+            let external_source_path = direct_source
+                .as_ref()
+                .map(|direct_path| direct_path.absolute_path.clone());
+            let external_destination_path = direct_destination
+                .as_ref()
+                .map(|direct_path| direct_path.absolute_path.clone());
 
             if external_source_path
                 .as_ref()
@@ -152,6 +202,53 @@ impl AgentTool for MovePathTool {
                     "Refusing to move to or from a protected path outside the project: {} -> {}",
                     input.source_path, input.destination_path
                 ));
+            }
+
+            // `file_scan_exclusions` / `private_files` are hard blocks, so check
+            // this operation before prompting: there is no point asking the user to
+            // approve something that can't run. A target that resolves somewhere
+            // other than the requested path (a symlink) asks the user too.
+            for (direct_path, requested, subject) in [
+                (direct_source.as_ref(), &input.source_path, "move from"),
+                (
+                    direct_destination.as_ref(),
+                    &input.destination_path,
+                    "move to",
+                ),
+            ] {
+                let Some(direct_path) = direct_path else {
+                    continue;
+                };
+                authorize_direct_fs_path(
+                    Self::NAME,
+                    requested,
+                    subject,
+                    direct_path,
+                    true,
+                    &event_stream,
+                    cx,
+                )
+                .await?;
+            }
+
+            // `file_scan_exclusions` / `private_files` are hard blocks, so check
+            // the in-project side of this operation before prompting: there is no
+            // point asking the user to approve something that can't run.
+            if let Some(source) = project.read_with(cx, |project, cx| {
+                project
+                    .find_project_path(&input.source_path, cx)
+                    .filter(|_| external_source_path.is_none())
+            }) {
+                cx.update(|cx| ensure_path_not_hidden_by_settings(&source, "move from", cx))
+                    .map_err(|error| format!("{error:#}"))?;
+            }
+            if let Some(destination) = project.read_with(cx, |project, cx| {
+                project
+                    .find_project_path(&input.destination_path, cx)
+                    .filter(|_| external_destination_path.is_none())
+            }) {
+                cx.update(|cx| ensure_path_not_hidden_by_settings(&destination, "move to", cx))
+                    .map_err(|error| format!("{error:#}"))?;
             }
 
             let symlink_escapes: Vec<(&str, std::path::PathBuf)> =
@@ -219,11 +316,24 @@ impl AgentTool for MovePathTool {
                     external_source_path
                 } else {
                     project.read_with(cx, |project, cx| {
-                        let project_path = project.find_project_path(&input.source_path, cx).ok_or_else(|| {
-                            format!("Source path {} was not found in the project.", input.source_path)
-                        })?;
+                        let project_path = project
+                            .find_project_path(&input.source_path, cx)
+                            .ok_or_else(|| {
+    explain_unresolved_path(project, Path::new(&input.source_path), cx).unwrap_or_else(|| {
+        format!(
+            "Source path {} was not found in the project.",
+            input.source_path
+        )
+    })
+})?;
                         project.entry_for_path(&project_path, cx).ok_or_else(|| {
-                            format!("Source path {} was not found in the project.", input.source_path)
+                            explain_unscanned_ignored_path(project, &project_path, cx)
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Source path {} was not found in the project.",
+                                        input.source_path
+                                    )
+                                })
                         })?;
                         project.absolute_path(&project_path, cx).ok_or_else(|| {
                             format!("Source path {} could not be resolved.", input.source_path)
@@ -311,12 +421,25 @@ impl AgentTool for MovePathTool {
 mod tests {
     use super::*;
     use fs::Fs as _;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, UpdateGlobal as _};
     use project::{FakeFs, Project};
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{SettingsStore, SplicingVec};
     use std::path::PathBuf;
     use util::path;
+
+    /// Installs user-level `worktree` settings, which both the in-project and the
+    /// out-of-project settings checks read via `WorktreeSettings::get_global`.
+    fn set_worktree_settings(
+        cx: &mut TestAppContext,
+        update: impl FnOnce(&mut settings::SettingsContent),
+    ) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, update);
+            });
+        });
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -460,6 +583,57 @@ mod tests {
                 .await
                 .unwrap(),
             "content"
+        );
+    }
+
+    /// Moving out of a directory the worktree never scanned goes through the
+    /// same direct-filesystem route as a path outside the project.
+    #[gpui::test]
+    async fn test_move_path_gitignored_file_in_unscanned_directory(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(MovePathTool::new(project));
+        let result = cx
+            .update(|cx| {
+                tool.clone().run(
+                    ToolInput::resolved(MovePathToolInput {
+                        source_path: "node_modules/pkg/index.js".to_string(),
+                        destination_path: path!("/outside/moved.js").to_string(),
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "moving out of a gitignored directory should succeed: {result:?}"
+        );
+        assert!(
+            !fs.is_file(path!("/root/node_modules/pkg/index.js").as_ref())
+                .await,
+            "the source should be gone"
+        );
+        assert_eq!(
+            fs.load(path!("/outside/moved.js").as_ref()).await.unwrap(),
+            "module.exports = 1;"
         );
     }
 
@@ -698,6 +872,173 @@ mod tests {
                 Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "Deny policy should not emit symlink authorization prompt",
+        );
+    }
+
+    #[gpui::test]
+    async fn test_move_path_external_source_to_project(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "data.json": "outside" }))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(MovePathTool::new(project));
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(MovePathToolInput {
+                    source_path: path!("/outside/data.json").to_string(),
+                    destination_path: "project/data.json".to_string(),
+                }),
+                ToolCallEventStream::test().0,
+                cx,
+            )
+        });
+        let result = task.await;
+        assert!(
+            result.is_ok(),
+            "should move from an absolute out-of-project path: {result:?}"
+        );
+        assert_eq!(
+            fs.load(&PathBuf::from(path!("/root/project/data.json")))
+                .await
+                .unwrap(),
+            "outside"
+        );
+        assert!(
+            fs.metadata(&PathBuf::from(path!("/outside/data.json")))
+                .await
+                .unwrap()
+                .is_none(),
+            "a successful move consumes the source"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_move_path_respects_file_scan_exclusions(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "generated": { "x.txt": "x" } } }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/generated".to_string()]));
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(MovePathTool::new(project));
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.run(
+                ToolInput::resolved(MovePathToolInput {
+                    source_path: "project/generated/x.txt".to_string(),
+                    destination_path: "project/x.txt".to_string(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+        let result = task.await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked move must not prompt for authorization",
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/root/project/generated/x.txt")))
+                .await,
+            "a blocked move must leave the source in place",
+        );
+    }
+
+    /// A symlink is moved as a link, not as its target: the named path is what
+    /// is renamed, and whatever it pointed at stays put.
+    #[gpui::test]
+    async fn test_move_path_external_symlink_moves_link_not_target(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "main.rs": "fn main() {}" } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "target.txt": "outside line" }))
+            .await;
+        fs.create_symlink(
+            path!("/outside/link.txt").as_ref(),
+            PathBuf::from("target.txt"),
+        )
+        .await
+        .unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(MovePathTool::new(project));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.clone().run(
+                ToolInput::resolved(MovePathToolInput {
+                    source_path: "/outside/link.txt".into(),
+                    destination_path: "/outside/moved.txt".into(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        // The source link resolves outside the project, so the escape prompt
+        // fires; approving it moves the link, not its target.
+        let auth = event_rx.expect_authorization().await;
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .unwrap();
+
+        let result = task.await;
+
+        assert!(
+            result.is_ok(),
+            "moving an external symlink should succeed: {result:?}"
+        );
+        assert!(
+            !fs.is_file(&PathBuf::from(path!("/outside/link.txt"))).await,
+            "the original link must be gone"
+        );
+        assert!(
+            fs.read_link(&PathBuf::from(path!("/outside/moved.txt")))
+                .await
+                .is_ok(),
+            "the destination must be the moved symlink"
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/outside/target.txt")))
+                .await,
+            "the symlink target must be left untouched"
         );
     }
 }

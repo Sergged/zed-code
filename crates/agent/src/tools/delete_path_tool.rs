@@ -1,11 +1,14 @@
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
-    authorize_symlink_access, canonicalize_worktree_roots, detect_symlink_escape,
-    is_protected_external_path, resolve_external_path, resolves_to_global_skills_dir,
+    DirectFsPath, PathExistence, authorize_direct_fs_path, authorize_symlink_access,
+    canonicalize_worktree_roots, detect_symlink_escape, ensure_path_not_hidden_by_settings,
+    explain_unresolved_path, explain_unscanned_ignored_path, is_protected_external_path,
+    permission_path_forms, resolve_direct_fs_path, resolves_to_global_skills_dir,
     sensitive_settings_kind,
 };
 use crate::{
     AgentTool, ToolCallEventStream, ToolInput, ToolPermissionDecision,
-    authorize_with_sensitive_settings, decide_permission_for_path,
+    authorize_with_sensitive_settings, decide_permission_for_path_forms,
 };
 use action_log::ActionLog;
 use agent_client_protocol::schema::v1 as acp;
@@ -20,9 +23,9 @@ use std::path::Path;
 use std::sync::Arc;
 use util::markdown::MarkdownInlineCode;
 
-/// Deletes the file or directory (and the directory's contents, recursively) at the specified path in the project, and returns confirmation of the deletion.
+/// Deletes the file or directory (and the directory's contents, recursively) at the specified path, and returns confirmation of the deletion.
 ///
-/// Paths outside the project may be absolute; they are subject to the user's agent tool permission rules.
+/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeletePathToolInput {
     /// The path of the file or directory to delete.
@@ -88,7 +91,12 @@ impl AgentTool for DeletePathTool {
             let path = input.path;
 
             let decision = cx.update(|cx| {
-                decide_permission_for_path(Self::NAME, &path, AgentSettings::get_global(cx))
+                let forms = permission_path_forms(project.read(cx), Path::new(&path), cx);
+                decide_permission_for_path_forms(
+                    Self::NAME,
+                    &forms,
+                    AgentSettings::get_global(cx),
+                )
             });
 
             if let ToolPermissionDecision::Deny(reason) = decision {
@@ -98,6 +106,11 @@ impl AgentTool for DeletePathTool {
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
+            // A bare relative path into a gitignored directory the worktree
+            // hasn't scanned can't resolve through the snapshot; scan that
+            // directory first so it resolves like the rooted/absolute form.
+            prescan_ignored_ancestor(&project, Path::new(&path), cx).await;
+
             if resolves_to_global_skills_dir(Path::new(&path), fs.as_ref()).await {
                 return Err(
                     "Cannot delete the global agent skills directory itself. Delete a skill directory or file beneath it instead."
@@ -105,8 +118,41 @@ impl AgentTool for DeletePathTool {
                 );
             }
 
-            let external_path =
-                resolve_external_path(Path::new(&path), &canonical_roots, fs.as_ref()).await;
+            let mut direct_path = resolve_direct_fs_path(
+                Path::new(&path),
+                PathExistence::MustExist,
+                &project,
+                &canonical_roots,
+                fs.as_ref(),
+                cx,
+            )
+            .await;
+
+            // A symlink names the link, not its target: delete the link itself,
+            // the way `rm` does and the way an in-project path already behaves.
+            // Only the leaf matters — an intermediate symlink is still followed.
+            // The escape prompt still fires (as it does for a scanned in-project
+            // symlink): the path does resolve outside the project.
+            let unlink_leaf_symlink = match &direct_path {
+                Some(direct) => fs
+                    .metadata(&direct.named_path)
+                    .await
+                    .map_err(|e| format!("Deleting {path}: {e}"))?
+                    .is_some_and(|metadata| metadata.is_symlink),
+                None => false,
+            };
+            if unlink_leaf_symlink && let Some(direct) = &direct_path {
+                direct_path = Some(DirectFsPath {
+                    absolute_path: direct.named_path.clone(),
+                    named_path: direct.named_path.clone(),
+                    project_path: direct.project_path.clone(),
+                    symlink_escape: direct.symlink_escape.clone(),
+                });
+            }
+
+            let external_path = direct_path
+                .as_ref()
+                .map(|direct_path| direct_path.absolute_path.clone());
             if let Some(external_path) = &external_path
                 && is_protected_external_path(external_path, &canonical_roots)
             {
@@ -114,6 +160,45 @@ impl AgentTool for DeletePathTool {
                     "Refusing to delete a protected path outside the project: {path}"
                 ));
             }
+
+            // The user's `file_scan_exclusions` / `private_files` settings apply on
+            // every route, and are checked before prompting so a blocked delete
+            // never asks for approval. A target that resolves somewhere other than
+            // the requested path (a symlink) also asks the user first.
+            if let Some(direct_path) = &direct_path {
+                authorize_direct_fs_path(
+                    Self::NAME,
+                    &path,
+                    "delete",
+                    direct_path,
+                    true,
+                    &event_stream,
+                    cx,
+                )
+                .await?;
+            }
+
+            // `file_scan_exclusions` / `private_files` are hard blocks, so reject
+            // before prompting: there is no point asking the user to approve a
+            // deletion that can't run.
+            let in_project_path = if external_path.is_some() {
+                None
+            } else {
+                let project_path = project.read_with(cx, |project, cx| {
+                    project.find_project_path(&path, cx).ok_or_else(|| {
+                        explain_unresolved_path(project, Path::new(&path), cx).unwrap_or_else(
+                            || {
+                                format!(
+                                    "Couldn't delete {path} because that path isn't in this project."
+                                )
+                            },
+                        )
+                    })
+                })?;
+                cx.update(|cx| ensure_path_not_hidden_by_settings(&project_path, "delete", cx))
+                    .map_err(|error| format!("{error:#}"))?;
+                Some(project_path)
+            };
 
             let symlink_escape_target = project.read_with(cx, |project, cx| {
                 detect_symlink_escape(project, &path, &canonical_roots, cx)
@@ -168,25 +253,41 @@ impl AgentTool for DeletePathTool {
             }
 
             if let Some(external_path) = external_path {
-                let metadata = fs
-                    .metadata(&external_path)
-                    .await
-                    .map_err(|e| format!("Deleting {path}: {e}"))?
-                    .ok_or_else(|| format!("Deleting {path}: path not found"))?;
+                // A leaf symlink is unlinked as-is, so it needs no metadata; the
+                // target's metadata decides only for a real file or directory.
+                let metadata = if unlink_leaf_symlink {
+                    None
+                } else {
+                    Some(
+                        fs.metadata(&external_path)
+                            .await
+                            .map_err(|e| format!("Deleting {path}: {e}"))?
+                            .ok_or_else(|| format!("Deleting {path}: path not found"))?,
+                    )
+                };
 
                 futures::select! {
                     result = async {
-                        if metadata.is_dir {
-                            fs.remove_dir(
-                                &external_path,
-                                fs::RemoveOptions {
-                                    recursive: true,
-                                    ..fs::RemoveOptions::default()
-                                },
-                            )
-                            .await
-                        } else {
-                            fs.remove_file(&external_path, fs::RemoveOptions::default()).await
+                        match metadata {
+                            // A symlink names the link, not its target.
+                            None => {
+                                fs.remove_file(&external_path, fs::RemoveOptions::default())
+                                    .await
+                            }
+                            Some(metadata) if metadata.is_dir => {
+                                fs.remove_dir(
+                                    &external_path,
+                                    fs::RemoveOptions {
+                                        recursive: true,
+                                        ..fs::RemoveOptions::default()
+                                    },
+                                )
+                                .await
+                            }
+                            Some(_) => {
+                                fs.remove_file(&external_path, fs::RemoveOptions::default())
+                                    .await
+                            }
                         }
                     }.fuse() => {
                         result.map_err(|e| format!("Deleting {path}: {e}"))?;
@@ -200,7 +301,7 @@ impl AgentTool for DeletePathTool {
             }
 
             let (project_path, worktree_snapshot) = project.read_with(cx, |project, cx| {
-                let project_path = project.find_project_path(&path, cx).ok_or_else(|| {
+                let project_path = in_project_path.ok_or_else(|| {
                     format!("Couldn't delete {path} because that path isn't in this project.")
                 })?;
                 let worktree = project
@@ -209,6 +310,12 @@ impl AgentTool for DeletePathTool {
                         format!("Couldn't delete {path} because that path isn't in this project.")
                     })?;
                 let worktree_snapshot = worktree.read(cx).snapshot();
+                if project.entry_for_path(&project_path, cx).is_none() {
+                    return Err(explain_unscanned_ignored_path(project, &project_path, cx)
+                        .unwrap_or_else(|| {
+                            format!("Couldn't delete {path} because that path isn't in this project.")
+                        }));
+                }
                 Result::<_, String>::Ok((project_path, worktree_snapshot))
             })?;
 
@@ -277,14 +384,27 @@ impl AgentTool for DeletePathTool {
 mod tests {
     use super::*;
     use fs::Fs as _;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, UpdateGlobal as _};
     use project::{FakeFs, Project};
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{SettingsStore, SplicingVec};
     use std::path::PathBuf;
     use util::path;
 
     use crate::ToolCallEventStream;
+
+    /// Installs user-level `worktree` settings, which both the in-project and the
+    /// out-of-project settings checks read via `WorktreeSettings::get_global`.
+    fn set_worktree_settings(
+        cx: &mut TestAppContext,
+        update: impl FnOnce(&mut settings::SettingsContent),
+    ) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, update);
+            });
+        });
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -745,6 +865,571 @@ mod tests {
         assert!(
             !fs.is_file(path!("/outside/doomed.txt").as_ref()).await,
             "external file should have been deleted"
+        );
+    }
+
+    /// A `private_files` match is a hard block: the delete fails, the file
+    /// survives, and no authorization prompt is ever emitted.
+    #[gpui::test]
+    async fn test_delete_path_respects_private_files(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "secret.txt": "secret", "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files =
+                Some(vec!["**/secret.txt".to_string()].into());
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: "project/secret.txt".to_string(),
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("private_files"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked delete must not prompt for authorization",
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/root/project/secret.txt")))
+                .await,
+            "a private file must not be deleted",
+        );
+    }
+
+    /// Same hard block for `file_scan_exclusions`, on a directory this time.
+    #[gpui::test]
+    async fn test_delete_path_respects_file_scan_exclusions(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": {
+                    "build": { "output.txt": "artifact" },
+                    "src": { "main.rs": "fn main() {}" }
+                }
+            }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/build".to_string()]));
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: "project/build".to_string(),
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked delete must not prompt for authorization",
+        );
+        assert!(
+            fs.is_dir(&PathBuf::from(path!("/root/project/build")))
+                .await,
+            "an excluded directory must not be deleted",
+        );
+    }
+
+    /// The user's global settings also gate out-of-project deletes, and the check
+    /// runs before the prompt so a blocked external delete asks for nothing.
+    #[gpui::test]
+    async fn test_delete_path_respects_private_files_outside_project(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root/project"),
+            json!({ "src": { "main.rs": "fn main() {}" } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "doomed.txt": "bye" }))
+            .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files =
+                Some(vec!["**/doomed.txt".to_string()].into());
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: path!("/outside/doomed.txt").to_string(),
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("private_files"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked delete must not prompt for authorization",
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/outside/doomed.txt")))
+                .await,
+            "a private out-of-project file must not be deleted",
+        );
+    }
+
+    /// Deleting an ancestor of a worktree would take the project with it, so it
+    /// is refused outright — again before any prompt.
+    /// A gitignored directory is itself a snapshot entry, so deleting one works.
+    #[gpui::test]
+    async fn test_delete_path_removes_gitignored_directory(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: "root/node_modules".into(),
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(result.is_ok(), "expected success, got {result:?}");
+        assert!(
+            !fs.is_dir(&PathBuf::from(path!("/root/node_modules"))).await,
+            "the gitignored directory should have been removed"
+        );
+    }
+
+    /// A file inside a directory the worktree never scanned (gitignored) has no
+    /// snapshot entry, so the delete goes through the same direct-filesystem
+    /// route as a file outside the project.
+    #[gpui::test]
+    async fn test_delete_path_removes_gitignored_file(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        for path in [
+            "root/node_modules/pkg/index.js",
+            path!("/root/node_modules/pkg/other.js"),
+        ] {
+            fs.insert_file(
+                path!("/root/node_modules/pkg/other.js"),
+                b"module.exports = 2;".to_vec(),
+            )
+            .await;
+            let result = cx
+                .update(|cx| {
+                    tool.clone().run(
+                        ToolInput::resolved(DeletePathToolInput { path: path.into() }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await;
+
+            assert!(result.is_ok(), "deleting {path} should succeed: {result:?}");
+        }
+
+        for path in [
+            path!("/root/node_modules/pkg/index.js"),
+            path!("/root/node_modules/pkg/other.js"),
+        ] {
+            assert!(
+                !fs.is_file(&PathBuf::from(path)).await,
+                "{path} should have been removed"
+            );
+        }
+    }
+
+    /// A bare relative path into an unscanned gitignored directory is scanned on
+    /// demand, so it deletes the file like the rooted/absolute form.
+    #[gpui::test]
+    async fn test_delete_path_bare_relative_gitignored_file_scans_and_deletes(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+        let result = cx
+            .update(|cx| {
+                tool.clone().run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: "node_modules/pkg/index.js".into(),
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "the bare form should delete the file: {result:?}"
+        );
+        assert!(
+            !fs.is_file(&PathBuf::from(path!("/root/node_modules/pkg/index.js")))
+                .await,
+            "the file should have been removed"
+        );
+    }
+
+    /// The fallback route keeps the user's settings: a gitignored file is still
+    /// protected when the worktree settings match it.
+    #[gpui::test]
+    async fn test_delete_path_gitignored_file_respects_file_scan_exclusions(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/node_modules".to_string()]));
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: "root/node_modules/pkg/index.js".into(),
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/root/node_modules/pkg/index.js")))
+                .await,
+            "an excluded file must not be deleted"
+        );
+    }
+
+    /// Deleting a symlink deletes the link itself, not its target — even when
+    /// the link sits in a gitignored directory the scanner skipped, so the path
+    /// is resolved directly through the filesystem. The prompt therefore must
+    /// not name the outside target: nothing outside the project is touched.
+    #[gpui::test]
+    async fn test_delete_path_gitignored_symlink_deletes_link_not_target(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": {},
+            }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "secret.txt": "outside line" }))
+            .await;
+        fs.create_symlink(
+            path!("/root/node_modules/evil.txt").as_ref(),
+            PathBuf::from("../../outside/secret.txt"),
+        )
+        .await
+        .unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        // The link resolves outside the project, so the escape prompt fires —
+        // but approving it deletes the link, not its target.
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.clone().run(
+                ToolInput::resolved(DeletePathToolInput {
+                    path: "root/node_modules/evil.txt".into(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        let auth = event_rx.expect_authorization().await;
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .unwrap();
+
+        let result = task.await;
+
+        assert!(
+            result.is_ok(),
+            "deleting a symlink should succeed, got: {result:?}"
+        );
+        assert!(
+            !fs.is_file(&PathBuf::from(path!("/root/node_modules/evil.txt")))
+                .await,
+            "the symlink itself must be removed"
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/outside/secret.txt")))
+                .await,
+            "the symlink target must be left untouched"
+        );
+    }
+
+    /// A symlink outside the project is also deleted as a link, not as its
+    /// target — the path the model named is the path that disappears.
+    #[gpui::test]
+    async fn test_delete_path_external_symlink_deletes_link_not_target(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "main.rs": "fn main() {}" } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({ "target.txt": "outside line" }))
+            .await;
+        fs.create_symlink(
+            path!("/outside/link.txt").as_ref(),
+            PathBuf::from("target.txt"),
+        )
+        .await
+        .unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.clone().run(
+                ToolInput::resolved(DeletePathToolInput {
+                    path: "/outside/link.txt".into(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        let auth = event_rx.expect_authorization().await;
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .unwrap();
+
+        let result = task.await;
+
+        assert!(
+            result.is_ok(),
+            "deleting an external symlink should succeed: {result:?}"
+        );
+        assert!(
+            !fs.is_file(&PathBuf::from(path!("/outside/link.txt"))).await,
+            "the symlink itself must be removed"
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/outside/target.txt")))
+                .await,
+            "the symlink target must be left untouched"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_delete_path_refuses_worktree_ancestor(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": { "src": { "main.rs": "fn main() {}" } },
+                "sibling.txt": "sibling"
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(DeletePathTool::new(project, action_log));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(DeletePathToolInput {
+                        path: path!("/root").to_string(),
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("protected path"),
+            "error should explain the path is protected, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a protected path must not prompt for authorization",
+        );
+        assert!(
+            fs.is_dir(&PathBuf::from(path!("/root/project"))).await,
+            "the worktree must survive",
+        );
+        assert!(
+            fs.is_file(&PathBuf::from(path!("/root/sibling.txt"))).await,
+            "a protected ancestor's other contents must survive",
         );
     }
 }

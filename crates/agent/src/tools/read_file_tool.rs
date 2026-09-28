@@ -141,9 +141,11 @@ async fn read_external_file(
     Ok(result_text.into())
 }
 
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
     ResolvedProjectPath, authorize_symlink_access, canonicalize_worktree_roots,
-    external_path_excluded_by_settings, resolve_external_path, resolve_project_path,
+    explain_unresolved_relative_path, external_path_excluded_by_settings,
+    external_path_resolution_target, resolve_external_path, resolve_project_path,
 };
 use crate::{AgentTool, ToolCallEventStream, ToolInput, outline};
 
@@ -156,13 +158,10 @@ use crate::{AgentTool, ToolCallEventStream, ToolInput, outline};
 /// - This tool supports reading image files. Supported formats: PNG, JPEG, WebP, GIF, BMP, TIFF.
 ///   Image files are returned as visual content that you can analyze directly.
 ///
-/// The path may be relative to a project root, or an absolute path outside
-/// the project (subject to the user's agent tool permission rules).
+/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadFileToolInput {
-    /// The relative path of the file to read, or an absolute path outside the project.
-    ///
-    /// A relative path should always start with a root directory of the project.
+    /// The path of the file to read: a project-relative path starting with a project root directory (which reaches any file inside the project, including gitignored content such as `node_modules`), or an absolute path for anything outside the project. Absolute paths are subject to the user's agent tool permission rules.
     ///
     /// <example>
     /// If the project has the following root directories:
@@ -259,6 +258,11 @@ impl AgentTool for ReadFileTool {
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
+            // A bare relative path into a gitignored directory the worktree
+            // hasn't scanned can't resolve through the snapshot; scan that
+            // directory first so it resolves like the rooted/absolute form.
+            prescan_ignored_ancestor(&project, Path::new(&input.path), cx).await;
+
             // Paths outside every worktree (global agent skills, or any other
             // absolute path the user's permission rules allow) are read directly
             // through the filesystem: the project-path machinery only knows about
@@ -275,6 +279,23 @@ impl AgentTool for ReadFileTool {
                     )));
                 }
 
+                // The permission rules matched the path text; show the user the
+                // resolved target when the two differ (a symlink along the way).
+                if let Some(canonical_target) =
+                    external_path_resolution_target(Path::new(&input.path), &external_path)
+                {
+                    let authorize = cx.update(|cx| {
+                        authorize_symlink_access(
+                            Self::NAME,
+                            &input.path,
+                            &canonical_target,
+                            &event_stream,
+                            cx,
+                        )
+                    });
+                    authorize.await.map_err(tool_content_err)?;
+                }
+
                 return read_external_file(
                     &external_path,
                     fs.as_ref(),
@@ -286,18 +307,28 @@ impl AgentTool for ReadFileTool {
                 .await;
             }
 
-            let (project_path, symlink_canonical_target) =
-                project.read_with(cx, |project, cx| {
-                    let resolved =
-                        resolve_project_path(project, &input.path, &canonical_roots, cx)?;
-                    anyhow::Ok(match resolved {
-                        ResolvedProjectPath::Safe(path) => (path, None),
-                        ResolvedProjectPath::SymlinkEscape {
-                            project_path,
-                            canonical_target,
-                        } => (project_path, Some(canonical_target)),
-                    })
-                }).map_err(tool_content_err)?;
+            let resolved = project.read_with(cx, |project, cx| {
+                resolve_project_path(project, &input.path, &canonical_roots, cx)
+            });
+            let (project_path, symlink_canonical_target) = match resolved {
+                Ok(ResolvedProjectPath::Safe(path)) => (path, None),
+                Ok(ResolvedProjectPath::SymlinkEscape {
+                    project_path,
+                    canonical_target,
+                }) => (project_path, Some(canonical_target)),
+                Err(error) => {
+                    let message = cx
+                        .update(|cx| {
+                            explain_unresolved_relative_path(
+                                project.read(cx),
+                                Path::new(&input.path),
+                                cx,
+                            )
+                        })
+                        .unwrap_or_else(|| format!("{error:#}"));
+                    return Err(tool_content_err(message));
+                }
+            };
 
             let abs_path = project
                 .read_with(cx, |project, cx| {
@@ -1016,6 +1047,197 @@ mod test {
         });
     }
 
+    #[gpui::test]
+    async fn test_read_file_bare_relative_gitignored_path_scans_and_reads(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": {
+                    "main.rs": "fn main() {}",
+                },
+                "node_modules": {
+                    "pkg": {
+                        "index.js": "module.exports = 1;",
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(ReadFileTool::new(project, action_log, true));
+
+        let read = |path: &str, cx: &mut TestAppContext, tool: Arc<ReadFileTool>| {
+            let path = path.to_string();
+            cx.update(|cx| {
+                tool.run(
+                    ToolInput::resolved(ReadFileToolInput {
+                        path,
+                        start_line: None,
+                        end_line: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+        };
+
+        // A bare relative path into a gitignored directory the project hasn't
+        // scanned is scanned on demand, so all three forms read the file.
+        for path in [
+            "node_modules/pkg/index.js",
+            "root/node_modules/pkg/index.js",
+            path!("/root/node_modules/pkg/index.js")
+                .to_string()
+                .as_str(),
+        ] {
+            let result = read(path, cx, tool.clone()).await;
+            assert!(result.is_ok(), "reading {path} should succeed: {result:?}");
+        }
+    }
+
+    #[gpui::test]
+    async fn test_read_file_gitignored_file_in_second_worktree(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        // Two independent repositories: each worktree has its own `.git` and
+        // `.gitignore`, so the ignored directories differ per root.
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "frontend": {
+                    ".git": {},
+                    ".gitignore": "dist/\n",
+                    "dist": { "bundle.js": "console.log('frontend');\n" },
+                },
+                "backend": {
+                    ".git": {},
+                    ".gitignore": "target/\n",
+                    "target": { "debug.txt": "backend build artifact\n" },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(
+            fs.clone(),
+            [
+                path!("/root/frontend").as_ref(),
+                path!("/root/backend").as_ref(),
+            ],
+            cx,
+        )
+        .await;
+        cx.executor().run_until_parked();
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(ReadFileTool::new(project, action_log, true));
+
+        let read = |path: String, cx: &mut TestAppContext, tool: Arc<ReadFileTool>| {
+            cx.update(|cx| {
+                tool.run(
+                    ToolInput::resolved(ReadFileToolInput {
+                        path,
+                        start_line: None,
+                        end_line: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+        };
+
+        for (path, expected) in [
+            (
+                "backend/target/debug.txt".to_string(),
+                "backend build artifact",
+            ),
+            (
+                "frontend/dist/bundle.js".to_string(),
+                "console.log('frontend');",
+            ),
+            (
+                path!("/root/backend/target/debug.txt").to_string(),
+                "backend build artifact",
+            ),
+            (
+                path!("/root/frontend/dist/bundle.js").to_string(),
+                "console.log('frontend');",
+            ),
+        ] {
+            let result = read(path.clone(), cx, tool.clone()).await;
+            let output = result.unwrap_or_else(|error| panic!("reading {path} failed: {error:?}"));
+            let LanguageModelToolResultContent::Text(output) = output else {
+                panic!("expected text output for {path}");
+            };
+            assert!(
+                output.contains(expected),
+                "expected {path} to be readable, got: {output:?}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_read_file_relative_excluded_path_reports_setting(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "src": {
+                    "main.rs": "fn main() {}",
+                },
+                "fixtures": {
+                    "data.json": "{}",
+                },
+            }),
+        )
+        .await;
+
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.project.worktree.file_scan_exclusions =
+                        Some(SplicingVec::from(vec!["**/fixtures".to_string()]));
+                });
+            });
+        });
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(ReadFileTool::new(project, action_log, true));
+
+        let result = cx
+            .update(|cx| {
+                let input = ReadFileToolInput {
+                    path: "root/fixtures/data.json".to_string(),
+                    start_line: None,
+                    end_line: None,
+                };
+                tool.clone().run(
+                    ToolInput::resolved(input),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+        let error = error_text(result.unwrap_err());
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+    }
+
     fn single_pixel_png() -> Vec<u8> {
         vec![
             0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
@@ -1604,6 +1826,70 @@ mod test {
 
         let result = task.await;
         assert!(result.is_ok(), "should succeed after approval: {result:?}");
+    }
+
+    /// An absolute path outside the project that is itself a symlink resolves to
+    /// a different file than the path text names. The permission rules matched
+    /// the text, so the user must see the real target before the file is read.
+    #[gpui::test]
+    async fn test_read_external_symlink_requests_authorization(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": { "src": { "main.rs": "fn main() {}" } },
+                "ext": { "real.txt": "REAL CONTENT" },
+            }),
+        )
+        .await;
+        fs.create_symlink(
+            path!("/root/ext/link.txt").as_ref(),
+            PathBuf::from(path!("/root/ext/real.txt")),
+        )
+        .await
+        .unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(ReadFileTool::new(project.clone(), action_log, true));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.clone().run(
+                ToolInput::resolved(ReadFileToolInput {
+                    path: path!("/root/ext/link.txt").to_string(),
+                    start_line: None,
+                    end_line: None,
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        let auth = event_rx.expect_authorization().await;
+        let title = auth.tool_call.fields.title.as_deref().unwrap_or("");
+        assert!(title.contains("symlink to"), "title: {title}");
+        assert!(
+            title.contains("real.txt"),
+            "title should name the real target: {title}"
+        );
+
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .unwrap();
+
+        let result = task.await.expect("should succeed after approval");
+        let LanguageModelToolResultContent::Text(text) = result else {
+            panic!("expected text content");
+        };
+        assert!(text.contains("REAL CONTENT"), "got: {text:?}");
     }
 
     #[gpui::test]

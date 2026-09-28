@@ -1,6 +1,8 @@
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
     ResolvedProjectPath, authorize_symlink_access, canonicalize_worktree_roots,
-    external_path_excluded_by_settings, resolve_external_path, resolve_project_path,
+    explain_unresolved_relative_path, external_path_excluded_by_settings,
+    external_path_resolution_target, resolve_external_path, resolve_project_path,
 };
 use crate::{AgentTool, ToolCallEventStream, ToolInput};
 use agent_client_protocol::schema::v1 as acp;
@@ -19,12 +21,12 @@ use util::markdown::MarkdownInlineCode;
 
 /// Lists files and directories in a given path. Prefer the `grep` or `find_path` tools when searching the codebase.
 ///
+/// Gitignored directories (e.g. `node_modules`) are listed too; only the user's explicit `file_scan_exclusions` / `private_files` settings can block paths.
+///
 /// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListDirectoryToolInput {
-    /// The fully-qualified path of the directory to list in the project.
-    ///
-    /// This path should never be absolute, and the first component of the path should always be a root directory in a project, unless it's a global agent skill directory under `~/.agents/skills`.
+    /// The path of the directory to list: a project-relative path starting with a project root directory (which reaches any directory inside the project, including gitignored content such as `node_modules`), or an absolute path for anything outside the project. Absolute paths are subject to the user's agent tool permission rules. Paths under `~/.agents/skills` are also supported.
     ///
     /// <example>
     /// If the project has the following root directories:
@@ -239,6 +241,11 @@ impl AgentTool for ListDirectoryTool {
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
+            // A bare relative path into a gitignored directory the worktree
+            // hasn't scanned can't resolve through the snapshot; scan that
+            // directory first so it resolves like the rooted/absolute form.
+            prescan_ignored_ancestor(&project, Path::new(&input.path), cx).await;
+
             // Paths outside every worktree (global agent skills, or any other
             // absolute path the user's permission rules allow) are listed directly
             // through the filesystem: the project-path machinery only knows about
@@ -255,21 +262,49 @@ impl AgentTool for ListDirectoryTool {
                     ));
                 }
 
+                // The permission rules matched the path text; show the user the
+                // resolved target when the two differ (a symlink along the way).
+                if let Some(canonical_target) =
+                    external_path_resolution_target(Path::new(&input.path), &external_path)
+                {
+                    let authorize = cx.update(|cx| {
+                        authorize_symlink_access(
+                            Self::NAME,
+                            &input.path,
+                            &canonical_target,
+                            &event_stream,
+                            cx,
+                        )
+                    });
+                    authorize.await.map_err(|error| error.to_string())?;
+                }
+
                 return Self::list_external_directory(&external_path, fs.as_ref(), &input.path)
                     .await;
             }
 
-            let (project_path, symlink_canonical_target) =
-                project.read_with(cx, |project, cx| -> anyhow::Result<_> {
-                    let resolved = resolve_project_path(project, &input.path, &canonical_roots, cx)?;
-                    Ok(match resolved {
-                        ResolvedProjectPath::Safe(path) => (path, None),
-                        ResolvedProjectPath::SymlinkEscape {
-                            project_path,
-                            canonical_target,
-                        } => (project_path, Some(canonical_target)),
-                    })
-                }).map_err(|e| e.to_string())?;
+            let resolved = project.read_with(cx, |project, cx| {
+                resolve_project_path(project, &input.path, &canonical_roots, cx)
+            });
+            let (project_path, symlink_canonical_target) = match resolved {
+                Ok(ResolvedProjectPath::Safe(path)) => (path, None),
+                Ok(ResolvedProjectPath::SymlinkEscape {
+                    project_path,
+                    canonical_target,
+                }) => (project_path, Some(canonical_target)),
+                Err(error) => {
+                    let message = cx
+                        .update(|cx| {
+                            explain_unresolved_relative_path(
+                                project.read(cx),
+                                Path::new(&input.path),
+                                cx,
+                            )
+                        })
+                        .unwrap_or_else(|| error.to_string());
+                    return Err(message);
+                }
+            };
 
             // Check settings exclusions synchronously
             project.read_with(cx, |project, cx| {
@@ -333,6 +368,30 @@ impl AgentTool for ListDirectoryTool {
                 authorize.await.map_err(|e| e.to_string())?;
             }
 
+            // Gitignored directories aren't scanned by default; pre-scan the
+            // requested directory so `node_modules`-style folders list their
+            // real contents. Only the user's explicit `file_scan_exclusions` /
+            // `private_files` settings block access (checked above) — gitignore
+            // alone must not hide files from the agent's tools.
+            let is_ignored_dir = project.read_with(cx, |project, cx| {
+                let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
+                let snapshot = worktree.read(cx).snapshot();
+                snapshot
+                    .entry_for_path(&project_path.path)
+                    .filter(|entry| entry.is_ignored && entry.is_dir())
+                    .map(|_| ())
+            });
+            if is_ignored_dir.is_some() {
+                let scan = project.read_with(cx, |project, cx| {
+                    let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
+                    let local = worktree.read(cx).as_local()?;
+                    Some(local.add_path_prefix_to_scan(project_path.path.clone()))
+                });
+                if let Some(scan) = scan {
+                    scan.into_future().await;
+                }
+            }
+
             let list_path = input.path;
             cx.update(|cx| {
                 Self::build_directory_output(&project, &project_path, &list_path, cx)
@@ -365,6 +424,165 @@ mod tests {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
         });
+    }
+
+    #[gpui::test]
+    async fn test_list_directory_lists_gitignored_directory_contents(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": {
+                    "main.rs": "fn main() {}",
+                },
+                "node_modules": {
+                    "pkg": {
+                        "index.js": "module.exports = 1;",
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+        let tool = Arc::new(ListDirectoryTool::new(project));
+
+        let input = ListDirectoryToolInput {
+            path: "project/node_modules".into(),
+        };
+        let output = cx
+            .update(|cx| {
+                tool.clone().run(
+                    ToolInput::resolved(input),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        assert!(
+            output.contains("node_modules/pkg"),
+            "expected gitignored directory contents to be listed, got: {output:?}"
+        );
+    }
+
+    /// A bare relative path into an unscanned gitignored directory is scanned on
+    /// demand, so it lists the directory like the rooted/absolute form; a bare
+    /// path that still doesn't resolve gets no misleading hint.
+    #[gpui::test]
+    async fn test_list_directory_bare_relative_gitignored_path_scans_and_lists(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+        let tool = Arc::new(ListDirectoryTool::new(project));
+
+        let list = |path: &str, cx: &mut TestAppContext| {
+            let path = path.to_string();
+            cx.update(|cx| {
+                tool.clone().run(
+                    ToolInput::resolved(ListDirectoryToolInput { path }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+        };
+
+        // The bare form resolves by scanning the ignored directory on demand.
+        let output = list("node_modules/pkg", cx)
+            .await
+            .unwrap_or_else(|error| panic!("the bare form should list the dir: {error:?}"));
+        assert!(
+            output.contains("node_modules/pkg/index.js"),
+            "expected the directory contents, got: {output:?}"
+        );
+
+        // A bare path that still doesn't resolve is a genuine miss, with no
+        // misleading "use another form" hint.
+        let error = list("node_modules/missing.js", cx).await.unwrap_err();
+        assert!(
+            !error.contains("gitignored directory") && error.contains("node_modules/missing.js"),
+            "expected a plain not-found, got: {error}"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_list_directory_gitignored_directory_in_second_worktree(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        // Two independent repositories, each with its own ignored directory.
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "frontend": {
+                    ".git": {},
+                    ".gitignore": "dist/\n",
+                    "dist": { "bundle.js": "console.log(1);\n" },
+                },
+                "backend": {
+                    ".git": {},
+                    ".gitignore": "target/\n",
+                    "target": { "debug": { "debug.txt": "artifact\n" } },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(
+            fs.clone(),
+            [
+                path!("/root/frontend").as_ref(),
+                path!("/root/backend").as_ref(),
+            ],
+            cx,
+        )
+        .await;
+        cx.executor().run_until_parked();
+        let tool = Arc::new(ListDirectoryTool::new(project));
+
+        for path in [
+            "backend/target",
+            path!("/root/backend/target").to_string().as_str(),
+            path!("/root/frontend/dist").to_string().as_str(),
+        ] {
+            let output = cx
+                .update(|cx| {
+                    tool.clone().run(
+                        ToolInput::resolved(ListDirectoryToolInput {
+                            path: path.to_string(),
+                        }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| panic!("listing {path} failed: {error:?}"));
+            assert!(
+                output.contains("target/debug") || output.contains("dist/bundle.js"),
+                "expected gitignored directory contents for {path}, got: {output:?}"
+            );
+        }
     }
 
     #[gpui::test]
@@ -935,6 +1153,67 @@ mod tests {
         assert!(
             result.is_ok(),
             "Tool should succeed after authorization: {result:?}"
+        );
+    }
+
+    /// An absolute path outside the project that is itself a symlink resolves to
+    /// a different directory than the path text names. The permission rules
+    /// matched the text, so the user must see the real target before it is
+    /// listed.
+    #[gpui::test]
+    async fn test_list_external_symlink_requests_authorization(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": { "src": { "main.rs": "fn main() {}" } },
+                "ext": { "real": { "child.txt": "hello" } },
+            }),
+        )
+        .await;
+        fs.create_symlink(
+            path!("/root/ext/link").as_ref(),
+            PathBuf::from(path!("/root/ext/real")),
+        )
+        .await
+        .unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+        let tool = Arc::new(ListDirectoryTool::new(project));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let task = cx.update(|cx| {
+            tool.clone().run(
+                ToolInput::resolved(ListDirectoryToolInput {
+                    path: path!("/root/ext/link").to_string(),
+                }),
+                event_stream,
+                cx,
+            )
+        });
+
+        let auth = event_rx.expect_authorization().await;
+        let title = auth.tool_call.fields.title.as_deref().unwrap_or("");
+        assert!(title.contains("symlink to"), "title: {title}");
+        assert!(
+            title.contains("real"),
+            "title should name the real target: {title}"
+        );
+
+        auth.response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("allow"),
+                acp::PermissionOptionKind::AllowOnce,
+            ))
+            .unwrap();
+
+        let output = task.await.expect("should succeed after approval");
+        assert!(
+            output.contains("child.txt"),
+            "expected the real directory's contents, got: {output:?}"
         );
     }
 
