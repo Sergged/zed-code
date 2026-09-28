@@ -1397,6 +1397,27 @@ impl PanelButtons {
             _settings_subscription: settings_subscription,
         }
     }
+
+    /// Whether this view renders at least one panel button.
+    ///
+    /// The vertical status strips use this to hide themselves entirely when
+    /// their dock has no buttons to show.
+    pub fn has_buttons(&self, window: &Window, cx: &App) -> bool {
+        self.dock
+            .read(cx)
+            .panel_entries
+            .iter()
+            .any(|entry| panel_contributes_button(entry, window, cx))
+    }
+}
+
+/// Whether a panel entry contributes a button to a panel buttons view.
+///
+/// A button requires both an icon and an icon tooltip; entries missing either
+/// are skipped, which is also how [`PanelButtons::has_buttons`] detects an
+/// empty strip.
+fn panel_contributes_button(entry: &PanelEntry, window: &Window, cx: &App) -> bool {
+    entry.panel.icon(window, cx).is_some() && entry.panel.icon_tooltip(window, cx).is_some()
 }
 
 impl Render for PanelButtons {
@@ -1418,14 +1439,11 @@ impl Render for PanelButtons {
             .iter()
             .enumerate()
             .filter_map(|(i, entry)| {
+                if !panel_contributes_button(entry, window, cx) {
+                    return None;
+                }
                 let icon = entry.panel.icon(window, cx)?;
-                let icon_tooltip = entry
-                    .panel
-                    .icon_tooltip(window, cx)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("can't render a panel button without an icon tooltip")
-                    })
-                    .log_err()?;
+                let icon_tooltip = entry.panel.icon_tooltip(window, cx)?;
                 let name = entry.panel.persistent_name();
                 let panel = entry.panel.clone();
                 let supports_flexible = panel.supports_flexible_size(cx);

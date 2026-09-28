@@ -12465,7 +12465,7 @@ mod tests {
     };
     use fs::FakeFs;
     use gpui::{
-        DismissEvent, Empty, EventEmitter, FocusHandle, Focusable, Render, TestAppContext,
+        DismissEvent, Empty, EventEmitter, FocusHandle, Focusable, Pixels, Render, TestAppContext,
         UpdateGlobal, VisualTestContext, px,
     };
     use project::{Project, ProjectEntryId, WorktreeId};
@@ -18813,6 +18813,137 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_status_strips_stay_uniform(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let mut window_cx = VisualTestContext::from_window(window_handle.into(), cx);
+        window_cx.run_until_parked();
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+
+        // Give each dock a panel with a button icon so both strips host
+        // buttons; the left strip additionally hosts the threads-sidebar
+        // toggle. The strips' contents differ, but they must still render at
+        // the same width.
+        workspace.update_in(&mut window_cx, |workspace, window, cx| {
+            let left = cx.new(|cx| IconedTestPanel::new(DockPosition::Left, cx));
+            workspace.add_panel(left, window, cx);
+            let right = cx.new(|cx| IconedTestPanel::new(DockPosition::Right, cx));
+            workspace.add_panel(right, window, cx);
+        });
+
+        let read_strip_widths = |window_cx: &mut VisualTestContext| -> Option<(Pixels, Pixels)> {
+            window_cx.update(|window, app| {
+                window.draw(app).clear(app);
+            });
+            let left = window_cx.debug_bounds("left-status-bar")?;
+            let right = window_cx.debug_bounds("right-status-bar")?;
+            Some((left.size.width, right.size.width))
+        };
+
+        let (left_width, right_width) =
+            read_strip_widths(&mut window_cx).expect("both vertical status strips should render");
+        assert_eq!(
+            left_width, right_width,
+            "left and right status strips should be the same width"
+        );
+        let default_width = left_width;
+
+        // Larger icons must widen both strips by the same amount.
+        cx.update_global(|store: &mut SettingsStore, app| {
+            store.update_user_settings(app, |settings| {
+                settings.status_bar.get_or_insert_default().icon_scale = Some(2.0);
+            });
+        });
+
+        let (left_width, right_width) =
+            read_strip_widths(&mut window_cx).expect("both vertical status strips should render");
+        assert_eq!(
+            left_width, right_width,
+            "left and right status strips should stay uniform when icon_scale changes"
+        );
+        assert!(
+            left_width > default_width,
+            "the strips should widen when status_bar.icon_scale is increased"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_status_strip_hidden_when_empty(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let mut window_cx = VisualTestContext::from_window(window_handle.into(), cx);
+        window_cx.run_until_parked();
+
+        window_cx.update(|window, app| {
+            window.draw(app).clear(app);
+        });
+
+        // No panels are registered and the threads sidebar defaults to the
+        // left side, so only the left strip has content (the sidebar toggle);
+        // the empty right strip hides itself instead of rendering a seam.
+        assert!(
+            window_cx.debug_bounds("left-status-bar").is_some(),
+            "the left strip should render because it hosts the sidebar toggle"
+        );
+        assert!(
+            window_cx.debug_bounds("right-status-bar").is_none(),
+            "a status strip with no content should not render"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_status_strip_appears_when_panel_is_added(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let mut window_cx = VisualTestContext::from_window(window_handle.into(), cx);
+        window_cx.run_until_parked();
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+
+        window_cx.update(|window, app| {
+            window.draw(app).clear(app);
+        });
+        assert!(
+            window_cx.debug_bounds("right-status-bar").is_none(),
+            "an empty right strip should start hidden"
+        );
+
+        // Adding the panel straight to the dock isolates the dock -> strip
+        // invalidation: `Workspace::add_panel` also notifies the workspace,
+        // which would re-render the strip for unrelated reasons.
+        let right_dock =
+            workspace.read_with(&window_cx, |workspace, _| workspace.right_dock().clone());
+        right_dock.update_in(&mut window_cx, |dock, window, cx| {
+            let panel = cx.new(|cx| IconedTestPanel::new(DockPosition::Right, cx));
+            let workspace_ref = workspace.read(cx).weak_self.clone();
+            dock.add_panel(panel, workspace_ref, window, cx);
+        });
+
+        window_cx.update(|window, app| {
+            window.draw(app).clear(app);
+        });
+        assert!(
+            window_cx.debug_bounds("right-status-bar").is_some(),
+            "the strip should appear once its dock has a panel button"
+        );
+    }
+
+    #[gpui::test]
     async fn test_pane_close_active_item(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -20099,6 +20230,84 @@ mod tests {
 
         fn set_zoomed(&mut self, zoomed: bool, _: &mut Window, _: &mut Context<Self>) {
             self.zoomed = zoomed;
+        }
+    }
+
+    /// A test panel with a button icon, so its toggle button renders in the
+    /// vertical status strips. Used by the status-strip uniformity test.
+    struct IconedTestPanel {
+        position: DockPosition,
+        focus_handle: FocusHandle,
+    }
+
+    impl EventEmitter<PanelEvent> for IconedTestPanel {}
+
+    impl IconedTestPanel {
+        fn new(position: DockPosition, cx: &mut App) -> Self {
+            Self {
+                position,
+                focus_handle: cx.focus_handle(),
+            }
+        }
+    }
+
+    impl Focusable for IconedTestPanel {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for IconedTestPanel {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("iconed-test-panel")
+                .track_focus(&self.focus_handle(cx))
+        }
+    }
+
+    impl Panel for IconedTestPanel {
+        fn persistent_name() -> &'static str {
+            "IconedTestPanel"
+        }
+
+        fn panel_key() -> &'static str {
+            "IconedTestPanel"
+        }
+
+        fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
+            self.focus_handle(cx)
+        }
+
+        fn position(&self, _: &Window, _: &App) -> DockPosition {
+            self.position
+        }
+
+        fn position_is_valid(&self, _: DockPosition) -> bool {
+            true
+        }
+
+        fn set_position(&mut self, position: DockPosition, _: &mut Window, _: &mut Context<Self>) {
+            self.position = position;
+        }
+
+        fn default_size(&self, _: &Window, _: &App) -> Pixels {
+            px(300.)
+        }
+
+        fn icon(&self, _: &Window, _: &App) -> Option<ui::IconName> {
+            Some(ui::IconName::File)
+        }
+
+        fn icon_tooltip(&self, _: &Window, _: &App) -> Option<&'static str> {
+            Some("Iconed test panel")
+        }
+
+        fn toggle_action(&self) -> Box<dyn Action> {
+            crate::dock::test::ToggleTestPanel.boxed_clone()
+        }
+
+        fn activation_priority(&self) -> u32 {
+            200
         }
     }
 }

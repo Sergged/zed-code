@@ -5,13 +5,13 @@ use crate::{
     sidebar_side_context_menu,
 };
 use gpui::{
-    Anchor, AnyView, App, Context, Decorations, Entity, FocusHandle, Focusable, IntoElement,
+    Anchor, AnyView, App, Context, Decorations, Empty, Entity, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, Role, SharedString, Styled, Subscription, WeakEntity, Window,
 };
 use settings::{Settings, SettingsContent, update_settings_file};
 use std::{any::TypeId, sync::Arc};
 use theme::CLIENT_SIDE_DECORATION_ROUNDING;
-use ui::{ContextMenu, Divider, IconPosition, Indicator, Tooltip, prelude::*, right_click_menu};
+use ui::{ContextMenu, IconPosition, Indicator, Tooltip, prelude::*, right_click_menu};
 
 /// Describes how a status-bar item can be hidden by the user.
 ///
@@ -435,10 +435,16 @@ impl<T: StatusItemView> StatusItemViewHandle for Entity<T> {
 // ---------------------------------------------------------------------------
 // In addition to the bottom status bar, two vertical strips flank the
 // workspace and host only the panel toggle buttons: `LeftStatusBar` (project
-// and git panels) and `RightStatusBar` (agent panel and the threads sidebar).
-// The size of the icons in these strips is controlled by the
-// `status_bar.icon_scale` setting: `IconSize::Small` at a scale of 1.0,
-// scaled linearly beyond that.
+// and git panels, project search) and `RightStatusBar` (agent panel and the
+// threads sidebar). Both strips share the same skeleton: a column of centered
+// buttons with a uniform gap, sized by their content. Every button derives
+// its size from `status_bar.icon_scale`, so as long as all strip content is
+// built from the same buttons the strips stay identical.
+//
+// Their width is intentionally not fixed: the strips wrap their content, and
+// the uniformity invariant (left and right strips render at the same width at
+// any `status_bar.icon_scale`) is enforced by the status strip test in
+// `workspace.rs`.
 
 /// Returns the icon size used by the vertical status strips.
 ///
@@ -504,7 +510,7 @@ fn render_sidebar_toggle(sidebar: &SidebarStatus, cx: &App) -> impl IntoElement 
         )
     };
 
-    let toggle = sidebar_side_context_menu("sidebar-status-toggle-menu", cx)
+    sidebar_side_context_menu("sidebar-status-toggle-menu", cx)
         .anchor(if on_right {
             Anchor::TopRight
         } else {
@@ -532,17 +538,22 @@ fn render_sidebar_toggle(sidebar: &SidebarStatus, cx: &App) -> impl IntoElement 
                         });
                     }
                 })
-        });
+        })
+}
 
-    h_flex()
-        .gap_0p5()
-        .when(on_right, |this| {
-            this.child(Divider::horizontal().color(ui::DividerColor::Border))
-        })
-        .child(toggle)
-        .when(!on_right, |this| {
-            this.child(Divider::horizontal().color(ui::DividerColor::Border))
-        })
+/// Whether the vertical strip on `side` has anything to show: either panel
+/// buttons from its dock, or (when the threads sidebar is docked to that same
+/// side) the sidebar toggle. A strip with no content hides itself entirely
+/// instead of rendering as an empty padded seam.
+fn strip_has_content(
+    panel_buttons: &Entity<PanelButtons>,
+    sidebar: &SidebarStatus,
+    side: SidebarSide,
+    window: &Window,
+    cx: &App,
+) -> bool {
+    let has_buttons = panel_buttons.read_with(cx, |buttons, cx| buttons.has_buttons(window, cx));
+    has_buttons || (sidebar.show_toggle && sidebar.side == side)
 }
 
 pub struct LeftStatusBar {
@@ -550,6 +561,9 @@ pub struct LeftStatusBar {
     panel_buttons: Entity<PanelButtons>,
     focus_handle: FocusHandle,
     _observe_status_bar: Subscription,
+    // Whether this strip renders at all is derived from the dock's buttons, so
+    // it has to re-render when they change.
+    _observe_panel_buttons: Subscription,
     _observe_multi_workspace: Option<Subscription>,
 }
 
@@ -564,6 +578,7 @@ impl LeftStatusBar {
                 this.update_multi_workspace_subscription(cx);
                 cx.notify();
             }),
+            _observe_panel_buttons: cx.observe(&panel_buttons, |_, _, cx| cx.notify()),
             panel_buttons,
             status_bar,
             focus_handle: cx.focus_handle(),
@@ -601,8 +616,13 @@ impl Render for LeftStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = SidebarStatus::query(&self.status_bar.read(cx).multi_workspace, cx);
 
+        if !strip_has_content(&self.panel_buttons, &sidebar, SidebarSide::Left, window, cx) {
+            return Empty.into_any_element();
+        }
+
         v_flex()
             .id("left-status-bar")
+            .debug_selector(|| "left-status-bar".into())
             .track_focus(&self.focus_handle)
             .key_context("StatusBar")
             // Expose the status strip as an ARIA toolbar so assistive
@@ -634,10 +654,11 @@ impl Render for LeftStatusBar {
             .flex_shrink_0()
             .items_center()
             .overflow_hidden()
-            .max_w(px(220.))
-            .gap(DynamicSpacing::Base08.rems(cx))
+            .gap_1()
             .p(DynamicSpacing::Base04.rems(cx))
             .bg(cx.theme().colors().status_bar_background)
+            .border_r_1()
+            .border_color(cx.theme().colors().border)
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
                 Decorations::Client { tiling, .. } => el
@@ -651,7 +672,7 @@ impl Render for LeftStatusBar {
                             && !(sidebar.open && sidebar.side == SidebarSide::Left),
                         |el| el.rounded_bl(CLIENT_SIDE_DECORATION_ROUNDING),
                     )
-                    // This border is to avoid a transparent gap in the rounded corners
+                    // This border fills the transparent gap in the rounded window corner
                     .ml(px(-1.))
                     .mr({
                         #[cfg(target_os = "linux")]
@@ -665,21 +686,14 @@ impl Render for LeftStatusBar {
                         let needs_gap_fix = false;
                         if needs_gap_fix { px(-1.) } else { px(0.) }
                     })
-                    .border_l(px(1.0))
-                    .border_color(cx.theme().colors().status_bar_background),
+                    .border_l(px(1.0)),
             })
-            .child(
-                v_flex()
-                    .gap_1()
-                    .min_w_0()
-                    .items_center()
-                    .overflow_x_hidden()
-                    .child(self.panel_buttons.clone())
-                    .when(
-                        sidebar.show_toggle && sidebar.side == SidebarSide::Left,
-                        |this| this.child(render_sidebar_toggle(&sidebar, cx)),
-                    ),
+            .child(self.panel_buttons.clone())
+            .when(
+                sidebar.show_toggle && sidebar.side == SidebarSide::Left,
+                |this| this.child(render_sidebar_toggle(&sidebar, cx)),
             )
+            .into_any_element()
     }
 }
 
@@ -688,6 +702,9 @@ pub struct RightStatusBar {
     panel_buttons: Entity<PanelButtons>,
     focus_handle: FocusHandle,
     _observe_status_bar: Subscription,
+    // Whether this strip renders at all is derived from the dock's buttons, so
+    // it has to re-render when they change.
+    _observe_panel_buttons: Subscription,
     _observe_multi_workspace: Option<Subscription>,
 }
 
@@ -702,6 +719,7 @@ impl RightStatusBar {
                 this.update_multi_workspace_subscription(cx);
                 cx.notify();
             }),
+            _observe_panel_buttons: cx.observe(&panel_buttons, |_, _, cx| cx.notify()),
             panel_buttons,
             status_bar,
             focus_handle: cx.focus_handle(),
@@ -739,8 +757,19 @@ impl Render for RightStatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = SidebarStatus::query(&self.status_bar.read(cx).multi_workspace, cx);
 
+        if !strip_has_content(
+            &self.panel_buttons,
+            &sidebar,
+            SidebarSide::Right,
+            window,
+            cx,
+        ) {
+            return Empty.into_any_element();
+        }
+
         v_flex()
             .id("right-status-bar")
+            .debug_selector(|| "right-status-bar".into())
             .track_focus(&self.focus_handle)
             .key_context("StatusBar")
             .role(Role::Toolbar)
@@ -768,10 +797,11 @@ impl Render for RightStatusBar {
             .flex_shrink_0()
             .items_center()
             .overflow_hidden()
-            .max_w(px(220.))
-            .gap(DynamicSpacing::Base08.rems(cx))
+            .gap_1()
             .p(DynamicSpacing::Base04.rems(cx))
             .bg(cx.theme().colors().status_bar_background)
+            .border_l_1()
+            .border_color(cx.theme().colors().border)
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
                 Decorations::Client { tiling, .. } => el
@@ -785,7 +815,7 @@ impl Render for RightStatusBar {
                             && !(sidebar.open && sidebar.side == SidebarSide::Right),
                         |el| el.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING),
                     )
-                    // This border is to avoid a transparent gap in the rounded corners
+                    // This border fills the transparent gap in the rounded window corner
                     .mr(px(-1.))
                     .ml({
                         #[cfg(target_os = "linux")]
@@ -799,21 +829,14 @@ impl Render for RightStatusBar {
                         let needs_gap_fix = false;
                         if needs_gap_fix { px(-1.) } else { px(0.) }
                     })
-                    .border_r(px(1.0))
-                    .border_color(cx.theme().colors().status_bar_background),
+                    .border_r(px(1.0)),
             })
-            .child(
-                v_flex()
-                    .gap_1()
-                    .min_w_0()
-                    .items_center()
-                    .overflow_x_hidden()
-                    .child(self.panel_buttons.clone())
-                    .when(
-                        sidebar.show_toggle && sidebar.side == SidebarSide::Right,
-                        |this| this.child(render_sidebar_toggle(&sidebar, cx)),
-                    ),
+            .child(self.panel_buttons.clone())
+            .when(
+                sidebar.show_toggle && sidebar.side == SidebarSide::Right,
+                |this| this.child(render_sidebar_toggle(&sidebar, cx)),
             )
+            .into_any_element()
     }
 }
 
