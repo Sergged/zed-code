@@ -39,6 +39,15 @@ Notes:
 - **Slow final step? It is thin LTO, not the linker.** Every crate is built with `linker-plugin-lto` (`lto = "thin"` in `[profile.release]`), so most of the wait is LTO codegen inside rustc. For faster local iteration use `--profile release-fast` (`lto = false`, `codegen-units = 16`), at a small runtime cost. A faster linker (lld) does not help with thin LTO.
 - **`-j 6`** is for a 16 GiB machine; more parallel rustc jobs push it into swap.
 - Merging upstream branches can reset `crates/zed/RELEASE_CHANNEL` (e.g. to `preview`/`stable`) — keep it at `dev` for local builds (see above).
+- **Flaky WebRTC download:** the livekit build script downloads a ~240 MB prebuilt archive from GitHub releases with an impatient HTTP client, so it can fail with `Failed to send HTTP request to download WebRTC` / `operation timed out`. Pre-fetch it once into `.webrtc/<WEBRTC_TAG>/` and `script/bundle-fast-mac` will use it automatically when the tag matches (it reads `WEBRTC_TAG` from `webrtc-sys/build/src/lib.rs` of the livekit checkout; a stale tag is ignored and the build downloads instead):
+
+  ```sh
+  tag=webrtc-0001d84-4   # keep in sync with WEBRTC_TAG in webrtc-sys/build/src/lib.rs
+  curl -fL --retry 5 --retry-all-errors -o /tmp/webrtc.zip \
+    "https://github.com/zed-industries/livekit-rust-sdks/releases/download/${tag}/webrtc-mac-arm64-release.zip"
+  unzip -q -o /tmp/webrtc.zip -d /tmp && mkdir -p ".webrtc/${tag}" && \
+    mv /tmp/mac-arm64-release/* ".webrtc/${tag}/" && rmdir /tmp/mac-arm64-release && rm -f /tmp/webrtc.zip
+  ```
 
 Local tweaks in this checkout:
 
