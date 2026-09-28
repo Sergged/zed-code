@@ -149,6 +149,10 @@ The system prompt template (`crates/agent/src/templates/system_prompt.hbs`) can 
 
 A `*.hbs` file dropped into the prompt-overrides directory (`paths::prompt_overrides_dir`, the same directory Zed already uses to override other prompts) replaces the built-in template of the same name at render time, so the next message picks it up. A file that fails to read or render falls back to the built-in template instead of panicking. Dev builds additionally read the checkout's `crates/agent/src/templates/*.hbs` at runtime via `fs_embed!` (edits there still require rebuilding the `agent` crate).
 
+### Guide content updates
+
+The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hbs`) was corrected and extended:
+
 - File tools are described as operating across the whole filesystem, stated as facts rather than preferences: a project-relative path that starts with a worktree root name, an absolute path, and a `~`-prefixed path all resolve — including into gitignored content such as `node_modules` — while a bare project-relative path works only when it is unambiguous (gitignored directories are scanned on demand). The wording is deliberately not a "prefer relative" style rule — that is an unverifiable preference, whereas the path forms are a property of the harness.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
 The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.

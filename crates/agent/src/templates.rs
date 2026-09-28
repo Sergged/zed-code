@@ -162,6 +162,217 @@ mod tests {
     }
 
     #[test]
+    fn test_system_prompt_renders_web_search_section_when_tool_available() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into(), "search_web".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("## Web Search"));
+        assert!(rendered.contains("Use the `search_web` tool"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_web_search_section_when_tool_unavailable() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(!rendered.contains("## Web Search"));
+    }
+
+    #[test]
+    fn test_system_prompt_renders_delegation_section_when_tool_available() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into(), "spawn_agent".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("## Multi-agent delegation"));
+        assert!(rendered.contains("spawn several sub-agents in the same turn"));
+    }
+
+    #[test]
+    fn test_system_prompt_renders_subagent_model_choice_when_list_tool_available() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec![
+                "echo".into(),
+                "spawn_agent".into(),
+                "list_agents_and_models".into(),
+            ],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("choose the sub-agent's model"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_subagent_model_choice_when_list_tool_unavailable() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into(), "spawn_agent".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("## Multi-agent delegation"));
+        assert!(!rendered.contains("choose the sub-agent's model"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_delegation_section_when_tool_unavailable() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(!rendered.contains("## Multi-agent delegation"));
+    }
+
+    #[test]
+    fn test_system_prompt_renders_web_search_fetch_combo_when_fetch_available() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into(), "search_web".into(), "fetch".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("combine `search_web` with the `fetch` tool"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_web_search_fetch_combo_when_fetch_unavailable() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into(), "search_web".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("## Web Search"));
+        assert!(!rendered.contains("combine `search_web` with the `fetch` tool"));
+    }
+
+    #[test]
+    fn test_system_prompt_override_replaces_builtin() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+
+        let overrides_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            overrides_dir.path().join("system_prompt.hbs"),
+            "Custom guide for {{date}}.",
+        )
+        .unwrap();
+
+        let templates = Templates::new_with_overrides(Some(overrides_dir.path().to_path_buf()));
+        let rendered = template.render(&templates).unwrap();
+        assert_eq!(rendered, "Custom guide for 2026-01-01.");
+
+        // Without an overrides directory, the built-in guide is used.
+        let builtin = Templates::new();
+        let rendered = template.render(&builtin).unwrap();
+        assert!(rendered.contains("You are the Zed coding agent"));
+    }
+
+    #[test]
+    fn test_system_prompt_override_falls_back_when_render_fails() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+
+        let overrides_dir = tempfile::tempdir().unwrap();
+        // `{{unknown}}` fails strict-mode template rendering, so the built-in
+        // guide must be used instead of panicking.
+        std::fs::write(
+            overrides_dir.path().join("system_prompt.hbs"),
+            "{{unknown}}",
+        )
+        .unwrap();
+
+        let templates = Templates::new_with_overrides(Some(overrides_dir.path().to_path_buf()));
+        let rendered = template.render(&templates).unwrap();
+        assert!(rendered.contains("You are the Zed coding agent"));
+    }
+
+    #[test]
     fn test_system_prompt_renders_user_agents_md_before_project_rules() {
         use prompt_store::{ProjectContext, RulesFileContext, WorktreeContext};
         use util::rel_path::RelPath;
