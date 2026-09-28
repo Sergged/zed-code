@@ -193,6 +193,8 @@ pub struct DragAndDropSelection {
 pub struct SearchSettings {
     /// Whether to show the project search button in the status bar.
     pub button: bool,
+    /// Where to dock the search panel.
+    pub dock: settings::DockPosition,
     /// Whether to only match on whole words.
     pub whole_word: bool,
     /// Whether to match case sensitively.
@@ -307,6 +309,7 @@ impl Settings for EditorSettings {
             search_wrap: editor.search_wrap.unwrap(),
             search: SearchSettings {
                 button: search.button.unwrap(),
+                dock: search.dock.unwrap(),
                 whole_word: search.whole_word.unwrap(),
                 case_sensitive: search.case_sensitive.unwrap(),
                 include_ignored: search.include_ignored.unwrap(),

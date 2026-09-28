@@ -55,6 +55,7 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 - `completions.suggest_selection` (default `"first"`): which completion is preselected when the completions menu opens. `"first"` always selects the first entry; `"recently_used"` preselects the most recently accepted completion among the top-scoring entries; `"recently_used_by_prefix"` remembers the completion accepted for a prefix and preselects it again when that prefix is typed.
 - `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
 - `status_bar.icon_scale` (default `1.0`): multiplier for the panel-button icons in the vertical status strips flanking the workspace. At `1.0` they are the same size as the bottom status bar's icons; larger values grow the icons and the strips with them. The strips host only the panel toggles (plus the threads-sidebar toggle) and hide themselves entirely when their side has no buttons to show.
+All of these are also editable in the Settings window (Panels, Search & Files, Editor, Window & Layout pages).
 
 ## Agent changes in Zed Code
 
@@ -163,6 +164,11 @@ Notes:
 
 The system prompt template (`crates/agent/src/templates/system_prompt.hbs`) can be replaced at runtime — no rebuild, no restart:
 
+```
+~/.config/zed/prompt_overrides/system_prompt.hbs    # macOS
+<data_dir>/prompt_overrides/system_prompt.hbs       # Linux / Windows
+```
+
 A `*.hbs` file dropped into the prompt-overrides directory (`paths::prompt_overrides_dir`, the same directory Zed already uses to override other prompts) replaces the built-in template of the same name at render time, so the next message picks it up. A file that fails to read or render falls back to the built-in template instead of panicking. Dev builds additionally read the checkout's `crates/agent/src/templates/*.hbs` at runtime via `fs_embed!` (edits there still require rebuilding the `agent` crate).
 
 ### Guide content updates
@@ -245,6 +251,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
 ### References panel
 
+- Find All References opens a **dock panel**, in the branch-local `references_panel` crate.
 ### Editor
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.

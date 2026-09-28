@@ -810,6 +810,8 @@
   "search": {
     // Whether to show the project search button in the status bar.
     "button": true,
+    // Where to dock the search panel.
+    "dock": "left",
     // Whether to only match on whole words.
     "whole_word": false,
     // Whether to match case sensitively.
