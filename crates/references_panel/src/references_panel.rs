@@ -267,6 +267,22 @@ fn build_entries(matches: &[LocationMatch], collapsed_files: &HashSet<ProjectPat
     entries
 }
 
+/// The row the uniform list should measure: the match row with the longest
+/// line. Match rows all share the same line-number gutter, so the longest
+/// `display_text` is the widest row, and its measured width is what gives the
+/// list its content width (and thus horizontal scrollability).
+fn measured_entry_index(results: &ReferenceResults) -> Option<usize> {
+    let widest_match_index = results
+        .matches
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, location_match)| location_match.display_text.len())
+        .map(|(match_index, _)| match_index)?;
+    results.entries.iter().position(
+        |entry| matches!(entry, Entry::Match(match_index) if *match_index == widest_match_index),
+    )
+}
+
 pub struct ReferencesPanel {
     workspace: WeakEntity<Workspace>,
     project: Entity<Project>,
@@ -672,15 +688,12 @@ impl ReferencesPanel {
             .map(|location_match| location_match.line_number)
             .max()
             .unwrap_or(0);
-        // Measure the list by the first match row instead of the first entry:
-        // the uniform list applies one measured height to every row, and file
-        // headers are shorter than match rows, so measuring a header would
-        // overlap the match rows at large font sizes.
-        let first_match_index = results
-            .entries
-            .iter()
-            .position(|entry| matches!(entry, Entry::Match(_)))
-            .unwrap_or(0);
+        // The uniform list applies the measured row's size to every row, so it
+        // has to be measured by the widest match row: measuring a file header
+        // would overlap the match rows at large font sizes, and measuring a
+        // narrow match row would shrink the list's content width, hiding the
+        // horizontal scrollbar even when longer lines exist.
+        let measured_entry_index = measured_entry_index(results);
 
         let list = uniform_list(
             "results",
@@ -711,7 +724,7 @@ impl ReferencesPanel {
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
         .size_full()
-        .with_width_from_item(Some(first_match_index))
+        .with_width_from_item(measured_entry_index)
         .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
         .track_scroll(&self.scroll_handle);
 
@@ -1455,5 +1468,107 @@ mod tests {
                 let xyz = «abcˇ»;
             }
         "#});
+    }
+
+    /// The uniform list applies the measured row's size to every row, so the
+    /// measured row has to be the widest match. Measuring a narrow row (e.g.
+    /// the first match) shrinks the list's content width, which removes the
+    /// horizontal scrollbar even when longer lines exist.
+    #[gpui::test]
+    async fn test_measures_the_widest_match_row(cx: &mut TestAppContext) {
+        let mut cx = rust_cx(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+        cx.set_state(indoc! {r#"
+            fn main() {
+                let aˇbc = 123;
+                let xyz = abc; let tail = abc + abc + abc + abc + abc + abc;
+            }
+        "#});
+        cx.lsp
+            .set_request_handler::<lsp::request::References, _, _>(async move |params, _| {
+                let uri = params.text_document_position.text_document.uri;
+                Ok(Some(references(uri, &[(1, 8, 11), (2, 14, 17)])))
+            });
+        let _ = add_panel(&mut cx);
+
+        cx.dispatch_action(FindAllReferences::default());
+        cx.run_until_parked();
+
+        const LONGEST_LINE: &str = "let xyz = abc; let tail = abc + abc + abc + abc + abc + abc;";
+        let workspace = cx.workspace.clone();
+        let measured_line = cx.update(|_window, cx| {
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            let panel = panel.read(cx);
+            let results = panel.results.as_ref().expect("results should be set");
+            let measured_index =
+                measured_entry_index(results).expect("a match row should be measured");
+            match &results.entries[measured_index] {
+                Entry::Match(match_index) => results.matches[*match_index].display_text.clone(),
+                Entry::Header(_) => panic!("a file header should never be the measured row"),
+            }
+        });
+        assert_eq!(
+            measured_line, LONGEST_LINE,
+            "the widest match row should be measured, not the first one"
+        );
+    }
+
+    /// The horizontal scrollbar must appear whenever a match line is wider than
+    /// the panel, no matter which row the list happens to measure.
+    #[gpui::test]
+    async fn test_long_line_makes_the_list_scroll_horizontally(cx: &mut TestAppContext) {
+        let mut cx = rust_cx(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+        // The first match line is short, the second is much wider than the
+        // panel: the list must still scroll horizontally.
+        cx.set_state(indoc! {r#"
+            fn main() {
+                let aˇbc = 123;
+                let xyz = abc; let tail = abc + abc + abc + abc + abc + abc + abc + abc + abc + abc;
+            }
+        "#});
+        cx.lsp
+            .set_request_handler::<lsp::request::References, _, _>(async move |params, _| {
+                let uri = params.text_document_position.text_document.uri;
+                Ok(Some(references(uri, &[(1, 8, 11), (2, 14, 17)])))
+            });
+        let _ = add_panel(&mut cx);
+
+        cx.dispatch_action(FindAllReferences::default());
+        cx.run_until_parked();
+
+        // Draw the window so the list lays out and records its content width.
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+
+        let workspace = cx.workspace.clone();
+        let max_offset_x = cx.update(|_window, cx| {
+            use ui::ScrollableHandle as _;
+            let panel = workspace
+                .read(cx)
+                .panel::<ReferencesPanel>(cx)
+                .expect("references panel should exist");
+            panel.read(cx).scroll_handle.max_offset().x
+        });
+        assert!(
+            max_offset_x > gpui::px(0.),
+            "a line wider than the panel should make the list scroll horizontally, got {max_offset_x:?}"
+        );
     }
 }
