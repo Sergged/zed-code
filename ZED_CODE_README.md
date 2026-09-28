@@ -144,6 +144,7 @@ The global FIFO ordering across sessions is unchanged and still deliberate: `is_
 
 Reachability — which tool accepts which form:
 
+
 - **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
 - **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
 - **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.

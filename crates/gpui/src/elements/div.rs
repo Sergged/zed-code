@@ -3346,7 +3346,11 @@ impl Interactivity {
                     }
 
                     let mut delta_x = match overflow.x {
-                        Overflow::Scroll if !delta.x.is_zero() => delta.x,
+                        // Real trackpad gestures are never perfectly axis-aligned:
+                        // use the dominant axis instead of requiring an exactly
+                        // zero component, or a mostly vertical gesture with a few
+                        // pixels of horizontal jitter would barely scroll.
+                        Overflow::Scroll if delta.x.abs() > delta.y.abs() => delta.x,
                         Overflow::Scroll
                             if !restrict_scroll_to_axis && overflow.y != Overflow::Scroll =>
                         {
@@ -4437,7 +4441,8 @@ mod tests {
     use super::*;
     use crate::{
         AnyWindowHandle, AppContext as _, Context, GestureTuning, InputEvent, Keystroke,
-        MouseMoveEvent, TestAppContext, TouchEvent, TouchId, canvas, util::FluentBuilder as _,
+        MouseMoveEvent, ScrollDelta, TestAppContext, TouchEvent, TouchId, TouchPhase, canvas,
+        util::FluentBuilder as _,
     };
     use std::{cell::Cell, rc::Weak};
 
@@ -5591,6 +5596,76 @@ mod tests {
             .unwrap();
 
         assert_eq!(scroll_handle.max_offset().y, px(0.));
+    }
+
+    #[gpui::test]
+    fn test_cross_axis_scroll_uses_dominant_axis(cx: &mut TestAppContext) {
+        struct HorizontalStrip {
+            scroll_handle: ScrollHandle,
+        }
+
+        impl Render for HorizontalStrip {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().size_full().child(
+                    div()
+                        .id("strip")
+                        .w(px(400.))
+                        .h(px(40.))
+                        .overflow_x_scroll()
+                        .track_scroll(&self.scroll_handle)
+                        .child(div().w(px(1000.)).h_full()),
+                )
+            }
+        }
+
+        let scroll_handle = ScrollHandle::new();
+        let window: AnyWindowHandle = cx
+            .add_window({
+                let scroll_handle = scroll_handle.clone();
+                move |_, _| HorizontalStrip { scroll_handle }
+            })
+            .into();
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+
+        assert!(
+            scroll_handle.max_offset().x > px(0.),
+            "strip must overflow horizontally for the test to be meaningful"
+        );
+
+        // A mostly vertical gesture whose events carry small horizontal jitter
+        // must still scroll the strip horizontally. Real trackpad gestures are
+        // never perfectly axis-aligned, so routing the vertical component only
+        // when the horizontal one is exactly zero leaves the strip unscrollable.
+        cx.update_window(window, |_, window, cx| {
+            for (phase, delta) in [
+                (TouchPhase::Started, point(px(-1.5), px(-10.))),
+                (TouchPhase::Moved, point(px(1.5), px(-14.))),
+                (TouchPhase::Moved, point(px(-1.5), px(-11.))),
+                (TouchPhase::Ended, point(px(1.5), px(-16.))),
+            ] {
+                window.dispatch_event(
+                    ScrollWheelEvent {
+                        position: point(px(100.), px(20.)),
+                        delta: ScrollDelta::Pixels(delta),
+                        modifiers: Default::default(),
+                        touch_phase: phase,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            }
+        })
+        .unwrap();
+
+        assert!(
+            scroll_handle.offset().x < px(0.),
+            "a mostly vertical gesture with horizontal jitter should scroll the strip horizontally"
+        );
     }
 
     struct ContentSizedGrid;
