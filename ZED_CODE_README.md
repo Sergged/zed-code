@@ -60,6 +60,7 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 
 - `git_panel.message_editor_min_lines` (default `6`): minimum height, in lines, of the commit message editor in the git panel.
 - `tabs.show_full_tab_titles` (default `false`): expand tabs to fit the full file name instead of truncating it.
+- `scrollbar.track` (default `"track"`): `"track"` reserves space for a scrollbar track next to the content, `"thumb"` floats the scrollbar over it. The setting is **per panel**, not global: `project_panel.scrollbar.track`, `search.scrollbar.track`, `git_panel.scrollbar.track`, `references_panel.scrollbar.track`, and `context_menu.scrollbar.track` for context menus and dropdowns. There is no editor-level `scrollbar.track` — the editor draws its own scrollbar, which always reserves a track, so the terminal and the outline panel keep their existing behavior. Panel `scrollbar.show` is inherited from the global `scrollbar.show` when set to `null`; `track` is not inherited and carries its own default.
 - `completion_menu_item_kind` (default `"off"`): gains an `"icon"` value that shows a syntax-colored symbol icon per completion entry.
 - `completions.suggest_selection` (default `"first"`): which completion is preselected when the completions menu opens. `"first"` always selects the first entry; `"recently_used"` preselects the most recently accepted completion among the top-scoring entries; `"recently_used_by_prefix"` remembers the completion accepted for a prefix and preselects it again when that prefix is typed.
 - `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
@@ -268,6 +269,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
+- Result rows match the threads-panel styling and get the project panel's context menu; the panel's default width comes from `project_panel.default_width`.
 
 ### References panel
 
@@ -280,6 +282,9 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
 - A physical mouse wheel scrolls horizontally (`shift` + wheel) by the same distance as vertically: line-based wheel deltas are converted with the line height on both axes, instead of the glyph width for the horizontal axis.
+### Context menus
+
+- Menus whose entries overflow render a vertical scrollbar controlled by `context_menu.scrollbar`: `show` (`"auto"` / `"system"` / `"always"` / `"never"`, defaulting to the global `scrollbar.show`) decides when it is visible and `track` (`"track"` / `"thumb"`) whether it reserves space for a track or floats over the content. This covers every `ContextMenu`-based menu, including submenus and dropdowns. Unlike the panel settings, `track` here is not inherited from a global value — the setting is the menu's own.
 
 ### Tabs and workspace chrome
 

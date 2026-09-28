@@ -79,19 +79,27 @@ pub mod scrollbars {
 
     impl Global for ScrollbarAutoHide {}
 
-    /// Controls when context menus show their scrollbar, driven by the
-    /// application's global `scrollbar` setting. The app sets this global at
-    /// startup; when it is unset, menus fall back to [`ShowScrollbar::Auto`].
+    /// Controls how context menus render their scrollbar, driven by the
+    /// application's global `scrollbar` settings: when to show it
+    /// ([`ShowScrollbar`]) and whether it reserves space for a track
+    /// ([`ScrollbarTrack`]). The app sets this global at startup; when it is
+    /// unset, menus fall back to [`ShowScrollbar::Auto`] with a reserved track.
     #[derive(Clone, Copy)]
-    pub struct ContextMenuScrollbarVisibility(pub fn(&App) -> ShowScrollbar);
+    pub struct ContextMenuScrollbars {
+        pub show: fn(&App) -> ShowScrollbar,
+        pub track: fn(&App) -> ScrollbarTrack,
+    }
 
-    impl Default for ContextMenuScrollbarVisibility {
+    impl Default for ContextMenuScrollbars {
         fn default() -> Self {
-            Self(|_| ShowScrollbar::Auto)
+            Self {
+                show: |_| ShowScrollbar::Auto,
+                track: |_| ScrollbarTrack::Track,
+            }
         }
     }
 
-    impl Global for ContextMenuScrollbarVisibility {}
+    impl Global for ContextMenuScrollbars {}
 }
 
 fn get_scrollbar_state<T>(
