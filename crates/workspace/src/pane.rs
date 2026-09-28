@@ -3015,58 +3015,103 @@ impl Pane {
                 this.drag_split_direction = None;
                 this.handle_external_paths_drop(paths, window, cx)
             }))
-            .start_slot::<Indicator>(indicator)
             .map(|this| {
-                let end_slot_action: &'static dyn Action;
-                let end_slot_tooltip_text: &'static str;
-                let end_slot = if is_pinned {
-                    end_slot_action = &TogglePinTab;
-                    end_slot_tooltip_text = "Unpin Tab";
-                    IconButton::new("unpin tab", IconName::Pin)
-                        .shape(IconButtonShape::Square)
-                        .icon_color(Color::Muted)
-                        .size(ButtonSize::None)
-                        .icon_size(IconSize::Small)
-                        .on_click(cx.listener(move |pane, _, window, cx| {
-                            pane.unpin_tab_at(ix, window, cx);
-                        }))
-                } else {
-                    end_slot_action = &CloseActiveItem {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    end_slot_tooltip_text = "Close Tab";
-                    match show_close_button {
-                        ShowCloseButton::Always => IconButton::new("close tab", IconName::Close),
-                        ShowCloseButton::Hover => {
-                            IconButton::new("close tab", IconName::Close).visible_on_hover("")
-                        }
-                        ShowCloseButton::Hidden => return this,
-                    }
-                    .shape(IconButtonShape::Square)
-                    .icon_color(Color::Muted)
-                    .size(ButtonSize::None)
-                    .icon_size(IconSize::Small)
-                    .on_click(cx.listener(move |pane, _, window, cx| {
-                        pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                            .detach_and_log_err(cx);
-                    }))
-                }
-                .map(|this| {
-                    if is_active {
-                        let focus_handle = focus_handle.clone();
-                        this.tooltip(move |window, cx| {
-                            Tooltip::for_action_in(
-                                end_slot_tooltip_text,
-                                end_slot_action,
-                                &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
-                                cx,
-                            )
+                let end_slot: Option<AnyElement> =
+                    if matches!(show_close_button, ShowCloseButton::Hidden) && !is_pinned {
+                        // Close button hidden: keep only the unsaved-changes
+                        // indicator, without a button to swap in on hover.
+                        indicator.map(|indicator| {
+                            h_flex()
+                                .relative()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(indicator),
+                                )
+                                .into_any_element()
                         })
                     } else {
-                        this.tooltip(Tooltip::text(end_slot_tooltip_text))
-                    }
-                });
+                        let (end_slot_action, end_slot_tooltip_text) = if is_pinned {
+                            (&TogglePinTab as &'static dyn Action, "Unpin Tab")
+                        } else {
+                            (
+                                &CloseActiveItem {
+                                    save_intent: None,
+                                    close_pinned: false,
+                                } as &'static dyn Action,
+                                "Close Tab",
+                            )
+                        };
+
+                        let button = if is_pinned {
+                            IconButton::new("unpin tab", IconName::Pin)
+                                .shape(IconButtonShape::Square)
+                                .icon_color(Color::Muted)
+                                .size(ButtonSize::None)
+                                .icon_size(IconSize::Small)
+                                .on_click(cx.listener(move |pane, _, window, cx| {
+                                    pane.unpin_tab_at(ix, window, cx);
+                                }))
+                        } else {
+                            IconButton::new("close tab", IconName::Close)
+                                .shape(IconButtonShape::Square)
+                                .icon_color(Color::Muted)
+                                .size(ButtonSize::None)
+                                .icon_size(IconSize::Small)
+                                .on_click(cx.listener(move |pane, _, window, cx| {
+                                    pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                                        .detach_and_log_err(cx);
+                                }))
+                        };
+
+                        let button = if is_active {
+                            let focus_handle = focus_handle.clone();
+                            button.tooltip(move |window, cx| {
+                                Tooltip::for_action_in(
+                                    end_slot_tooltip_text,
+                                    end_slot_action,
+                                    &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
+                                    cx,
+                                )
+                            })
+                        } else {
+                            button.tooltip(Tooltip::text(end_slot_tooltip_text))
+                        };
+
+                        // VSCode-style: while the file has unsaved changes the
+                        // indicator occupies the trailing slot; hovering the tab
+                        // swaps in the close (or unpin) button.
+                        Some(match indicator {
+                            Some(indicator) => h_flex()
+                                .relative()
+                                .justify_center()
+                                .items_center()
+                                .child(button.visible_on_hover(""))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .size_full()
+                                        .flex()
+                                        .justify_center()
+                                        .items_center()
+                                        .visible()
+                                        .group_hover("", |style| style.invisible())
+                                        .child(indicator),
+                                )
+                                .into_any_element(),
+                            None => button.into_any_element(),
+                        })
+                    };
+
+                let Some(end_slot) = end_slot else {
+                    return this;
+                };
                 this.end_slot(end_slot)
             })
             .child(
