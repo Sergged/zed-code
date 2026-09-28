@@ -810,7 +810,7 @@
   "search": {
     // Whether to show the project search button in the status bar.
     "button": true,
-    // Where to dock the search panel.
+    // Where to dock the search panel. Can be 'left' or 'right'.
     "dock": "left",
     // Whether to only match on whole words.
     "whole_word": false,
@@ -1155,7 +1155,7 @@
     //
     // Default: 0
     "commit_title_max_length": 0,
-    // Minimum number of lines of height the commit message editor should have.
+    // Minimum number of lines to display in the git panel commit message editor.
     //
     // Default: 6
     "message_editor_min_lines": 6,
