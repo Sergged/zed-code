@@ -291,6 +291,8 @@ A fresh Zed Code install therefore starts with a VS Code-like setup (`"base_keym
 
 Seeding writes into Zed's own config directory: this branch keeps `paths::APP_NAME` at its upstream value (`"Zed"`, `crates/paths/src/paths.rs`), and on macOS that resolves to `~/.config/zed`. The `APP_NAME_LOWERCASE`/`CARGO_BIN_NAME` assertion in `crates/zed/src/main.rs` pins the binary name to `zed`, the bundling scripts' `APP_NAME` only sets `.app` metadata, and the release channel names (`Zed Dev`, and so on) do not affect these paths. So a build of this branch reads and writes the **same** `settings.json`, `keymap.json` and `AGENTS.md` as an official Zed installed on the same machine.
 
+Two consequences:
+
 - Running a build of this branch now **creates** `~/.config/zed/settings.json` and `keymap.json` on first launch when they do not exist yet. Those files carry this branch's recommended values — `"base_keymap": "VSCode"`, the 20/16 font sizes, the Ayu Dark theme, `"auto_update": false`, the `telemetry` block — and an official Zed on the same machine will apply them too. Before the branch started seeding, a dev build left those files absent, so nothing leaked across.
 - `AGENTS.md` is new for this branch, but it is seeded into the same shared directory for the same reason.
 
