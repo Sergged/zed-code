@@ -128,6 +128,21 @@ impl RenderOnce for Tab {
             TabCloseSide::Start => (self.end_slot, self.start_slot),
         };
 
+        // The trailing slot is sized to the close button, whose box includes
+        // padding around its icon. Subtract that padding from the tab's outer
+        // padding so the icon keeps the intended distance to the tab's edge.
+        let (end_slot_icon_size, end_slot_padding) = IconSize::Small.square_components(window, cx);
+        let end_slot_size = end_slot_icon_size + end_slot_padding * 2.;
+        let outer_padding = DynamicSpacing::Base12.px(cx);
+        // The close button's box includes padding around its icon; subtract it
+        // from the gap as well so the space between the label and the icon
+        // matches the intended spacing.
+        let gap = DynamicSpacing::Base08.px(cx) - end_slot_padding;
+        let (pl, pr) = match self.close_side {
+            TabCloseSide::End => (outer_padding, outer_padding - end_slot_padding),
+            TabCloseSide::Start => (outer_padding - end_slot_padding, outer_padding),
+        };
+
         self.div
             .h(Tab::container_height(cx))
             .bg(tab_bg)
@@ -157,9 +172,9 @@ impl RenderOnce for Tab {
                     .group("")
                     .relative()
                     .h(Tab::content_height(cx))
-                    .pl(DynamicSpacing::Base12.px(cx))
-                    .pr(DynamicSpacing::Base12.px(cx))
-                    .gap(DynamicSpacing::Base08.rems(cx))
+                    .pl(pl)
+                    .pr(pr)
+                    .gap(gap)
                     .text_color(text_color)
                     .when_some(start_slot, |this, content| {
                         // Only reserve space in the leading slot when it
@@ -179,7 +194,7 @@ impl RenderOnce for Tab {
                         // identical width and swapping between them doesn't
                         // shift the layout.
                         h_flex()
-                            .size(IconSize::Small.square(window, cx))
+                            .size(end_slot_size)
                             .justify_center()
                             .children(end_slot),
                     ),

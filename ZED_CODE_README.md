@@ -293,6 +293,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Tabs and workspace chrome
 
 - The tab's trailing slot shows the unsaved-changes indicator in the place of the close button; hovering swaps in close (or unpin), VS Code-style, with no layout shift.
+- The tab's outer padding and label gap account for the padding around the close button's icon, so the icon keeps its intended distance to the tab edge.
 - Vertical status strips on the left and right edges host the panel toggles, and the workspace sidebar toggle moved into them (out of the sidebar). Their icons scale with `status_bar.icon_scale`, and a strip with nothing to show hides itself.
 - Scroll input is routed by its dominant axis, so a mostly-vertical gesture scrolls horizontally-overflowing elements such as the tab bar.
 
@@ -304,6 +305,8 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
 - The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
+
+### Migrations
 
 The migration banner lists exactly what a settings or keymap migration would change: the file is parsed before and after the migration and the differing entries are diffed into dotted paths, shown in the banner's tooltip. The diff itself (`migrator::settings_diff`) is a reusable helper, not banner-specific.
 
