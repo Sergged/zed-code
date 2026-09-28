@@ -5113,7 +5113,7 @@ mod tests {
     };
     use gpui::{
         AppContext, Axis, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        TestAppContext, VisualTestContext, size,
+        ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point, size,
     };
     use project::FakeFs;
     use settings::SettingsStore;
@@ -8550,6 +8550,163 @@ mod tests {
         assert!(
             !tab_bounds.intersects(&new_tab_button_bounds),
             "Tab should not overlap with the new tab button, if this is failing check if there's been a redesign!"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_vertical_wheel_scrolls_tab_bar_horizontally(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        cx.simulate_resize(size(px(300.), px(300.)));
+
+        for _ in 0..10 {
+            add_labeled_item(&pane, "untitled", false, cx);
+        }
+
+        let tab_bar_scroll_handle =
+            pane.update_in(cx, |pane, _window, _cx| pane.tab_bar_scroll_handle.clone());
+        assert!(
+            tab_bar_scroll_handle.max_offset().x > px(0.),
+            "Test requires tab overflow to verify scrolling."
+        );
+        let scroll_bounds = tab_bar_scroll_handle.bounds();
+        let offset_before_wheel = tab_bar_scroll_handle.offset();
+
+        // A vertical-only wheel gesture over the tab bar should scroll it horizontally.
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(scroll_bounds.center().x, scroll_bounds.top() + px(5.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+
+        let scroll_offset = tab_bar_scroll_handle.offset();
+        assert!(
+            scroll_offset.x < offset_before_wheel.x,
+            "Vertical scroll gesture should scroll the tab bar horizontally"
+        );
+
+        // A physical mouse wheel (line delta) should behave the same way.
+        let offset_before_wheel = tab_bar_scroll_handle.offset();
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(scroll_bounds.center().x, scroll_bounds.top() + px(5.)),
+            delta: ScrollDelta::Lines(point(0., 1.)),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        let scroll_offset = tab_bar_scroll_handle.offset();
+        assert!(
+            scroll_offset.x > offset_before_wheel.x,
+            "Vertical mouse wheel should scroll the tab bar horizontally"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_vertical_gesture_with_jitter_scrolls_tab_bar(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        cx.simulate_resize(size(px(300.), px(300.)));
+
+        for _ in 0..10 {
+            add_labeled_item(&pane, "untitled", false, cx);
+        }
+
+        let tab_bar_scroll_handle =
+            pane.update_in(cx, |pane, _window, _cx| pane.tab_bar_scroll_handle.clone());
+        assert!(
+            tab_bar_scroll_handle.max_offset().x > px(0.),
+            "Test requires tab overflow to verify scrolling."
+        );
+        let scroll_bounds = tab_bar_scroll_handle.bounds();
+        let position = point(scroll_bounds.center().x, scroll_bounds.top() + px(5.));
+        let offset_before_gesture = tab_bar_scroll_handle.offset();
+
+        // A real trackpad gesture is never a perfectly straight vertical line:
+        // fingers jitter on the x axis on every event, the gesture has a full
+        // touch-phase lifecycle, and it is followed by momentum scrolls.
+        for (phase, delta) in [
+            (gpui::TouchPhase::Started, point(px(-1.5), px(-10.))),
+            (gpui::TouchPhase::Moved, point(px(1.5), px(-14.))),
+            (gpui::TouchPhase::Moved, point(px(-1.5), px(-11.))),
+            (gpui::TouchPhase::Moved, point(px(1.5), px(-16.))),
+            (gpui::TouchPhase::Moved, point(px(0.0), px(-9.))),
+            (gpui::TouchPhase::Ended, point(px(0.0), px(-3.))),
+            // Momentum after the fingers lift.
+            (gpui::TouchPhase::Moved, point(px(-0.6), px(-18.))),
+            (gpui::TouchPhase::Moved, point(px(0.6), px(-12.))),
+            (gpui::TouchPhase::Moved, point(px(0.0), px(-6.))),
+        ] {
+            cx.simulate_event(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(delta),
+                modifiers: Default::default(),
+                touch_phase: phase,
+            });
+        }
+        cx.run_until_parked();
+
+        let offset_after_gesture = tab_bar_scroll_handle.offset();
+        let offset_before = offset_before_gesture.x;
+        let offset_after = offset_after_gesture.x;
+        assert!(
+            offset_after_gesture.x < offset_before_gesture.x,
+            "A mostly vertical trackpad gesture with finger jitter should scroll the tab bar \
+             horizontally (moved {offset_before:?} -> {offset_after:?})"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_vertical_wheel_scrolls_pinned_tab_row_horizontally(cx: &mut TestAppContext) {
+        init_test(cx);
+        set_pinned_tabs_separate_row(cx, true);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        cx.simulate_resize(size(px(300.), px(300.)));
+
+        for label in ["A", "B", "C", "D", "E"] {
+            add_labeled_item(&pane, label, false, cx);
+        }
+        pane.update_in(cx, |pane, window, cx| {
+            for ix in [0, 1, 2] {
+                pane.pin_tab_at(ix, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        let tab_a_bounds = cx.debug_bounds("TAB-0").unwrap();
+
+        // A vertical-only wheel gesture over the pinned row should scroll it horizontally.
+        cx.simulate_event(ScrollWheelEvent {
+            position: tab_a_bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+
+        // The row can only overflow by as much as its content exceeds its width,
+        // so the tab should shift left by the clamped scroll amount.
+        let tab_a_after_wheel = cx.debug_bounds("TAB-0").unwrap();
+        assert!(
+            tab_a_after_wheel.left() < tab_a_bounds.left(),
+            "Vertical scroll gesture should scroll the pinned tab row horizontally"
         );
     }
 
