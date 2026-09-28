@@ -381,10 +381,10 @@ async fn test_suggest_memory_recently_used(_cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn test_suggest_memory_recently_used_matches_kind_and_insert_text(_cx: &mut TestAppContext) {
-    // Two completions with the same label but different kinds and insert text. The memory
-    // keys by label but only preselects when kind and insert text still match, so it can't
-    // pick up an unrelated completion that happens to share the label.
+async fn test_suggest_memory_recently_used_matches_kind(_cx: &mut TestAppContext) {
+    // Two completions with the same label but different kinds. The memory is keyed by the
+    // label, so it must use the kind to avoid preselecting an unrelated completion that
+    // happens to share the label.
     let completions = vec![
         CompletionBuilder::function("foo", None, "0"),
         CompletionBuilder::variable("foo", None, "0"),
