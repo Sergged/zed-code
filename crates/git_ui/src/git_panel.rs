@@ -67,7 +67,7 @@ use multi_buffer::ExcerptBoundaryInfo;
 use notifications::status_toast::StatusToast;
 use project::git_store::GitAccess;
 use project::{
-    Event as ProjectEvent, Fs, Project, ProjectPath,
+    Fs, Project, ProjectPath,
     git_store::{
         CommitDataState, GitStoreEvent, Repository, RepositoryEvent, RepositoryId, pending_op,
     },
@@ -100,7 +100,7 @@ use util::paths::PathStyle;
 use util::{ResultExt, TryFutureExt, markdown::MarkdownInlineCode, maybe, rel_path::RelPath};
 use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
-    DraggedSelection, Item, ModalView, SelectedEntry, Workspace,
+    DraggedSelection, Event as WorkspaceEvent, Item, ModalView, SelectedEntry, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
     notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
 };
@@ -1486,15 +1486,6 @@ impl GitPanel {
             )
             .detach();
 
-            // Re-render when the file focused in the editor changes so the
-            // changes list can highlight the row for the active file.
-            cx.subscribe(&project, |_, _, event: &ProjectEvent, cx| {
-                if matches!(event, ProjectEvent::ActiveEntryChanged(_)) {
-                    cx.notify();
-                }
-            })
-            .detach();
-
             let mut this = Self {
                 active_repository,
                 commit_editor,
@@ -1558,6 +1549,20 @@ impl GitPanel {
                 changes_actions_menu_handle: PopoverMenuHandle::default(),
                 remote_action_menu_handle: PopoverMenuHandle::default(),
             };
+
+            // Track the file focused in the editor so the changes list can
+            // highlight it. Listening to the workspace rather than only to the
+            // project's active entry also covers closing the focused tab, which
+            // changes the active item without touching the project's active
+            // entry.
+            if let Some(workspace) = this.workspace.upgrade() {
+                cx.subscribe(&workspace, |_, _, event: &WorkspaceEvent, cx| {
+                    if matches!(event, WorkspaceEvent::ActiveItemChanged) {
+                        cx.notify();
+                    }
+                })
+                .detach();
+            }
 
             this.schedule_update(window, cx);
             this
@@ -8876,9 +8881,19 @@ impl GitPanel {
             .child(
                 div()
                     .id(checkbox_wrapper_id)
+                    .debug_selector({
+                        let display_name = display_name_for_drag.clone();
+                        move || format!("git-panel-entry-checkbox-{display_name}")
+                    })
                     .flex_none()
-                    .occlude()
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        // Keep the mouse down from reaching the row so toggling
+                        // the checkbox neither selects the row nor starts a file
+                        // drag. Unlike `occlude`, this leaves the row hovered, so
+                        // its hover-only controls stay visible.
+                        cx.stop_propagation();
+                    })
                     .child(
                         Checkbox::new(checkbox_id, toggle_state)
                             .fill()
@@ -9124,8 +9139,14 @@ impl GitPanel {
                 div()
                     .id(checkbox_wrapper_id)
                     .flex_none()
-                    .occlude()
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        // Keep the mouse down from reaching the row so toggling
+                        // the checkbox neither selects the row nor starts a file
+                        // drag. Unlike `occlude`, this leaves the row hovered, so
+                        // its hover-only controls stay visible.
+                        cx.stop_propagation();
+                    })
                     .child(
                         Checkbox::new(checkbox_id, toggle_state)
                             .disabled(!has_write_access || resolved_conflict)
@@ -10255,7 +10276,9 @@ mod tests {
         repository::repo_path,
         status::{StatusCode, TrackedStatus, UnmergedStatus, UnmergedStatusCode},
     };
-    use gpui::{Modifiers, MouseButton, TestAppContext, UpdateGlobal, VisualTestContext, px};
+    use gpui::{
+        Modifiers, MouseButton, TestAppContext, UpdateGlobal, VisualTestContext, point, px,
+    };
     use indoc::indoc;
     use project::FakeFs;
     use search::{BufferSearchBar, buffer_search::Deploy};
@@ -10268,8 +10291,8 @@ mod tests {
     use util::rel_path::rel_path;
 
     use workspace::{
-        ActivatePaneLeft, ActivatePaneRight, ItemHandle as _, MultiWorkspace, ToolbarItemEvent,
-        ToolbarItemLocation, item::test::TestItem,
+        ActivatePaneLeft, ActivatePaneRight, ItemHandle as _, MultiWorkspace, SaveIntent,
+        ToolbarItemEvent, ToolbarItemLocation, item::test::TestItem,
     };
 
     use super::*;
@@ -11214,7 +11237,7 @@ mod tests {
     #[gpui::test]
     async fn test_focused_project_path_follows_active_editor(cx: &mut TestAppContext) {
         init_test(cx);
-        let (_, _, _, panel, mut cx) = setup_git_panel_with_changes(
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
             cx,
             json!({
                 ".git": {},
@@ -11253,6 +11276,19 @@ mod tests {
             panel.read_with(&cx, focused_repo_path),
             Some(repo_path("other.rs"))
         );
+
+        // Closing the focused tab must clear the focused file, otherwise the
+        // highlight sticks to the last matching row.
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            let pane = workspace.active_pane().clone();
+            let close = pane.update(cx, |pane, cx| {
+                pane.close_items(window, cx, SaveIntent::Close, &|_| true)
+            });
+            close.detach_and_log_err(cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(panel.read_with(&cx, focused_repo_path), None);
     }
 
     #[gpui::test]
@@ -11399,6 +11435,101 @@ mod tests {
         cx.run_until_parked();
 
         assert_editor_opened_with_path(&workspace, Path::new("tracked.rs"), &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_entry_checkbox_does_not_activate_row(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "tracked.rs": "fn tracked() {}",
+            }),
+            &[("tracked.rs", StatusCode::Modified)],
+        )
+        .await;
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.open_panel::<GitPanel>(window, cx);
+        });
+        cx.update(|window, _| window.refresh());
+
+        let checkbox_bounds = cx
+            .debug_bounds("git-panel-entry-checkbox-tracked.rs")
+            .expect("the entry checkbox should be rendered");
+
+        // Clicking the checkbox toggles staging...
+        cx.simulate_mouse_move(
+            checkbox_bounds.center(),
+            None::<MouseButton>,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        cx.simulate_click(checkbox_bounds.center(), Modifiers::default());
+
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.background_executor.run_until_parked();
+            cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
+        }
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        panel.read_with(&cx, |panel, _| {
+            let index = panel
+                .entry_by_path(&repo_path("tracked.rs"))
+                .expect("tracked.rs should still be listed");
+            assert_eq!(
+                panel.entries[index]
+                    .status_entry()
+                    .map(|entry| entry.staging),
+                Some(StageStatus::Staged),
+                "clicking the checkbox should stage the file"
+            );
+        });
+
+        // ...without opening the entry in the workspace...
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace.active_item(cx).is_none(),
+                "clicking the checkbox should not open the entry"
+            );
+        });
+
+        // ...and dragging from the checkbox should not start a file drag.
+        cx.simulate_mouse_down(
+            checkbox_bounds.center(),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let drag_target = checkbox_bounds.center() + point(px(24.), px(24.));
+        cx.simulate_mouse_move(drag_target, Some(MouseButton::Left), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            !cx.read(|cx| cx.has_active_drag()),
+            "dragging from the checkbox should not start a file drag"
+        );
+        cx.simulate_mouse_up(drag_target, MouseButton::Left, Modifiers::default());
+
+        // Positive control: the same gesture on the row itself does start a drag,
+        // so the assertion above actually exercises the drag path.
+        let row_point = checkbox_bounds.center() - point(px(80.), px(0.));
+        cx.simulate_mouse_down(row_point, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            row_point + point(px(24.), px(24.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| cx.has_active_drag()),
+            "dragging from the row should start a file drag"
+        );
+        cx.update(|window, cx| {
+            cx.stop_active_drag(window);
+        });
     }
 
     #[gpui::test]
