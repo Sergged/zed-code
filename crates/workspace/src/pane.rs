@@ -8725,11 +8725,13 @@ mod tests {
 
         cx.simulate_resize(size(px(300.), px(300.)));
 
-        for label in ["A", "B", "C", "D", "E"] {
+        // Enough pinned tabs to guarantee the pinned row overflows and can be
+        // scrolled, independent of the exact tab width.
+        for label in ["A", "B", "C", "D", "E", "F", "G", "H"] {
             add_labeled_item(&pane, label, false, cx);
         }
         pane.update_in(cx, |pane, window, cx| {
-            for ix in [0, 1, 2] {
+            for ix in [0, 1, 2, 3, 4, 5, 6] {
                 pane.pin_tab_at(ix, window, cx);
             }
         });
