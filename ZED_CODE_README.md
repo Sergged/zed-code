@@ -189,6 +189,7 @@ The input changed from `path` to `paths`, so all the files the agent edited can 
 ### Test coverage for the file tools
 
 The filesystem behavior above is hard to check by hand, so it is covered by tests in the `agent` crate (`cargo test -p agent --lib`, 824 tests). Each file tool is exercised along four axes: in-project paths, out-of-project absolute paths, gitignored content (including a second worktree with its own repository and `.gitignore`), and the user's settings (`private_files`, `file_scan_exclusions`, `tool_permissions`, protected roots). Notable cases:
+
 - `tool_permissions.rs` — `test_real_fs_external_path_resolution_and_protection` exercises the real `RealFs` canonicalization macOS applies to `/tmp`, so the external/protected classification is tested against the actual filesystem rather than a fake. It is a plain `#[test]`, not `#[gpui::test]`, because `RealFs` spawns real threads that the deterministic test scheduler forbids.
 - Symlink-escape authorization per tool, including the confirm-once and deny-policy paths.
 - Settings-blocked calls assert both the error text and that **no** authorization event was emitted, which is what pins the "check before prompt" ordering.

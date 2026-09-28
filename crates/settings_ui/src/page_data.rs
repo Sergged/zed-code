@@ -1,17 +1,25 @@
+use collections::HashMap;
 use gpui::{Action as _, App};
+use heck::ToTitleCase as _;
 use itertools::Itertools as _;
+use serde_json::{Map, Value};
 use settings::{
     AudioInputDeviceName, AudioOutputDeviceName, EditPredictionDataCollectionChoice,
-    LanguageSettingsContent, SemanticTokens, SettingsContent,
+    LanguageSettingsContent, SemanticTokens, SettingsContent, SettingsJsonSchemaParams,
+    SettingsStore,
 };
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, OnceLock},
+};
 use strum::{EnumMessage, IntoDiscriminant as _, VariantArray};
 use theme::SystemAppearance;
 use ui::IntoElement;
 
 use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
-    SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
+    SettingsPage, SettingsPageItem, SubPageLink, USER, UnimplementedSettingField, active_language,
+    all_language_names,
     pages::{
         open_audio_test_window, render_edit_prediction_setup_page, render_external_agents_page,
         render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
@@ -63,7 +71,7 @@ macro_rules! concat_sections {
 }
 
 pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
-    vec![
+    let mut pages = vec![
         general_page(cx),
         appearance_page(),
         keymap_page(),
@@ -79,7 +87,310 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         ai_page(cx),
         network_page(),
         developer_page(cx),
-    ]
+    ];
+
+    let covered = covered_json_paths(&pages);
+    pages.push(others_page(&covered));
+    pages
+}
+
+/// Collects the JSON paths of every setting that is placed explicitly in the
+/// settings window, so the "Others" page can exclude them.
+fn covered_json_paths(pages: &[SettingsPage]) -> BTreeSet<String> {
+    let mut covered = BTreeSet::new();
+    let mut push = |path: Option<&'static str>| {
+        let Some(path) = path else { return };
+        let path = path.trim_end_matches('$');
+        // Per-language settings live on the subpages of "Languages & Tools",
+        // which covers the `languages` key entirely.
+        if path.starts_with("languages.") {
+            covered.insert("languages".to_owned());
+        } else {
+            covered.insert(path.to_owned());
+        }
+    };
+    for page in pages {
+        for item in page.items.iter() {
+            match item {
+                SettingsPageItem::SettingItem(item) => push(item.field.json_path()),
+                SettingsPageItem::DynamicItem(DynamicItem {
+                    discriminant,
+                    fields,
+                    ..
+                }) => {
+                    push(discriminant.field.json_path());
+                    for variants in fields {
+                        for variant in variants {
+                            push(variant.field.json_path());
+                        }
+                    }
+                }
+                SettingsPageItem::SubPageLink(link) => push(link.json_path),
+                SettingsPageItem::SectionHeader(_) | SettingsPageItem::ActionLink(_) => {}
+            }
+        }
+    }
+    covered
+}
+
+/// Returns true when the setting at `path` (or one of its ancestors) is placed
+/// in the settings window.
+fn is_covered(path: &str, covered: &BTreeSet<String>) -> bool {
+    covered.contains(path)
+        || covered.iter().any(|covered_path| {
+            path.starts_with(covered_path.as_str())
+                && path.as_bytes().get(covered_path.len()) == Some(&b'.')
+        })
+}
+
+/// Builds the "Others" page: an index of every setting accepted by
+/// `settings.json` that is not placed anywhere else in the settings window.
+///
+/// The list of settings is derived from the JSON schema that powers
+/// `settings.json` autocompletion, so it stays in sync with the schema
+/// automatically. Groups of settings become sections, mirroring how the rest
+/// of the window is organized; rows without a dedicated control open the
+/// setting in the settings file.
+fn others_page(covered: &BTreeSet<String>) -> SettingsPage {
+    let empty_str_map: HashMap<&'static str, &'static str> = HashMap::default();
+    let schema_params = SettingsJsonSchemaParams {
+        language_names: &[],
+        font_names: &[],
+        theme_names: &[],
+        icon_theme_names: &[],
+        lsp_adapter_names: &[],
+        action_names: &[],
+        action_documentation: &empty_str_map,
+        deprecations: &empty_str_map,
+        deprecation_messages: &empty_str_map,
+    };
+    let schema = SettingsStore::json_schema(&schema_params);
+    let project_schema = SettingsStore::project_json_schema(&schema_params);
+    let Some(definitions) = schema
+        .get("$defs")
+        .or_else(|| schema.get("definitions"))
+        .and_then(|d| d.as_object())
+    else {
+        return SettingsPage {
+            title: "Others",
+            items: Box::new([]),
+        };
+    };
+    let Some(root_properties) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return SettingsPage {
+            title: "Others",
+            items: Box::new([]),
+        };
+    };
+    let project_definitions = project_schema
+        .get("$defs")
+        .or_else(|| project_schema.get("definitions"))
+        .and_then(|d| d.as_object());
+
+    let mut items = Vec::new();
+    for (key, subschema) in root_properties.iter().sorted_by(|(a, _), (b, _)| a.cmp(b)) {
+        if is_covered(key, covered) {
+            continue;
+        }
+        let resolved = resolve_schema(subschema, definitions);
+        if let Some(children) = schema_group_children(resolved) {
+            let mut section_items = Vec::new();
+            for (child_key, child_subschema) in children.iter().sorted_by(|(a, _), (b, _)| a.cmp(b))
+            {
+                let child_path = format!("{key}.{child_key}");
+                if is_covered(&child_path, covered) {
+                    continue;
+                }
+                let child_resolved = resolve_schema(child_subschema, definitions);
+                if schema_group_children(child_resolved).is_some()
+                    && others_leaves_all_covered(child_resolved, &child_path, covered, definitions)
+                {
+                    continue;
+                }
+                section_items.push(others_setting_item(
+                    &child_path,
+                    child_key,
+                    child_subschema,
+                    child_resolved,
+                    project_definitions,
+                    &project_schema,
+                ));
+            }
+            if !section_items.is_empty() {
+                items.push(SettingsPageItem::SectionHeader(leak_static(humanize_key(
+                    key,
+                ))));
+                items.extend(section_items);
+            }
+        } else {
+            items.push(others_setting_item(
+                key,
+                key,
+                subschema,
+                resolved,
+                project_definitions,
+                &project_schema,
+            ));
+        }
+    }
+
+    SettingsPage {
+        title: "Others",
+        items: items.into_boxed_slice(),
+    }
+}
+
+/// Converts a snake_case settings key into a display title.
+fn humanize_key(key: &str) -> String {
+    key.to_title_case()
+}
+
+fn leak_static(string: String) -> &'static str {
+    Box::leak(string.into_boxed_str())
+}
+
+/// A setting row without a dedicated control; it renders as a row that opens
+/// the setting in the settings file.
+fn unimplemented_setting_field(json_path: &'static str) -> SettingField<UnimplementedSettingField> {
+    SettingField {
+        organization_override: None,
+        json_path: Some(json_path),
+        pick: |_| Some(&UnimplementedSettingField),
+        write: |_, _, _| unreachable!(),
+    }
+}
+
+fn others_setting_item(
+    path: &str,
+    key: &str,
+    raw_schema: &Value,
+    resolved_schema: &Value,
+    project_definitions: Option<&Map<String, Value>>,
+    project_schema: &Value,
+) -> SettingsPageItem {
+    let description =
+        schema_description(raw_schema, resolved_schema).unwrap_or_else(|| path.to_owned());
+    let description = leak_static(description);
+    let files = if project_path_exists(path, project_schema, project_definitions) {
+        USER | PROJECT
+    } else {
+        USER
+    };
+    SettingsPageItem::SettingItem(SettingItem {
+        title: leak_static(humanize_key(key)),
+        description,
+        field: Box::new(unimplemented_setting_field(leak_static(path.to_owned()))),
+        metadata: None,
+        files,
+    })
+}
+
+/// Reads the doc-comment description of a setting from its schema, when it has
+/// one (the description may live on either side of an `Option` wrapper).
+fn schema_description(raw_schema: &Value, resolved_schema: &Value) -> Option<String> {
+    raw_schema
+        .get("description")
+        .or_else(|| resolved_schema.get("description"))
+        .and_then(|description| description.as_str())
+        .map(str::to_owned)
+}
+
+/// Resolves `$ref`s and unwraps the non-null branch of `Option`-style schemas
+/// (`anyOf`/`oneOf` with a single non-null alternative).
+fn resolve_schema<'a>(schema: &'a Value, definitions: &'a Map<String, Value>) -> &'a Value {
+    let mut current = schema;
+    for _ in 0..16 {
+        if let Some(reference) = current.get("$ref").and_then(|r| r.as_str())
+            && let Some(name) = reference.rsplit('/').next()
+            && let Some(definition) = definitions.get(name)
+        {
+            current = definition;
+            continue;
+        }
+        if let Some(branches) = current
+            .get("anyOf")
+            .or_else(|| current.get("oneOf"))
+            .and_then(|branches| branches.as_array())
+        {
+            let non_null: Vec<&Value> = branches
+                .iter()
+                .filter(|branch| branch.get("type").and_then(|t| t.as_str()) != Some("null"))
+                .collect();
+            if non_null.len() == 1 {
+                current = non_null[0];
+                continue;
+            }
+        }
+        break;
+    }
+    current
+}
+
+/// Returns the `properties` of a schema that represents a fixed-keys settings
+/// group, as opposed to a scalar value or a map with dynamic keys.
+fn schema_group_children(schema: &Value) -> Option<&Map<String, Value>> {
+    let object = schema.as_object()?;
+    let properties = object.get("properties")?.as_object()?;
+    if properties.is_empty() {
+        return None;
+    }
+    match object.get("additionalProperties") {
+        Some(Value::Bool(false)) | None => Some(properties),
+        _ => None,
+    }
+}
+
+/// Returns true when every leaf of the group under `schema`, from `prefix`
+/// onward, is placed in the settings window.
+fn others_leaves_all_covered(
+    schema: &Value,
+    prefix: &str,
+    covered: &BTreeSet<String>,
+    definitions: &Map<String, Value>,
+) -> bool {
+    let Some(children) = schema_group_children(schema) else {
+        return true;
+    };
+    children.iter().all(|(key, child)| {
+        let path = format!("{prefix}.{key}");
+        let child = resolve_schema(child, definitions);
+        if schema_group_children(child).is_some() {
+            others_leaves_all_covered(child, &path, covered, definitions)
+        } else {
+            is_covered(&path, covered)
+        }
+    })
+}
+
+/// Returns true when `path` names a setting that is valid in project settings,
+/// so that the row can be shown when editing a project settings file.
+fn project_path_exists(
+    path: &str,
+    schema: &Value,
+    definitions: Option<&Map<String, Value>>,
+) -> bool {
+    let empty_definitions = Map::new();
+    let definitions = definitions.unwrap_or(&empty_definitions);
+    let mut current = schema;
+    for segment in path.split('.') {
+        current = resolve_schema(current, definitions);
+        let Some(object) = current.as_object() else {
+            return false;
+        };
+        if let Some(child) = object
+            .get("properties")
+            .and_then(|properties| properties.as_object())
+            .and_then(|properties| properties.get(segment))
+        {
+            current = child;
+        } else if object.get("additionalProperties").is_some() {
+            // Maps accept any key, so the path is valid for this file type.
+            return true;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 fn developer_page(cx: &App) -> SettingsPage {
@@ -11361,5 +11672,83 @@ mod tests {
         write_vim_mode_inner(&mut settings, Some(true));
         assert_eq!(settings.vim_mode, Some(true));
         assert_eq!(settings.helix_mode, Some(false));
+    }
+
+    #[test]
+    fn test_others_page_indexes_unplaced_settings() {
+        let covered = BTreeSet::from([
+            "buffer_font_size".to_owned(),
+            "languages".to_owned(),
+            "telemetry.diagnostics".to_owned(),
+            "terminal.env".to_owned(),
+            "theme".to_owned(),
+        ]);
+        let page = others_page(&covered);
+        let paths: Vec<&str> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                SettingsPageItem::SettingItem(item) => item.field.json_path(),
+                _ => None,
+            })
+            .collect();
+
+        // Settings that are placed in the settings window are excluded,
+        // including everything under a placed group (e.g. `theme.*`).
+        for placed in [
+            "buffer_font_size",
+            "languages",
+            "telemetry.diagnostics",
+            "terminal.env",
+        ] {
+            assert!(
+                !paths.contains(&placed),
+                "{placed} should not appear in the Others page"
+            );
+        }
+        assert!(!paths.iter().any(|path| path.starts_with("theme.")));
+
+        // Settings that are only configurable in settings.json are listed.
+        assert!(paths.contains(&"credentials_url"));
+        assert!(paths.contains(&"journal.path"));
+        assert!(paths.contains(&"language_models.anthropic"));
+
+        // Sections are produced for groups of unplaced settings.
+        assert!(
+            page.items
+                .iter()
+                .any(|item| matches!(item, SettingsPageItem::SectionHeader("Journal")))
+        );
+    }
+
+    #[test]
+    fn test_covered_json_paths_normalization() {
+        let page = SettingsPage {
+            title: "Test",
+            items: vec![
+                SettingsPageItem::SettingItem(SettingItem {
+                    title: "Languages",
+                    description: "",
+                    field: Box::new(unimplemented_setting_field(
+                        "languages.$(language).tab_size",
+                    )),
+                    metadata: None,
+                    files: USER,
+                }),
+                SettingsPageItem::SettingItem(SettingItem {
+                    title: "Autosave",
+                    description: "",
+                    field: Box::new(unimplemented_setting_field("autosave$")),
+                    metadata: None,
+                    files: USER,
+                }),
+            ]
+            .into_boxed_slice(),
+        };
+
+        let covered = covered_json_paths(&[page]);
+        assert!(covered.contains("languages"));
+        assert!(covered.contains("autosave"));
+        assert!(!covered.contains("languages.$(language).tab_size"));
     }
 }
