@@ -4099,7 +4099,7 @@ impl ThreadView {
             .child(
                 h_flex()
                     .id("edits-container")
-                    .cursor_pointer()
+                    .cursor_default()
                     .gap_1()
                     .child(Disclosure::new("edits-disclosure", expanded))
                     .map(|this| {
@@ -4510,7 +4510,6 @@ impl ThreadView {
             .overflow_y_scroll()
             .children(self.message_queue.iter().enumerate().map(|(index, entry)| {
                 let entry_id = entry.id;
-                let editor = &entry.editor;
                 let is_next = index == 0;
                 let (icon_color, tooltip_text) = if is_next {
                     (Color::Accent, "Next in Queue")
@@ -4518,7 +4517,7 @@ impl ThreadView {
                     (Color::Muted, "In Queue")
                 };
 
-                let editor_focused = editor.focus_handle(cx).is_focused(_window);
+                let message_text = entry.editor.read(cx).text(cx).trim().to_string();
                 let keybinding_size = rems_from_px(12_f32);
                 let steer_on = entry.steer;
 
@@ -4544,51 +4543,21 @@ impl ThreadView {
                             )
                             .tooltip(Tooltip::text(tooltip_text)),
                     )
-                    .child(editor.clone())
-                    .child(if editor_focused {
-                        h_flex()
-                            .gap_1()
-                            .min_w(min_width)
-                            .justify_end()
+                    .child(
+                        div()
+                            .id(("queue_message_preview", index))
+                            .flex_1()
+                            .min_w_0()
+                            .pr_0p5()
+                            .cursor_default()
+                            .tooltip(Tooltip::text(message_text.clone()))
                             .child(
-                                IconButton::new(("edit", index), IconName::Pencil)
-                                    .icon_size(IconSize::Small)
-                                    .tooltip(|_window, cx| {
-                                        Tooltip::with_meta(
-                                            "Edit Queued Message",
-                                            None,
-                                            "Type anything to edit",
-                                            cx,
-                                        )
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.move_queued_message_to_main_editor(
-                                            entry_id, None, None, window, cx,
-                                        );
-                                    })),
-                            )
-                            .when(is_native, |row| {
-                                row.child(self.render_queue_steer_button(
-                                    entry_id, index, is_next, steer_on, cx,
-                                ))
-                            })
-                            .child(
-                                Button::new(("send_now_focused", index), "Send Now")
-                                    .label_size(LabelSize::Small)
-                                    .style(ButtonStyle::Outlined)
-                                    .key_binding(
-                                        KeyBinding::for_action_in(
-                                            &SendImmediately,
-                                            &editor.focus_handle(cx),
-                                            cx,
-                                        )
-                                        .map(|kb| kb.size(keybinding_size)),
-                                    )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.send_queued_message_now(entry_id, window, cx);
-                                    })),
-                            )
-                    } else {
+                                Label::new(message_text)
+                                    .size(LabelSize::Small)
+                                    .line_clamp(2),
+                            ),
+                    )
+                    .child(
                         h_flex()
                             .when(!is_next, |this| this.visible_on_hover("queue_entry"))
                             .gap_1()
@@ -4669,8 +4638,8 @@ impl ThreadView {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.send_queued_message_now(entry_id, window, cx);
                                     })),
-                            )
-                    })
+                            ),
+                    )
             }))
             .into_any_element()
     }

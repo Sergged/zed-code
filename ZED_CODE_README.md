@@ -121,6 +121,7 @@ Gitignored directories stay unscanned until something asks for them. A bare rela
 - `add_path_prefix_to_scan(P)` registers P as a path prefix; `should_scan_directory` then treats every descendant of P as scannable, overriding both gitignore and `file_scan_depth` for that subtree. Reach: **P's whole subtree, recursively.**
 - `refresh_entry(path)` / `refresh_entries_for_paths(...)` re-read the named paths. Reach: **those paths only** — nested ignored directories inside them stay unloaded.
 
+
 Which agent tools scan, and how much — **all of this is branch-local** (upstream never pre-scans for these tools):
 
 - The two search tools share one rule, implemented once in `glob_literal_prefix` / `glob_reaches_dir` (`crates/agent/src/tools/ignored_scan.rs`): an ignored directory is scanned and matched **only when the glob's literal prefix names into it**. A leading `**` names no directory, so it reaches nothing ignored — that is what keeps an ordinary search from exploding into `node_modules`.
@@ -181,6 +182,10 @@ No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiff
 Like `SoloDiffView`, the view returns `None` from `Item::act_as_type` for `SplittableEditor`. That keeps the buffer search bar in its own toolbar row below the buttons — both toolbars stay visible at once instead of the search displacing the review actions — and stops the search bar from re-rendering the split/unified and fold controls the toolbar already owns. Returning `Some` there is what puts the search in `PrimaryLeft` and produces the duplicate controls.
 
 A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand.
+
+### Queued messages render as text previews
+
+Messages queued while the agent is running render as a two-line clamped text preview with a full-text tooltip instead of a live editor; the row actions (steer, send now, delete) stay right-aligned.
 
 ### Built-in agent skills
 
