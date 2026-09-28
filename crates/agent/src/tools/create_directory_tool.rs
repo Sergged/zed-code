@@ -1,22 +1,26 @@
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
     authorize_symlink_access, canonicalize_worktree_roots, detect_symlink_escape,
-    is_protected_external_path, resolve_creatable_external_path,
+    ensure_path_not_hidden_by_settings, explain_unresolved_path,
+    external_path_excluded_by_settings, external_path_resolution_target,
+    is_protected_external_path, permission_path_forms, resolve_creatable_external_path,
     resolve_creatable_global_skill_path, sensitive_settings_kind,
 };
 use agent_client_protocol::schema::v1 as acp;
 use agent_settings::AgentSettings;
 use futures::FutureExt as _;
 use gpui::{App, AppContext as _, AsyncApp, Entity, SharedString, Task};
-use project::Project;
+use project::{Project, ProjectPath};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use std::sync::Arc;
 use util::markdown::MarkdownInlineCode;
+use util::rel_path::RelPath;
 
 use crate::{
     AgentTool, ToolCallEventStream, ToolInput, ToolPermissionDecision,
-    authorize_with_sensitive_settings, decide_permission_for_path,
+    authorize_with_sensitive_settings, decide_permission_for_path_forms,
 };
 use std::path::{Path, PathBuf};
 
@@ -116,6 +120,11 @@ impl AgentTool for CreateDirectoryTool {
             let fs = project.read_with(cx, |project, _cx| project.fs().clone());
             let canonical_roots = canonicalize_worktree_roots(&project, &fs, cx).await;
 
+            // A bare relative path to a not-yet-existing directory resolves via
+            // its parent, which may sit in a gitignored directory the worktree
+            // hasn't scanned: scan that directory first so the parent resolves.
+            prescan_ignored_ancestor(&project, Path::new(&input.path), cx).await;
+
             // Resolve where this directory lives. The global agent-skills dir is
             // always allowed outside the project; any other absolute path that
             // resolves outside every worktree is treated the same way (created
@@ -136,9 +145,41 @@ impl AgentTool for CreateDirectoryTool {
                     input.path
                 ));
             }
-            let in_project = project.read_with(cx, |project, cx| {
-                project.find_project_path(&input.path, cx).is_some()
-            });
+
+            // The user's global `file_scan_exclusions` / `private_files` settings
+            // apply to out-of-project paths too, as they do in every other file
+            // tool, and are checked before prompting.
+            if let Some(external_directory) = &external_directory
+                && let Some(setting) =
+                    cx.update(|cx| external_path_excluded_by_settings(external_directory, cx))
+            {
+                return Err(format!(
+                    "Cannot create a directory because its path matches the user's global `{setting}` setting: {}",
+                    input.path
+                ));
+            }
+            let in_project_path = project
+                .read_with(cx, |project, cx| -> Result<Option<ProjectPath>, String> {
+                    // `file_scan_exclusions` / `private_files` are hard blocks, so
+                    // reject before prompting: there is no point asking the user to
+                    // approve a directory that can't be created.
+                    //
+                    // A rooted or absolute path resolves as-is (`find_project_path`
+                    // needs no entry for those); a bare relative path needs one, so
+                    // for a directory that doesn't exist yet resolve its parent and
+                    // append the new name — the same trick `write_file` uses.
+                    let project_path = match project.find_project_path(&input.path, cx) {
+                        Some(project_path) => Some(project_path),
+                        None => resolve_new_directory_parent(project, Path::new(&input.path), cx)?,
+                    };
+                    if let Some(project_path) = &project_path {
+                        ensure_path_not_hidden_by_settings(project_path, "create a directory", cx)
+                            .map_err(|error| format!("{error:#}"))?;
+                    }
+                    Ok(project_path)
+                })
+                .map_err(|error| format!("{error:#}"))?;
+            let in_project = in_project_path.is_some();
 
             let out_of_project = !in_project && global_skill_directory.is_none();
             let sandboxing = project.read_with(cx, |project, cx| {
@@ -156,11 +197,24 @@ impl AgentTool for CreateDirectoryTool {
                 return create_out_of_project_directory(&project, &input, &event_stream, cx).await;
             }
             if out_of_project && external_directory.is_none() {
-                return Err("Path to create was outside the project".to_string());
+                return Err(cx
+                    .update(|cx| {
+                        explain_unresolved_path(
+                            project.read(cx),
+                            Path::new(&input.path),
+                            cx,
+                        )
+                    })
+                    .unwrap_or_else(|| "Path to create was outside the project".to_string()));
             }
 
             let decision = cx.update(|cx| {
-                decide_permission_for_path(Self::NAME, &input.path, AgentSettings::get_global(cx))
+                let forms = permission_path_forms(project.read(cx), Path::new(&input.path), cx);
+                decide_permission_for_path_forms(
+                    Self::NAME,
+                    &forms,
+                    AgentSettings::get_global(cx),
+                )
             });
 
             if let ToolPermissionDecision::Deny(reason) = decision {
@@ -169,10 +223,15 @@ impl AgentTool for CreateDirectoryTool {
 
             let destination_path: Arc<str> = input.path.as_str().into();
 
-            let symlink_escape_target = project.read_with(cx, |project, cx| {
-                detect_symlink_escape(project, &input.path, &canonical_roots, cx)
-                    .map(|(_, target)| target)
+            let external_symlink_target = external_directory.as_ref().and_then(|directory| {
+                external_path_resolution_target(Path::new(&input.path), directory)
             });
+            let symlink_escape_target = project
+                .read_with(cx, |project, cx| {
+                    detect_symlink_escape(project, &input.path, &canonical_roots, cx)
+                        .map(|(_, target)| target)
+                })
+                .or(external_symlink_target);
 
             let sensitive_kind =
                 sensitive_settings_kind(Path::new(&input.path), &canonical_roots, fs.as_ref())
@@ -235,12 +294,12 @@ impl AgentTool for CreateDirectoryTool {
                 return Ok(format!("Created directory {destination_path}"));
             }
 
-            let create_entry = project.update(cx, |project, cx| {
-                match project.find_project_path(&input.path, cx) {
-                    Some(project_path) => Ok(project.create_entry(project_path, true, cx)),
-                    None => Err("Path to create was outside the project".to_string()),
+            let create_entry = match in_project_path {
+                Some(project_path) => {
+                    project.update(cx, |project, cx| project.create_entry(project_path, true, cx))
                 }
-            })?;
+                None => return Err("Path to create was outside the project".to_string()),
+            };
 
             futures::select! {
                 result = create_entry.fuse() => {
@@ -334,6 +393,50 @@ async fn create_out_of_project_directory(
     }
 }
 
+/// Resolves the target of `create_directory` when the directory doesn't exist
+/// yet, by resolving its **parent** and appending the new name.
+///
+/// A rooted or absolute path resolves without an entry, but a bare relative
+/// path (`new_dir`) needs one to disambiguate — so without this it could never
+/// create a new directory. `write_file` does the same for a new file. Returns
+/// `Ok(None)` when the path isn't inside a worktree.
+fn resolve_new_directory_parent(
+    project: &Project,
+    path: &Path,
+    cx: &App,
+) -> Result<Option<ProjectPath>, String> {
+    let Some(parent_path) = path.parent() else {
+        return Ok(None);
+    };
+    let Some(parent_project_path) = project.find_project_path(parent_path, cx) else {
+        return Ok(None);
+    };
+    let Some(parent_entry) = project.entry_for_path(&parent_project_path, cx) else {
+        return Ok(None);
+    };
+    if !parent_entry.is_dir() {
+        return Ok(None);
+    }
+
+    // The parent is where the user's `file_scan_exclusions` / `private_files`
+    // apply to a not-yet-existing child.
+    ensure_path_not_hidden_by_settings(&parent_project_path, "create a directory", cx)
+        .map_err(|error| format!("{error:#}"))?;
+
+    let Some(file_name) = path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .and_then(|file_name| RelPath::from_unix_str(file_name).ok())
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(ProjectPath {
+        path: parent_project_path.path.join(file_name).into(),
+        ..parent_project_path
+    }))
+}
+
 /// Resolve a model-provided path to an absolute, lexically-normalized path.
 /// Relative paths are joined onto the first worktree root.
 fn resolve_absolute_path(
@@ -360,14 +463,27 @@ fn resolve_absolute_path(
 mod tests {
     use super::*;
     use fs::Fs as _;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, UpdateGlobal as _};
     use project::{FakeFs, Project};
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{SettingsStore, SplicingVec};
     use std::path::PathBuf;
     use util::path;
 
     use crate::ToolCallEventStream;
+
+    /// Installs user-level `worktree` settings, which the in-project settings
+    /// check reads via `WorktreeSettings::get_global`.
+    fn set_worktree_settings(
+        cx: &mut TestAppContext,
+        update: impl FnOnce(&mut settings::SettingsContent),
+    ) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, update);
+            });
+        });
+    }
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -844,6 +960,309 @@ mod tests {
         assert!(
             !target.exists(),
             "denied create should leave no directory behind"
+        );
+    }
+
+    /// `file_scan_exclusions` is a hard block, checked before any prompt: the
+    /// create fails and the directory is never made.
+    #[gpui::test]
+    async fn test_create_directory_respects_file_scan_exclusions(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/generated".to_string()]));
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(CreateDirectoryToolInput {
+                        path: "project/generated/sub".to_string(),
+                        reason: None,
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked create must not prompt for authorization",
+        );
+        assert!(
+            fs.metadata(&PathBuf::from(path!("/root/project/generated")))
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing should be created under an excluded path",
+        );
+    }
+
+    /// Same hard block for `private_files`.
+    #[gpui::test]
+    async fn test_create_directory_respects_private_files(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.private_files = Some(vec!["**/secrets".to_string()].into());
+        });
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(CreateDirectoryToolInput {
+                        path: "project/secrets".to_string(),
+                        reason: None,
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("private_files"),
+            "error should name the blocking setting, got: {error}"
+        );
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "a settings-blocked create must not prompt for authorization",
+        );
+        assert!(
+            fs.metadata(&PathBuf::from(path!("/root/project/secrets")))
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing should be created at a private path",
+        );
+    }
+
+    /// The settings checks must not block ordinary in-project directories.
+    /// Creating a directory needs no existing entry, so it works inside a
+    /// gitignored directory that the project never scanned. This is the
+    /// counterpart to the mutating tools' limitation, which needs an entry for
+    /// the target itself.
+    #[gpui::test]
+    async fn test_create_directory_inside_gitignored_directory(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "project": {
+                    "src": { "main.rs": "fn main() {}" },
+                    "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+                },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(CreateDirectoryToolInput {
+                        path: "project/node_modules/pkg/generated".to_string(),
+                        reason: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(result.is_ok(), "expected success, got {result:?}");
+        assert!(
+            fs.is_dir(&PathBuf::from(path!(
+                "/root/project/node_modules/pkg/generated"
+            )))
+            .await
+        );
+    }
+
+    /// The global settings apply to an out-of-project directory too, as they do
+    /// in every other file tool.
+    #[gpui::test]
+    async fn test_create_directory_outside_project_respects_settings(cx: &mut TestAppContext) {
+        init_test(cx);
+        set_worktree_settings(cx, |settings| {
+            settings.project.worktree.file_scan_exclusions =
+                Some(SplicingVec::from(vec!["**/generated".to_string()]));
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        fs.create_dir(path!("/outside").as_ref()).await.unwrap();
+
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(CreateDirectoryToolInput {
+                        path: path!("/outside/generated").to_string(),
+                        reason: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("file_scan_exclusions"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert!(
+            !fs.is_dir(&PathBuf::from(path!("/outside/generated"))).await,
+            "the excluded directory must not be created"
+        );
+    }
+
+    /// A bare relative path to a not-yet-existing directory resolves through its
+    /// parent, so it creates the directory like the rooted/absolute form — even
+    /// inside a gitignored directory, which is scanned on demand first.
+    #[gpui::test]
+    async fn test_create_directory_bare_relative_gitignored_path_scans_and_creates(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "project": {
+                    "src": { "main.rs": "fn main() {}" },
+                    "node_modules": { "pkg": { "index.js": "module.exports = 1;" } },
+                },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(CreateDirectoryToolInput {
+                        path: "node_modules/pkg/newdir".to_string(),
+                        reason: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "the bare form should create the directory: {result:?}"
+        );
+        assert!(
+            fs.is_dir(&PathBuf::from(path!(
+                "/root/project/node_modules/pkg/newdir"
+            )))
+            .await,
+            "the directory should have been created"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_create_directory_in_project_succeeds(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "project": { "src": { "main.rs": "fn main() {}" } } }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let tool = Arc::new(CreateDirectoryTool::new(project));
+
+        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let result = cx
+            .update(|cx| {
+                tool.run(
+                    ToolInput::resolved(CreateDirectoryToolInput {
+                        path: "project/new_dir".to_string(),
+                        reason: None,
+                    }),
+                    event_stream,
+                    cx,
+                )
+            })
+            .await;
+
+        assert!(result.is_ok(), "expected success, got {result:?}");
+        assert!(
+            !matches!(
+                event_rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
+            ),
+            "an allowed in-project create must not prompt for authorization",
+        );
+        assert!(
+            fs.is_dir(&PathBuf::from(path!("/root/project/new_dir")))
+                .await
         );
     }
 }

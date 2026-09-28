@@ -2,8 +2,11 @@ mod reindent;
 mod streaming_fuzzy_matcher;
 mod streaming_parser;
 
+use super::ignored_scan::prescan_ignored_ancestor;
 use super::tool_permissions::{
-    canonicalize_worktree_roots, is_protected_external_path, resolve_creatable_external_path,
+    PathExistence, authorize_direct_fs_path, canonicalize_worktree_roots,
+    ensure_path_not_hidden_by_settings, explain_unresolved_path, explain_unscanned_ignored_path,
+    is_protected_external_path, resolve_direct_fs_path,
 };
 use crate::{Thread, ToolCallEventStream};
 use acp_thread::Diff;
@@ -687,8 +690,20 @@ impl EditSession {
         event_stream: &ToolCallEventStream,
         cx: &mut AsyncApp,
     ) -> Result<Self, String> {
-        let target = if let Some(abs_path) =
-            resolve_external_path_for_edit_session(mode, &path, &context, cx).await?
+        // A bare relative path into a gitignored directory the worktree hasn't
+        // scanned can't resolve through the snapshot; scan that directory first
+        // so it resolves like the rooted/absolute form.
+        prescan_ignored_ancestor(&context.project, &path, cx).await;
+
+        let target = if let Some(abs_path) = resolve_external_path_for_edit_session(
+            mode,
+            &path,
+            tool_name,
+            &context,
+            event_stream,
+            cx,
+        )
+        .await?
         {
             EditSessionTarget {
                 abs_path,
@@ -1172,17 +1187,28 @@ async fn resolve_dirty_buffer(
 async fn resolve_external_path_for_edit_session(
     mode: EditSessionMode,
     path: &PathBuf,
+    tool_name: &str,
     context: &EditSessionContext,
+    event_stream: &ToolCallEventStream,
     cx: &mut AsyncApp,
 ) -> Result<Option<PathBuf>, String> {
     let fs = context
         .project
         .read_with(cx, |project, _cx| project.fs().clone());
     let canonical_roots = canonicalize_worktree_roots(&context.project, &fs, cx).await;
-    let Some(abs_path) = resolve_creatable_external_path(path, &canonical_roots, fs.as_ref()).await
+    let Some(direct_path) = resolve_direct_fs_path(
+        path,
+        PathExistence::MayNotExist,
+        &context.project,
+        &canonical_roots,
+        fs.as_ref(),
+        cx,
+    )
+    .await
     else {
         return Ok(None);
     };
+    let abs_path = direct_path.absolute_path.clone();
 
     // Out-of-project writes must not target a protected root: the filesystem
     // root, the user's home directory, or an ancestor of a project worktree.
@@ -1192,6 +1218,33 @@ async fn resolve_external_path_for_edit_session(
             path.display()
         ));
     }
+
+    // The user's `file_scan_exclusions` / `private_files` settings apply here,
+    // and the path may resolve to a symlink target outside the worktree — both
+    // handled the same way as for any other direct-filesystem target.
+    //
+    // `authorize_file_edit`, which the edit session runs right after, raises the
+    // symlink prompt for a path that isn't in the project at all. For a path
+    // that *is* in the project — even inside a directory the scanner skipped —
+    // it resolves as `Safe`, so this is the only place that can show the real
+    // target. Prompt here only in that case, so one edit doesn't ask twice.
+    let subject = match mode {
+        EditSessionMode::Edit => "edit",
+        EditSessionMode::Write => "write to",
+    };
+    let requested_is_in_project = context.project.read_with(cx, |project, cx| {
+        project.find_project_path(path, cx).is_some()
+    });
+    authorize_direct_fs_path(
+        tool_name,
+        &path.to_string_lossy(),
+        subject,
+        &direct_path,
+        requested_is_in_project,
+        event_stream,
+        cx,
+    )
+    .await?;
 
     match mode {
         EditSessionMode::Edit => {
@@ -1244,13 +1297,18 @@ fn resolve_path(
 
     match mode {
         EditSessionMode::Edit => {
-            let path = project
-                .find_project_path(&path, cx)
-                .ok_or_else(|| "Can't edit file: path not found".to_string())?;
+            let path = project.find_project_path(&path, cx).ok_or_else(|| {
+                explain_unresolved_path(project, &path, cx)
+                    .unwrap_or_else(|| "Can't edit file: path not found".to_string())
+            })?;
 
-            let entry = project
-                .entry_for_path(&path, cx)
-                .ok_or_else(|| "Can't edit file: path not found".to_string())?;
+            ensure_path_not_hidden_by_settings(&path, "edit", cx)
+                .map_err(|error| format!("{error:#}"))?;
+
+            let Some(entry) = project.entry_for_path(&path, cx) else {
+                return Err(explain_unscanned_ignored_path(project, &path, cx)
+                    .unwrap_or_else(|| "Can't edit file: path not found".to_string()));
+            };
 
             if entry.is_file() {
                 Ok(path)
@@ -1263,6 +1321,8 @@ fn resolve_path(
                 && let Some(entry) = project.entry_for_path(&path, cx)
             {
                 if entry.is_file() {
+                    ensure_path_not_hidden_by_settings(&path, "write to", cx)
+                        .map_err(|error| format!("{error:#}"))?;
                     return Ok(path);
                 } else {
                     return Err("Can't write to file: path is a directory".to_string());
@@ -1278,7 +1338,16 @@ fn resolve_path(
             let parent_entry = parent_project_path
                 .as_ref()
                 .and_then(|path| project.entry_for_path(path, cx))
-                .ok_or_else(|| "Can't create file: parent directory doesn't exist")?;
+                .ok_or_else(|| {
+                    explain_unresolved_path(project, &parent_path, cx).unwrap_or_else(|| {
+                        "Can't create file: parent directory doesn't exist".to_string()
+                    })
+                })?;
+
+            if let Some(parent) = parent_project_path.as_ref() {
+                ensure_path_not_hidden_by_settings(parent, "write to", cx)
+                    .map_err(|error| format!("{error:#}"))?;
+            }
 
             if !parent_entry.is_dir() {
                 return Err("Can't create file: parent is not a directory".to_string());

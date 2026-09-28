@@ -58,10 +58,14 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 
 Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
+### File tools work across the whole filesystem
+
 
 **Path forms.** A project-relative path normally starts with a worktree root directory name (`zed/crates/foo.rs`); that prefix always resolves. A bare relative path (`crates/foo.rs`) also resolves when it is unambiguous, and a bare path into a gitignored tree (`node_modules/...`) is made to resolve by scanning that directory on demand. Anything outside the project is addressed by an absolute path (or one with a `~` prefix).
 
 ### Upstream vs. this branch
+
+The file tools are a mix of upstream behavior and `zed-code` changes. Provenance, so a merge never mistakes one for the other:
 
 **Taken from upstream, unchanged:**
 
@@ -72,6 +76,7 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 **Added or overridden by this branch (`zed-code`):**
 
+- File tools reach the whole filesystem: `resolve_external_path`, `resolve_creatable_external_path`, `resolve_direct_fs_path`, and the direct-filesystem route (arbitrary absolute / `~` paths, not just project paths and `~/.agents/skills`).
 - The user's settings become hard blocks in _every_ tool (`ensure_path_not_hidden_by_settings`, `external_path_excluded_by_settings`), checked before any prompt.
 - Protected roots (`is_protected_external_path`): the hard refusal for the filesystem root, the home directory, and worktree ancestors.
 - Gitignore stops hiding files: the ignored-directory fallback, the path-triggered scan for a bare relative path (`prescan_ignored_ancestor`), the directory listing scan (`list_directory`), and — for the search tools — the opt-in pre-scan driven by the glob's literal prefix (`find_path`, and `grep` via `prescan_ignored_dirs_for_prefix`). The scanning helpers live together in `crates/agent/src/tools/ignored_scan.rs`; `tool_permissions.rs` keeps only the permission and path-resolution logic.
@@ -80,6 +85,8 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 - The symlink prompt is extended to external paths and to every path form (`external_path_resolution_target`, `external_symlink_target`).
 - Actionable errors (`explain_unresolved_relative_path`, `explain_unscanned_ignored_path`, `explain_unresolved_path`).
 - This README and the protected-roots note in `assets/settings/default.json`.
+
+Where a file collides (`crates/agent/src/tools/tool_permissions.rs` was created upstream in #49255), the branch keeps upstream's public shape and layers the above on top.
 
 `file_scan_exclusions` and `private_files` (global and worktree-scoped) are hard blocks, not soft warnings. `ensure_path_not_hidden_by_settings` in `crates/agent/src/tools/tool_permissions.rs` is called by every file tool — read and mutating alike, in-project and out-of-project — so a path the agent may not read it also may not modify. The check runs **before** the authorization prompt, so a blocked call never asks the user to approve something that cannot happen. `find_path` filters matching paths out of its results for the same reason: a path search must not surface what the read and write tools refuse.
 
@@ -91,6 +98,15 @@ This is a branch-local change — upstream matches the raw text only — and it 
 
 The forms are derived from `Project::find_project_path`, which is exactly what the tool itself uses to resolve the path, so the file a rule is tested against is the file the tool will act on. For a bare relative path in a multi-root workspace that resolution is a guess (the first worktree with an entry), but it is the _same_ guess the tool makes — the rule and the action never disagree.
 
+### Gitignore no longer hides files from the tools
+
+A file tool now has exactly two routes, and gitignore picks neither:
+
+- **Through the worktree** — the file has a snapshot entry. The scanner has verified it, and the user's settings filter it.
+- **Directly through the filesystem** — everything else: any path outside the project, and any file inside a directory the worktree never scanned.
+
+The second case is the one that used to be a dead end. Zed's scanner deliberately skips gitignored directories (`node_modules`, `dist`, `target`) so it doesn't index tens of thousands of files, which left every file below one with no snapshot entry. The path-named tools now load that directory on demand before resolving (`prescan_ignored_ancestor`): `read_file` and `list_directory` then go through the worktree like any other file, while `delete_path`, `copy_path`, `move_path` and the edit session route the target through `resolve_direct_fs_path` (`crates/agent/src/tools/tool_permissions.rs`), which is what applies the settings and raises the symlink prompt when the ignored file resolves outside the worktree. So `read_file`, `write_file`, `edit_file`, `delete_path`, `copy_path`, `move_path` and `create_directory` all reach ignored trees now, in every worktree, not just the first.
+
 - The user's `file_scan_exclusions` / `private_files` are still enforced — global globs against the canonical target, plus the worktree's own globs when the target belongs to one. Out-of-project targets keep the global-only check, as before.
 - A path that resolves **somewhere other than itself** — something along the way is a symlink — asks the user first, naming the real canonical target. The snapshot normally catches that (the scanner marks such entries and stores their canonical path), but it never looked inside an unscanned directory, so `resolve_direct_fs_path` canonicalizes and `authorize_direct_fs_path` raises the same prompt the scanned case gets, via the existing `authorize_symlink_access`. This applies to both path forms: an absolute path into an unscanned directory used to be canonicalized and written to silently, which is the hole this closed.
 - **Deleting or moving a symlink acts on the link, not its target** — the way `rm`/`mv` and the in-project route do, inside and outside the project alike. `DirectFsPath` carries the named path (leaf not followed), and `delete_path` / `move_path` use it when the leaf is a symlink, so nothing follows the link. The escape prompt still fires, as it does for a scanned in-project symlink: the path does resolve outside the project. `copy_path` is the exception: it dereferences, like `cp` (and like the in-project copy), so copying a link copies what it points at.
@@ -100,9 +116,15 @@ The forms are derived from `Project::find_project_path`, which is exactly what t
 
 #### When an ignored directory gets scanned
 
+Gitignored directories stay unscanned until something asks for them. A bare relative path into one would have no snapshot entry to resolve against, so the file tools scan the directory on demand before resolving (see the first trigger below). Two worktree primitives load directories, with different reach:
+
 - `add_path_prefix_to_scan(P)` registers P as a path prefix; `should_scan_directory` then treats every descendant of P as scannable, overriding both gitignore and `file_scan_depth` for that subtree. Reach: **P's whole subtree, recursively.**
 - `refresh_entry(path)` / `refresh_entries_for_paths(...)` re-read the named paths. Reach: **those paths only** — nested ignored directories inside them stay unloaded.
 
+Which agent tools scan, and how much — **all of this is branch-local** (upstream never pre-scans for these tools):
+
+- The two search tools share one rule, implemented once in `glob_literal_prefix` / `glob_reaches_dir` (`crates/agent/src/tools/ignored_scan.rs`): an ignored directory is scanned and matched **only when the glob's literal prefix names into it**. A leading `**` names no directory, so it reaches nothing ignored — that is what keeps an ordinary search from exploding into `node_modules`.
+- `find_path` scans the ignored, unloaded directory the glob enters — `root/node_modules/**` scans `node_modules`, while `root/src/**` and `**/index.js` leave it alone — and matches ignored entries only inside those same directories, so an ordinary glob never surfaces ignored content even after another tool loaded it (the result does not depend on scan history).
 - `read_file` does not scan a whole directory: it opens the one file. It runs the shared on-demand scan only when a **bare relative path** would otherwise fail to resolve, so the bare form resolves like the rooted/absolute one.
 - `edit_file`, `write_file`, `delete_path`, `copy_path`, `move_path`, `create_directory` run the same on-demand scan before resolving a bare relative path (for `create_directory` that path is the new directory's parent).
 
@@ -119,8 +141,12 @@ Reachability — which tool accepts which form:
 - **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
 - **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
 - **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
+- File tools are described as operating across the whole filesystem, stated as facts rather than preferences: a project-relative path that starts with a worktree root name, an absolute path, and a `~`-prefixed path all resolve — including into gitignored content such as `node_modules` — while a bare project-relative path works only when it is unambiguous (gitignored directories are scanned on demand). The wording is deliberately not a "prefer relative" style rule — that is an unverifiable preference, whereas the path forms are a property of the harness.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
 The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.
+### Test coverage for the file tools
+
+The filesystem behavior above is hard to check by hand, so it is covered by tests in the `agent` crate (`cargo test -p agent --lib`, 824 tests). Each file tool is exercised along four axes: in-project paths, out-of-project absolute paths, gitignored content (including a second worktree with its own repository and `.gitignore`), and the user's settings (`private_files`, `file_scan_exclusions`, `tool_permissions`, protected roots). Notable cases:
 - `tool_permissions.rs` — `test_real_fs_external_path_resolution_and_protection` exercises the real `RealFs` canonicalization macOS applies to `/tmp`, so the external/protected classification is tested against the actual filesystem rather than a fake. It is a plain `#[test]`, not `#[gpui::test]`, because `RealFs` spawns real threads that the deterministic test scheduler forbids.
 - Symlink-escape authorization per tool, including the confirm-once and deny-policy paths.
 - Settings-blocked calls assert both the error text and that **no** authorization event was emitted, which is what pins the "check before prompt" ordering.
@@ -158,6 +184,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Git panel and diffs
 
 - Tree directories and status entries can be dragged out of the panel (a marked selection moves together).
+- Status rows gain a hover **View File** action; directories get a context menu (stage / unstage / discard a folder, add the folder to `.gitignore`, reveal in the OS file manager).
 - Diff hunks in a solo diff can be staged from the diff itself.
 - A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
 - Solo diffs open in **preview tabs** that replace one another, and report the active project path.

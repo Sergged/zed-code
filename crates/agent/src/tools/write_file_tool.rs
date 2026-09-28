@@ -23,12 +23,10 @@ const DEFAULT_UI_TEXT: &str = "Writing file";
 ///
 /// Before using this tool, verify the directory path is correct (only applicable when creating new files). Use the `list_directory` tool to verify the parent directory exists and is the correct location
 ///
-/// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
+/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WriteFileToolInput {
-    /// The full path of the file to create or overwrite in the project, or an absolute path outside it.
-    ///
-    /// WARNING: A relative path MUST start with one of the project's root directories. Absolute paths outside the project are allowed, subject to the user's agent tool permission rules.
+    /// The full path of the file to create or overwrite. A project-relative path that starts with one of the project's root directories always resolves; a bare project-relative path (`src/main.rs`) also works when it is unambiguous. An absolute path is accepted too, and every form is subject to the user's agent tool permission rules.
     ///
     /// The following examples assume we have two root directories in the project:
     /// - /a/b/backend
@@ -37,7 +35,7 @@ pub struct WriteFileToolInput {
     /// <example>
     /// `backend/src/main.rs`
     ///
-    /// Notice how the file path starts with `backend`. Without that, the path would be ambiguous and the call would fail!
+    /// Notice how the file path starts with `backend` — that keeps it unambiguous across multiple roots.
     /// </example>
     ///
     /// <example>
@@ -1446,6 +1444,156 @@ mod tests {
     fn assert_resolved_path_eq(path: Result<ProjectPath, String>, expected: &RelPath) {
         let actual = path.expect("Should return valid path").path;
         assert_eq!(actual.as_ref(), expected);
+    }
+
+    /// Grants every tool permission so behavior under test isn't gated by a prompt.
+    fn allow_all_tool_permissions(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
+            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
+            agent_settings::AgentSettings::override_global(settings, cx);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_write_file_outside_project_absolute_path(cx: &mut TestAppContext) {
+        init_test(cx);
+        allow_all_tool_permissions(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "src": { "main.rs": "fn main() {}" } }),
+        )
+        .await;
+        fs.insert_tree(path!("/outside"), json!({})).await;
+        let (write_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let target = std::path::PathBuf::from(path!("/outside/notes.md"));
+        let task = cx.update(|cx| {
+            write_tool.clone().run(
+                ToolInput::resolved(WriteFileToolInput {
+                    path: target.clone(),
+                    content: "# Notes\n".into(),
+                }),
+                ToolCallEventStream::test().0,
+                cx,
+            )
+        });
+
+        let result = task.await;
+        assert!(
+            result.is_ok(),
+            "writing an absolute path outside the project should succeed: {result:?}"
+        );
+        assert!(fs.is_file(&target).await, "the file should exist on disk");
+    }
+
+    #[gpui::test]
+    async fn test_write_file_respects_private_files(cx: &mut TestAppContext) {
+        init_test(cx);
+        allow_all_tool_permissions(cx);
+
+        cx.update(|cx| {
+            use gpui::UpdateGlobal;
+            use settings::SettingsStore;
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.project.worktree.private_files =
+                        Some(vec!["**/secret.txt".to_string()].into());
+                });
+            });
+        });
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "src": { "main.rs": "fn main() {}" }, "secret.txt": "old" }),
+        )
+        .await;
+        let (write_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let task = cx.update(|cx| {
+            write_tool.clone().run(
+                ToolInput::resolved(WriteFileToolInput {
+                    path: std::path::PathBuf::from(path!("/root/secret.txt")),
+                    content: "new".into(),
+                }),
+                ToolCallEventStream::test().0,
+                cx,
+            )
+        });
+
+        let error = task.await.unwrap_err().to_string();
+        assert!(
+            error.contains("private_files"),
+            "expected the error to name the blocking setting, got: {error}"
+        );
+        assert!(
+            fs.load(&std::path::PathBuf::from(path!("/root/secret.txt")))
+                .await
+                .unwrap()
+                == "old",
+            "the private file must not be modified"
+        );
+    }
+
+    /// Writing into an unscanned gitignored directory goes through the same
+    /// direct-filesystem route as a file outside the project.
+    #[gpui::test]
+    async fn test_write_file_into_gitignored_directory(cx: &mut TestAppContext) {
+        init_test(cx);
+        allow_all_tool_permissions(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "src": { "main.rs": "fn main() {}" },
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+        let (write_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        for path in [
+            std::path::PathBuf::from("node_modules/pkg/new.js"),
+            std::path::PathBuf::from("root/node_modules/pkg/new.js"),
+            std::path::PathBuf::from(path!("/root/node_modules/pkg/new.js")),
+        ] {
+            let result = cx
+                .update(|cx| {
+                    write_tool.clone().run(
+                        ToolInput::resolved(WriteFileToolInput {
+                            path: path.clone(),
+                            content: "new\n".into(),
+                        }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await;
+
+            assert!(
+                result.is_ok(),
+                "writing {path:?} should succeed: {result:?}"
+            );
+        }
+
+        assert_eq!(
+            fs.load(&std::path::PathBuf::from(path!(
+                "/root/node_modules/pkg/new.js"
+            )))
+            .await
+            .unwrap(),
+            "new\n"
+        );
     }
 
     fn init_test(cx: &mut TestAppContext) {
