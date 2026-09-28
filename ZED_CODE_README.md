@@ -185,6 +185,7 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 | `Diagnostics may be stale.`      | The refresh failed, so the output may predate the edits                                    |
 
 The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.
+
 ### Test coverage for the file tools
 
 The filesystem behavior above is hard to check by hand, so it is covered by tests in the `agent` crate (`cargo test -p agent --lib`, 824 tests). Each file tool is exercised along four axes: in-project paths, out-of-project absolute paths, gitignored content (including a second worktree with its own repository and `.gitignore`), and the user's settings (`private_files`, `file_scan_exclusions`, `tool_permissions`, protected roots). Notable cases:

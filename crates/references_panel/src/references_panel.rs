@@ -144,6 +144,20 @@ fn find_all_references(
     cx: &mut Context<Workspace>,
 ) {
     let project = workspace.project().clone();
+    // Remember where the query was triggered so the matching entry can be
+    // selected once the results arrive.
+    let origin = editor.update(cx, |editor, cx| {
+        let multi_buffer = editor.buffer().read(cx);
+        let multi_buffer_snapshot = multi_buffer.snapshot(cx);
+        let head = editor
+            .selections
+            .newest_anchor()
+            .map(|anchor| anchor.to_offset(&multi_buffer_snapshot))
+            .head();
+        let (buffer, anchor) = multi_buffer.text_anchor_for_position(head, cx)?;
+        let offset = buffer.read(cx).snapshot().offset_for_anchor(&anchor);
+        Some((buffer.entity_id(), offset))
+    });
     let editor = editor.downgrade();
     cx.spawn_in(window, async move |workspace, cx| {
         // Load the panel up-front (it is normally added by the workspace
@@ -214,7 +228,7 @@ fn find_all_references(
                     return;
                 };
                 panel.update(cx, |panel, cx| {
-                    panel.set_results(matches, cx);
+                    panel.set_results(matches, origin, cx);
                 });
                 workspace.open_panel::<ReferencesPanel>(window, cx);
                 cx.notify();
@@ -303,15 +317,38 @@ impl ReferencesPanel {
         cx.notify();
     }
 
-    fn set_results(&mut self, matches: Vec<LocationMatch>, cx: &mut Context<Self>) {
+    fn set_results(
+        &mut self,
+        matches: Vec<LocationMatch>,
+        origin: Option<(EntityId, usize)>,
+        cx: &mut Context<Self>,
+    ) {
         self.searching = false;
         self.collapsed_files.clear();
+        // Select the entry the query was triggered from, if the language
+        // server included it in the results.
+        let origin_match_index = origin.and_then(|(buffer_id, offset)| {
+            matches.iter().position(|location_match| {
+                location_match.buffer.entity_id() == buffer_id
+                    && location_match.range.start <= offset
+                    && offset <= location_match.range.end
+            })
+        });
         self.results = Some(ReferenceResults {
             entries: build_entries(&matches, &self.collapsed_files),
             matches,
         });
-        self.selected_entry = None;
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.selected_entry = origin_match_index.and_then(|origin_match_index| {
+            self.results.as_ref()?.entries.iter().position(
+                |entry| matches!(entry, Entry::Match(index) if *index == origin_match_index),
+            )
+        });
+        if let Some(selected_entry) = self.selected_entry {
+            self.scroll_handle
+                .scroll_to_item(selected_entry, ScrollStrategy::Center);
+        } else {
+            self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        }
         cx.notify();
     }
 
@@ -1059,24 +1096,27 @@ mod tests {
         cx.run_until_parked();
 
         let workspace = cx.workspace.clone();
-        let (results_len, match_count, dock_open) = cx.update(|_window, cx| {
+        let (results_len, match_count, selected_entry, dock_open) = cx.update(|_window, cx| {
             let panel = workspace
                 .read(cx)
                 .panel::<ReferencesPanel>(cx)
                 .expect("references panel should exist");
-            let results = panel
-                .read(cx)
-                .results
-                .as_ref()
-                .expect("results should be set");
+            let panel = panel.read(cx);
+            let results = panel.results.as_ref().expect("results should be set");
             (
                 results.entries.len(),
                 results.matches.len(),
+                panel.selected_entry,
                 workspace.read(cx).left_dock().read(cx).is_open(),
             )
         });
         assert_eq!(results_len, 3, "one file header plus two matches");
         assert_eq!(match_count, 2);
+        assert_eq!(
+            selected_entry,
+            Some(1),
+            "the reference under the cursor should be selected"
+        );
         assert!(dock_open, "the left dock should be open after a query");
     }
 
