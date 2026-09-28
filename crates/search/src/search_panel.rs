@@ -21,7 +21,7 @@ use project::{
 };
 use project_panel::ProjectPanel;
 use project_panel::{ContextMenuPlacement, project_panel_settings::ProjectPanelSettings};
-use settings::Settings;
+use settings::{Settings, update_settings_file};
 use text::Anchor;
 use theme_settings::ThemeSettings;
 use ui::{
@@ -41,7 +41,10 @@ use crate::{
     EXCLUDE_PLACEHOLDER, FocusSearch, INCLUDE_PLACEHOLDER, SEARCH_ICON, SearchOption,
     SearchOptions, SearchSource, ToggleCaseSensitive, ToggleIncludeIgnored, ToggleRegex,
     ToggleWholeWord,
-    project_search::{ProjectSearchView, ToggleFilters, split_glob_patterns},
+    project_search::{
+        ProjectSearchView, QuerySeed, ToggleFilters, query_seed_from_active_item,
+        split_glob_patterns,
+    },
     search_bar::{input_base_styles, render_text_input},
 };
 
@@ -111,10 +114,10 @@ impl Render for DraggedFileView {
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
-            workspace.toggle_panel_focus::<SearchPanel>(window, cx);
+            focus_search_panel(workspace, None, window, cx);
         });
         workspace.register_action(|workspace, _: &Toggle, window, cx| {
-            if !workspace.toggle_panel_focus::<SearchPanel>(window, cx) {
+            if !focus_search_panel(workspace, None, window, cx) {
                 workspace.close_panel::<SearchPanel>(window, cx);
             }
         });
@@ -124,16 +127,49 @@ pub fn init(cx: &mut App) {
             workspace.toggle_panel_focus::<SearchPanel>(window, cx);
         });
         // `pane::DeploySearch` (cmd-shift-f in the editor) opens the search
-        // panel instead of the project search multibuffer.
-        workspace.register_action(|workspace, _: &DeploySearch, window, cx| {
+        // panel instead of the project search multibuffer, seeding its query
+        // from the editor like the project search bar does.
+        workspace.register_action(|workspace, action: &DeploySearch, window, cx| {
             if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
                 cx.propagate();
                 return;
             }
-            workspace.toggle_panel_focus::<SearchPanel>(window, cx);
+            if !focus_search_panel(workspace, Some(action), window, cx) {
+                workspace.close_panel::<SearchPanel>(window, cx);
+            }
         });
     })
     .detach();
+}
+
+/// Focuses the panel, preloading its query from the given search action (if
+/// any) or from the buffer search bar / the active editor's selection. The
+/// query is only seeded when the panel isn't already focused, so toggling a
+/// focused panel closed never rewrites its query. Returns whether the panel got
+/// focused.
+fn focus_search_panel(
+    workspace: &mut Workspace,
+    action: Option<&DeploySearch>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    let panel = workspace.panel::<SearchPanel>(cx);
+    let panel_is_focused = panel
+        .as_ref()
+        .is_some_and(|panel| panel.read(cx).focus_handle(cx).contains_focused(window, cx));
+
+    if !panel_is_focused && let Some(panel) = panel {
+        let seed = action
+            .and_then(|action| action.query.as_deref())
+            .filter(|query| !query.is_empty())
+            .map(|query| QuerySeed::Query(query.to_owned()))
+            .or_else(|| query_seed_from_active_item(workspace, window, cx));
+        if let Some(seed) = seed {
+            panel.update(cx, |panel, cx| panel.apply_query_seed(seed, window, cx));
+        }
+    }
+
+    workspace.toggle_panel_focus::<SearchPanel>(window, cx)
 }
 
 /// A VSCode-style search panel: the project search bar (query input, options
@@ -267,6 +303,25 @@ impl SearchPanel {
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.search(window, cx);
+    }
+
+    /// Preloads the query input with a seeded query and runs the search
+    /// immediately, mirroring the project search multibuffer.
+    fn apply_query_seed(&mut self, seed: QuerySeed, window: &mut Window, cx: &mut Context<Self>) {
+        let query = match seed {
+            QuerySeed::Query(query) => query,
+            QuerySeed::Text(text) if self.search_options.contains(SearchOptions::REGEX) => {
+                regex::escape(&text)
+            }
+            QuerySeed::Text(text) => text,
+        };
+        self.query_editor.update(cx, |editor, cx| {
+            editor.set_text(query, window, cx);
+        });
+        // The action handler runs while the workspace is being updated, and
+        // running the search reads the workspace, so defer it until that update
+        // has unwound.
+        cx.defer_in(window, |panel, window, cx| panel.search(window, cx));
     }
 
     fn toggle_filters(&mut self, cx: &mut Context<Self>) {
@@ -1256,20 +1311,24 @@ impl Panel for SearchPanel {
         SEARCH_PANEL_KEY
     }
 
-    fn position(&self, _window: &Window, _cx: &App) -> DockPosition {
-        DockPosition::Left
+    fn position(&self, _window: &Window, cx: &App) -> DockPosition {
+        EditorSettings::get_global(cx).search.dock.into()
     }
 
     fn position_is_valid(&self, position: DockPosition) -> bool {
-        matches!(position, DockPosition::Left)
+        matches!(position, DockPosition::Left | DockPosition::Right)
     }
 
     fn set_position(
         &mut self,
-        _position: DockPosition,
+        position: DockPosition,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        let fs = <dyn fs::Fs>::global(cx);
+        update_settings_file(fs, cx, move |settings, _| {
+            settings.editor.search.get_or_insert_default().dock = Some(position.into());
+        });
     }
 
     fn default_size(&self, _window: &Window, cx: &App) -> Pixels {
@@ -1763,6 +1822,64 @@ mod tests {
         assert!(
             search_view.is_some(),
             "the header button should open a project search multibuffer"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_deploy_search_seeds_query_from_selection(cx: &mut TestAppContext) {
+        let (window, workspace) = build_workspace(cx).await;
+        let panel = add_panel(&window, &workspace, cx);
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    std::path::PathBuf::from(path!("/dir/one.rs")),
+                    workspace::OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap()
+            .downcast::<Editor>()
+            .unwrap();
+
+        // Select "ONEROUS" on the second line of `one.rs`.
+        editor.update_in(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([text::Point::new(1, 6)..text::Point::new(1, 13)]);
+            });
+        });
+
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(DeploySearch::default()), cx);
+            })
+            .unwrap();
+        for _ in 0..20 {
+            cx.executor().advance_clock(Duration::from_millis(500));
+            cx.background_executor.run_until_parked();
+            if !cx.read(|cx| panel.read(cx).searching) {
+                break;
+            }
+        }
+
+        let (query, matches_len) = cx.update(|_window, cx| {
+            let panel = panel.read(cx);
+            (
+                panel.query_editor.read(cx).text(cx),
+                panel.results.as_ref().map(|results| results.matches.len()),
+            )
+        });
+        assert_eq!(
+            query, "ONEROUS",
+            "opening the search panel with a selection seeds the query from it"
+        );
+        assert_eq!(
+            matches_len,
+            Some(1),
+            "the seeded query should run immediately and find its match"
         );
     }
 }
