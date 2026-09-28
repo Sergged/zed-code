@@ -10591,6 +10591,7 @@ impl Repository {
     where
         AsyncFn: AsyncFnOnce(WeakEntity<Repository>, &mut AsyncApp) -> Result<()> + 'static,
     {
+        let changed_paths = paths.clone();
         let ids = self.new_pending_ops_for_paths(paths, git_status);
 
         cx.spawn(async move |this, cx| {
@@ -10600,7 +10601,7 @@ impl Repository {
                 Err(err) => (pending_op::JobStatus::Error, Err(err)),
             };
 
-            this.update(cx, |this, _| {
+            this.update(cx, |this, cx| {
                 let mut edits = Vec::with_capacity(ids.len());
                 for (id, entry) in ids {
                     if let Some(mut ops) = this
@@ -10615,6 +10616,11 @@ impl Repository {
                     }
                 }
                 this.pending_ops.edit(edits, ());
+
+                // We just wrote to the index, so we know exactly which paths
+                // changed. Refresh their status right away instead of relying
+                // on the file watcher to notice the index change later.
+                this.paths_changed(changed_paths, None, cx);
             })?;
 
             result

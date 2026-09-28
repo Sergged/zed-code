@@ -13110,6 +13110,106 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_stage_updates_entries_from_status_event(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "main.rs": "fn main() {\n}\n",
+            }),
+        )
+        .await;
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[(
+                "main.rs",
+                TrackedStatus {
+                    index_status: StatusCode::Unmodified,
+                    worktree_status: StatusCode::Modified,
+                }
+                .into(),
+            )],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Staging);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(&mut cx, GitPanel::new);
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        // The file starts out in the Unstaged section.
+        panel.read_with(&mut cx, |panel, _cx| {
+            assert!(
+                panel
+                    .entry_by_path_in_section(&repo_path("main.rs"), Section::Unstaged)
+                    .is_some()
+            );
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            let index = panel
+                .entry_by_path_in_section(&repo_path("main.rs"), Section::Unstaged)
+                .expect("file should be in the unstaged section");
+            let entry = panel
+                .entries
+                .get(index)
+                .cloned()
+                .expect("unstaged entry should exist");
+            panel.toggle_staged_for_entry(&entry, StageIntent::Stage, window, cx);
+        });
+
+        // The repository announces the paths it wrote, so the panel repaints
+        // from the resulting status event without any file system event
+        // (FakeFs emits none for the in-memory index write).
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.background_executor.run_until_parked();
+            cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
+        }
+        cx.run_until_parked();
+
+        panel.read_with(&mut cx, |panel, _cx| {
+            assert!(
+                panel
+                    .entry_by_path_in_section(&repo_path("main.rs"), Section::Staged)
+                    .is_some(),
+                "the panel should move the file once the staged status is reported"
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn test_solo_diff_stage_and_unstage_hunks(cx: &mut TestAppContext) {
         init_test(cx);
 
