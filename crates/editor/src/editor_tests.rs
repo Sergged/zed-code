@@ -32,7 +32,7 @@ use language::{
     LanguageToolchainStore, Override, PLAIN_TEXT, Point,
     language_settings::{
         CompletionSettingsContent, FormatOnSave, FormatterList, LanguageSettingsContent,
-        LspInsertMode,
+        LspInsertMode, SuggestSelection,
     },
     tree_sitter_python,
 };
@@ -25681,6 +25681,265 @@ async fn test_completion_page_up_down_keys(cx: &mut TestAppContext) {
             );
         } else {
             panic!("expected completion menu to stay open after PageUp");
+        }
+    });
+}
+
+#[gpui::test]
+async fn test_suggest_selection_recently_used(cx: &mut TestAppContext) {
+    init_test(cx, |language_settings| {
+        language_settings.defaults.completions = Some(CompletionSettingsContent {
+            words: Some(WordsCompletionMode::Disabled),
+            suggest_selection: Some(SuggestSelection::RecentlyUsed),
+            ..Default::default()
+        });
+    });
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions {
+                trigger_characters: Some(vec![".".to_string()]),
+                ..lsp::CompletionOptions::default()
+            }),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.lsp
+        .set_request_handler::<lsp::request::Completion, _, _>(move |_, _| async move {
+            Ok(Some(lsp::CompletionResponse::Array(vec![
+                lsp::CompletionItem {
+                    label: "fizz".into(),
+                    ..lsp::CompletionItem::default()
+                },
+                lsp::CompletionItem {
+                    label: "fine".into(),
+                    ..lsp::CompletionItem::default()
+                },
+            ])))
+        });
+
+    let open_completions = |cx: &mut EditorLspTestContext| {
+        cx.update_editor(|editor, window, cx| {
+            editor.show_completions(&ShowCompletions, window, cx);
+        });
+    };
+
+    // Nothing has been accepted yet, so the first completion is selected.
+    cx.set_state("fiˇ");
+    open_completions(&mut cx);
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    let selection = cx.update_editor(|editor, _, _| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow().as_ref() {
+            assert_eq!(completion_menu_entries(menu), &["fine", "fizz"]);
+            menu.selected_item
+        } else {
+            panic!("expected completion menu to be open");
+        }
+    });
+    assert_eq!(selection, 0);
+
+    // Accept the second completion.
+    cx.update_editor(|editor, window, cx| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow_mut().as_mut()
+        {
+            menu.selected_item = 1;
+        }
+        editor.confirm_completion(&ConfirmCompletion::default(), window, cx);
+    });
+    cx.executor().run_until_parked();
+
+    // Reopening the menu with the same prefix preselects the recently accepted completion.
+    cx.set_state("fiˇ");
+    open_completions(&mut cx);
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    let selection = cx.update_editor(|editor, _, _| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow().as_ref() {
+            assert_eq!(completion_menu_entries(menu), &["fine", "fizz"]);
+            menu.selected_item
+        } else {
+            panic!("expected completion menu to be open");
+        }
+    });
+    assert_eq!(
+        selection, 1,
+        "the recently accepted completion should be preselected"
+    );
+}
+
+#[gpui::test]
+async fn test_suggest_selection_recently_used_by_prefix(cx: &mut TestAppContext) {
+    init_test(cx, |language_settings| {
+        language_settings.defaults.completions = Some(CompletionSettingsContent {
+            words: Some(WordsCompletionMode::Disabled),
+            suggest_selection: Some(SuggestSelection::RecentlyUsedByPrefix),
+            ..Default::default()
+        });
+    });
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions {
+                trigger_characters: Some(vec![".".to_string()]),
+                ..lsp::CompletionOptions::default()
+            }),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.lsp
+        .set_request_handler::<lsp::request::Completion, _, _>(move |_, _| async move {
+            Ok(Some(lsp::CompletionResponse::Array(vec![
+                lsp::CompletionItem {
+                    label: "fizz".into(),
+                    ..lsp::CompletionItem::default()
+                },
+                lsp::CompletionItem {
+                    label: "fine".into(),
+                    ..lsp::CompletionItem::default()
+                },
+            ])))
+        });
+
+    // Accept the second completion for prefix "fi".
+    cx.set_state("fiˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    cx.update_editor(|editor, window, cx| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow_mut().as_mut()
+        {
+            menu.selected_item = 1;
+        }
+        editor.confirm_completion(&ConfirmCompletion::default(), window, cx);
+    });
+    cx.executor().run_until_parked();
+
+    // Reopening with the same prefix preselects the completion accepted for that prefix.
+    cx.set_state("fiˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    cx.update_editor(|editor, _, _| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow().as_ref() {
+            assert_eq!(completion_menu_entries(menu), &["fine", "fizz"]);
+            assert_eq!(
+                menu.selected_item, 1,
+                "the completion accepted for this prefix should be preselected"
+            );
+        } else {
+            panic!("expected completion menu to be open");
+        }
+    });
+}
+
+#[gpui::test]
+async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppContext) {
+    init_test(cx, |language_settings| {
+        language_settings.defaults.completions = Some(CompletionSettingsContent {
+            words: Some(WordsCompletionMode::Disabled),
+            suggest_selection: Some(SuggestSelection::RecentlyUsed),
+            ..Default::default()
+        });
+    });
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions {
+                resolve_provider: Some(true),
+                ..lsp::CompletionOptions::default()
+            }),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+
+    cx.set_request_handler::<lsp::request::Completion, _, _>(|_, _, _| async move {
+        Ok(Some(lsp::CompletionResponse::Array(vec![
+            lsp::CompletionItem {
+                label: "console".into(),
+                ..lsp::CompletionItem::default()
+            },
+            lsp::CompletionItem {
+                label: "const".into(),
+                ..lsp::CompletionItem::default()
+            },
+        ])))
+    });
+    // Language servers like TypeScript's only return `detail` via resolve, which makes Zed
+    // regenerate the completion's label with the detail appended.
+    let mut resolve_requests = cx.set_request_handler::<lsp::request::ResolveCompletionItem, _, _>(
+        |_, mut item, _| async move {
+            item.detail = Some(format!("detail for {}", item.label));
+            Ok(item)
+        },
+    );
+
+    // Open completions so the visible completions get resolved.
+    cx.set_state("conˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    for _ in 0..2 {
+        resolve_requests
+            .next()
+            .await
+            .expect("both completions should be resolved");
+    }
+    cx.run_until_parked();
+
+    // Accept the second completion, whose label now contains the resolved detail.
+    cx.update_editor(|editor, window, cx| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow().as_ref() {
+            assert_eq!(completion_menu_entries(menu), &["console", "const"]);
+            assert!(
+                menu.completions.borrow()[1].label.text.contains("detail"),
+                "the accepted completion's label should have been regenerated on resolve"
+            );
+        } else {
+            panic!("expected completion menu to be open");
+        }
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow_mut().as_mut()
+        {
+            menu.selected_item = 1;
+        }
+        editor.confirm_completion(&ConfirmCompletion::default(), window, cx);
+    });
+    cx.executor().run_until_parked();
+
+    // Reopening the menu with the same prefix preselects the accepted completion, even though
+    // its label no longer contains the detail that resolution had added.
+    cx.set_state("conˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    cx.update_editor(|editor, _, _| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow().as_ref() {
+            assert_eq!(completion_menu_entries(menu), &["console", "const"]);
+            assert_eq!(
+                menu.selected_item, 1,
+                "the accepted completion should be preselected despite its label changing on resolve"
+            );
+        } else {
+            panic!("expected completion menu to be open");
         }
     });
 }

@@ -1629,14 +1629,34 @@ const SCORE_EPSILON: f64 = 1e-6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MemItem {
+    /// The completion's filter text, i.e. its label without the detail that language servers
+    /// may only return when resolving, and without the insert text that resolving may rewrite.
+    label: String,
     kind: Option<CompletionItemKind>,
-    new_text: String,
     touch: u64,
 }
 
 impl MemItem {
+    fn new(completion: &Completion, touch: u64) -> Self {
+        Self {
+            label: completion.filter_text().to_string(),
+            kind: completion.kind(),
+            touch,
+        }
+    }
+
     fn matches(&self, completion: &Completion) -> bool {
-        self.kind == completion.kind() && self.new_text == completion.new_text
+        // `new_text` and the label text (`completion.label.text`, which may include detail
+        // added by resolving) are deliberately not compared: both can change between
+        // requests. `kind` may also be filled in by resolving, so it is only compared when
+        // both sides have it.
+        if self.label != completion.filter_text() {
+            return false;
+        }
+        match (self.kind, completion.kind()) {
+            (Some(memo_kind), Some(completion_kind)) => memo_kind == completion_kind,
+            _ => true,
+        }
     }
 }
 
@@ -1680,12 +1700,8 @@ impl SuggestMemory {
             SuggestSelection::RecentlyUsed => {
                 let mut recently_used = self.recently_used.borrow_mut();
                 recently_used.insert(
-                    memory_key(language, &completion.label.text),
-                    MemItem {
-                        kind: completion.kind(),
-                        new_text: completion.new_text.clone(),
-                        touch: self.next_touch(),
-                    },
+                    memory_key(language, completion.filter_text()),
+                    MemItem::new(completion, self.next_touch()),
                 );
                 trim_to_limit(&mut recently_used, RECENTLY_USED_LIMIT);
             }
@@ -1696,11 +1712,7 @@ impl SuggestMemory {
                 let mut recently_used_by_prefix = self.recently_used_by_prefix.borrow_mut();
                 recently_used_by_prefix.insert(
                     memory_key(language, prefix),
-                    MemItem {
-                        kind: completion.kind(),
-                        new_text: completion.new_text.clone(),
-                        touch: self.next_touch(),
-                    },
+                    MemItem::new(completion, self.next_touch()),
                 );
                 trim_to_limit(&mut recently_used_by_prefix, RECENTLY_USED_BY_PREFIX_LIMIT);
             }
@@ -1735,7 +1747,7 @@ impl SuggestMemory {
                         continue;
                     };
                     if let Some(item) =
-                        recently_used.get(&memory_key(language, &completion.label.text))
+                        recently_used.get(&memory_key(language, completion.filter_text()))
                         && item.matches(completion)
                         && best.is_none_or(|(_, touch)| item.touch > touch)
                     {
