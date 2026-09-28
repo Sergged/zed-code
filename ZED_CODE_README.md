@@ -179,6 +179,7 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 
 - File tools are described as operating across the whole filesystem, stated as facts rather than preferences: a project-relative path that starts with a worktree root name, an absolute path, and a `~`-prefixed path all resolve — including into gitignored content such as `node_modules` — while a bare project-relative path works only when it is unambiguous (gitignored directories are scanned on demand). The wording is deliberately not a "prefer relative" style rule — that is an unverifiable preference, whereas the path forms are a property of the harness.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
+- The `## Multi-agent delegation` section was rewritten with concrete delegation triggers, cost framing (a sub-agent costs one tool call), parallel spawning in the same turn, self-contained briefs with disjoint write scopes, and optional sub-agent model selection via `list_agents_and_models` — pass the exact `models[].id` from the native entry (`is_native: true`); omitting `model` falls back to the configured subagent model, or the parent model when none is set. For long-output commands it asks the sub-agent to report the failing lines or diagnostics.
 | Outcome                          | Meaning                                                                                    |
 | -------------------------------- | ------------------------------------------------------------------------------------------ |
 | `No errors or warnings.`         | A server checked the file and it is clean                                                  |
@@ -214,6 +215,8 @@ No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiff
 
 Like `SoloDiffView`, the view returns `None` from `Item::act_as_type` for `SplittableEditor`. That keeps the buffer search bar in its own toolbar row below the buttons — both toolbars stay visible at once instead of the search displacing the review actions — and stops the search bar from re-rendering the split/unified and fold controls the toolbar already owns. Returning `Some` there is what puts the search in `PrimaryLeft` and produces the duplicate controls.
 
+
+### Selections and diagnostics as thread context
 
 A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand.
 
@@ -251,19 +254,23 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - The commit message editor's height is configurable through `git_panel.message_editor_min_lines`.
 - Clicking a row's checkbox toggles it without selecting the row or starting a file drag, and leaves the row hovered so its hover-only controls stay visible.
 - Following the editor also scrolls the panel to the newly focused row, and expands collapsed folders in tree view so the row is visible.
+
 ### Search panel
 
 - Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
+
 ### References panel
 
 - Find All References opens a **dock panel**, in the branch-local `references_panel` crate.
 - The panel is dockable left/right, its status-bar button is hideable, and its width comes from `references_panel.default_width`.
 - Opening selects and centers the match the query was run from.
+
 ### Editor
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
+
 ### Tabs and workspace chrome
 
 - The tab's trailing slot shows the unsaved-changes indicator in the place of the close button; hovering swaps in close (or unpin), VS Code-style, with no layout shift.
@@ -273,6 +280,8 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Keymap editor
 
 - The context menu gains **Restore Default** (drops the user's unbind that suppressed a default binding) and **Add Alternative**.
+
+### Tasks
 
 - Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
 - The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
