@@ -91,6 +91,8 @@ The file tools are a mix of upstream behavior and `zed-code` changes. Provenance
 
 Where a file collides (`crates/agent/src/tools/tool_permissions.rs` was created upstream in #49255), the branch keeps upstream's public shape and layers the above on top.
 
+### The user's file-access settings are enforced by every file tool
+
 `file_scan_exclusions` and `private_files` (global and worktree-scoped) are hard blocks, not soft warnings. `ensure_path_not_hidden_by_settings` in `crates/agent/src/tools/tool_permissions.rs` is called by every file tool — read and mutating alike, in-project and out-of-project — so a path the agent may not read it also may not modify. The check runs **before** the authorization prompt, so a blocked call never asks the user to approve something that cannot happen. `find_path` filters matching paths out of its results for the same reason: a path search must not surface what the read and write tools refuse.
 
 ### Permission rules match every form of a path
@@ -196,6 +198,7 @@ The filesystem behavior above is hard to check by hand, so it is covered by test
 - Gitignored targets are covered from both sides: each mutating tool has a test that it now edits/deletes/copies/moves a file inside an unscanned ignored directory. `test_edit_file_gitignored_symlink_escape_asks_before_following` and `test_edit_file_gitignored_symlink_escape_allowed` pin that editing through a symlink out of one prompts with the real target. `test_delete_path_gitignored_symlink_deletes_link_not_target` and `test_delete_path_external_symlink_deletes_link_not_target` pin the other half — deleting a symlink removes the link, leaves the target untouched, and never names the target in the prompt. `test_delete_path_gitignored_file_respects_file_scan_exclusions` and its `edit_file` counterpart pin that the fallback doesn't become a way around the user's settings.
 - `test_write_then_read_outside_project` is the regression test for the single-file worktree trap: it writes the same external path twice (the second write used to fail with "parent directory doesn't exist") and then reads the file back. `test_write_file_outside_project_tilde_path` and `test_read_tilde_path_outside_project` pin the `~` form, `test_move_path_external_symlink_moves_link_not_target` the move-by-link semantics, and `test_find_path_loaded_ignored_content_stays_hidden` that `find_path` results don't depend on what another tool happened to scan.
 - Path forms _below_ an unscanned gitignored directory are pinned per tool, each form against its own fixture: `test_list_directory_path_inside_gitignored_directory_all_path_forms` (bare / rooted / absolute) and `test_resolve_symbol_in_gitignored_directory`. Each form gets a fresh `Project` on purpose — sharing one project lets the first form's scan load the directory and makes the remaining forms pass without the fix, which is exactly how a green test can prove nothing. The negative half is pinned too: `test_list_directory_missing_path_inside_gitignored_directory_is_plain_not_found` and `test_resolve_symbol_missing_file_in_gitignored_directory` assert that a genuinely absent target still reports itself as absent rather than as a gitignore problem, so the model doesn't read "not found" as "try another path form" and retry forever.
+
 ### Single-file agent diff view
 
 Clicking a changed file in a thread's edits block opens a single-file review view (`AgentDiffView`, `crates/agent_ui/src/agent_diff_view.rs`) instead of the multi-file `AgentDiffPane`; the per-row **Review** button is gone, since it duplicated the row click. The view opens scrolled to the first hunk and owns its own Show Full File and split/unified controls.
@@ -210,6 +213,7 @@ The path comes from implementing `Item::breadcrumbs`, and the stat from `BufferD
 No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiffStyleToolbar` only match their own item types, and the chain `act_as_type(SplittableEditor) == None` → `uses_hidden_splittable_editor == true` → `needs_expand_collapse_option == false` keeps the search bar from re-rendering the split/unified and fold buttons. The same `false` sends it to `Secondary`, which is the separate plate below the toolbar.
 
 Like `SoloDiffView`, the view returns `None` from `Item::act_as_type` for `SplittableEditor`. That keeps the buffer search bar in its own toolbar row below the buttons — both toolbars stay visible at once instead of the search displacing the review actions — and stops the search bar from re-rendering the split/unified and fold controls the toolbar already owns. Returning `Some` there is what puts the search in `PrimaryLeft` and produces the duplicate controls.
+
 
 A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand.
 
@@ -286,6 +290,11 @@ A fresh Zed Code install therefore starts with a VS Code-like setup (`"base_keym
 ### The config directory is shared with the official Zed build
 
 Seeding writes into Zed's own config directory: this branch keeps `paths::APP_NAME` at its upstream value (`"Zed"`, `crates/paths/src/paths.rs`), and on macOS that resolves to `~/.config/zed`. The `APP_NAME_LOWERCASE`/`CARGO_BIN_NAME` assertion in `crates/zed/src/main.rs` pins the binary name to `zed`, the bundling scripts' `APP_NAME` only sets `.app` metadata, and the release channel names (`Zed Dev`, and so on) do not affect these paths. So a build of this branch reads and writes the **same** `settings.json`, `keymap.json` and `AGENTS.md` as an official Zed installed on the same machine.
+
+- Running a build of this branch now **creates** `~/.config/zed/settings.json` and `keymap.json` on first launch when they do not exist yet. Those files carry this branch's recommended values — `"base_keymap": "VSCode"`, the 20/16 font sizes, the Ayu Dark theme, `"auto_update": false`, the `telemetry` block — and an official Zed on the same machine will apply them too. Before the branch started seeding, a dev build left those files absent, so nothing leaked across.
+- `AGENTS.md` is new for this branch, but it is seeded into the same shared directory for the same reason.
+
+`crates/paths/src/paths.rs` already states the intended remedy ("Forks should change this to avoid colliding with Zed's user data"): giving the fork its own `APP_NAME` moves the config, data, cache and state directories away from an official install. That is a separate decision, because it also relocates an existing user's settings.
 
 ### Editor and buffer
 
