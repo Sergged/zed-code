@@ -2,13 +2,13 @@ use crate::{
     ButtonCommon, ButtonStyle, IconButtonShape, KeyBinding, List, ListItem, ListSeparator,
     ListSubHeader, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
-    scrollbars::{ContextMenuScrollbarVisibility, ScrollbarVisibility, ShowScrollbar},
+    scrollbars::{ContextMenuScrollbars, ScrollbarVisibility, ShowScrollbar},
     utils::WithRemSize,
 };
 use gpui::{
     Action, Anchor, AnyElement, App, Bounds, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role,
-    Size, Subscription, TaskExt, anchored, canvas, prelude::*, px, relative,
+    ScrollHandle, Size, Subscription, TaskExt, anchored, canvas, prelude::*, px, relative,
 };
 use menu::{SelectChild, SelectFirst, SelectLast, SelectNext, SelectParent, SelectPrevious};
 use std::{
@@ -221,6 +221,7 @@ pub struct ContextMenu {
     selected_index: Option<usize>,
     delayed: bool,
     clicked: bool,
+    scroll_handle: ScrollHandle,
     end_slot_action: Option<Box<dyn Action>>,
     key_context: SharedString,
     _on_blur_subscription: Subscription,
@@ -349,6 +350,7 @@ impl ContextMenu {
                     selected_index: None,
                     delayed: false,
                     clicked: false,
+                    scroll_handle: ScrollHandle::new(),
                     end_slot_action: None,
                     key_context: "menu".into(),
                     _on_blur_subscription,
@@ -395,6 +397,7 @@ impl ContextMenu {
                 selected_index: None,
                 delayed: false,
                 clicked: false,
+                scroll_handle: self.scroll_handle.clone(),
                 end_slot_action: None,
                 key_context: "menu".into(),
                 _on_blur_subscription: cx.on_blur(
@@ -1256,6 +1259,7 @@ impl ContextMenu {
                 selected_index: None,
                 delayed: false,
                 clicked: false,
+                scroll_handle: ScrollHandle::new(),
                 end_slot_action: None,
                 key_context: "menu".into(),
                 _on_blur_subscription,
@@ -2163,6 +2167,7 @@ impl ContextMenu {
             selected_index: None,
             delayed: false,
             clicked: false,
+            scroll_handle: ScrollHandle::new(),
             end_slot_action: None,
             key_context: SharedString::from("menu"),
             _on_blur_subscription,
@@ -2200,10 +2205,18 @@ impl ContextMenuItem {
 #[derive(Default)]
 struct ContextMenuScrollbarSetting;
 
+impl ContextMenuScrollbarSetting {
+    /// The application's global scrollbar settings for context menus.
+    fn settings(cx: &App) -> ContextMenuScrollbars {
+        cx.try_global::<ContextMenuScrollbars>()
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 impl ScrollbarVisibility for ContextMenuScrollbarSetting {
     fn visibility(&self, cx: &App) -> ShowScrollbar {
-        cx.try_global::<ContextMenuScrollbarVisibility>()
-            .map_or(ShowScrollbar::Auto, |visibility| visibility.0(cx))
+        (Self::settings(cx).show)(cx)
     }
 }
 
@@ -2303,7 +2316,6 @@ impl Render for ContextMenu {
                     v_flex()
                         .id("context-menu")
                         .role(Role::Menu)
-                        .max_h(vh(0.75, window))
                         .flex_shrink_0()
                         .child(menu_bounds_measure)
                         .when_some(self.fixed_width, |this, width| {
@@ -2312,7 +2324,6 @@ impl Render for ContextMenu {
                         .when(self.fixed_width.is_none(), |this| {
                             this.min_w(px(200.)).flex_1()
                         })
-                        .overflow_y_scroll()
                         .track_focus(&self.focus_handle(cx))
                         .key_context(self.key_context.as_ref())
                         .on_action(cx.listener(ContextMenu::select_first))
@@ -2378,16 +2389,24 @@ impl Render for ContextMenu {
                             el
                         })
                         .child(
-                            List::new().children(
-                                self.items
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(ix, item)| self.render_menu_item(ix, item, window, cx)),
-                            ),
+                            v_flex()
+                                .id("context-menu-content")
+                                .w_full()
+                                .max_h(vh(0.75, window))
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll_handle)
+                                .child(List::new().children(self.items.iter().enumerate().map(
+                                    |(ix, item)| self.render_menu_item(ix, item, window, cx),
+                                ))),
                         )
                         .custom_scrollbars(
                             Scrollbars::for_settings::<ContextMenuScrollbarSetting>()
-                                .show_along(ScrollAxes::Vertical),
+                                .tracked_scroll_handle(&self.scroll_handle)
+                                .with_track_along_for(
+                                    ScrollAxes::Vertical,
+                                    (ContextMenuScrollbarSetting::settings(cx).track)(cx),
+                                    cx.theme().colors().elevated_surface_background,
+                                ),
                             window,
                             cx,
                         ),
@@ -2553,5 +2572,38 @@ mod tests {
                 "Should wrap around to first selectable entry"
             );
         });
+    }
+
+    #[gpui::test]
+    fn menu_content_scrolls_through_its_scroll_handle(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+
+        let cx = cx.add_empty_window();
+
+        let menu = cx.update(|window, cx| {
+            ContextMenu::build(window, cx, |menu, _, _| {
+                (0..100).fold(menu, |menu, index| {
+                    menu.entry(format!("Entry {index}"), None, |_, _| {})
+                })
+            })
+        });
+
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(800.), px(600.)),
+            |_, _| menu.clone().into_any_element(),
+        );
+
+        // The scrollbar is driven off this handle, so it must be wired to the
+        // scrollable content instead of being left untracked.
+        let max_offset = cx.update(|_, cx| menu.read(cx).scroll_handle.max_offset());
+        assert!(
+            max_offset.y > px(0.),
+            "a menu whose entries overflow should expose a scrollable handle, got {max_offset:?}",
+        );
     }
 }

@@ -95,7 +95,7 @@ use theme::{ActiveTheme, SystemAppearance, ThemeRegistry, deserialize_icon_theme
 use theme_settings::{ThemeSettings, load_user_theme};
 use ui::{
     Navigable, NavigableEntry, PopoverMenuHandle, TintColor, prelude::*,
-    scrollbars::ContextMenuScrollbarVisibility,
+    scrollbars::ContextMenuScrollbars,
 };
 use util::markdown::MarkdownString;
 use util::rel_path::RelPath;
@@ -197,11 +197,12 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
-    // Context menus show their scrollbar according to the global `scrollbar`
-    // setting, just like editors do.
-    cx.set_global(ContextMenuScrollbarVisibility(|cx| {
-        EditorSettings::get_global(cx).scrollbar.show
-    }));
+    // Context menus render their scrollbar according to the global `scrollbar`
+    // settings, just like panels do.
+    cx.set_global(ContextMenuScrollbars {
+        show: |cx| EditorSettings::get_global(cx).scrollbar.show,
+        track: |cx| EditorSettings::get_global(cx).scrollbar.track,
+    });
 
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &Hide, cx| cx.hide());
