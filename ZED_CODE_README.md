@@ -54,6 +54,186 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 - `scrollbar.track` (default `"track"`): `"track"` reserves space for a scrollbar track next to the content, `"thumb"` floats the scrollbar over it.
 - `completion_menu_item_kind` (default `"off"`): gains an `"icon"` value that shows a syntax-colored symbol icon per completion entry.
 - `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
+- `status_bar.icon_scale` (default `1.0`): multiplier for the panel-button icons in the vertical status strips flanking the workspace. At `1.0` they are the same size as the bottom status bar's icons; larger values grow the icons and the strips with them. The strips host only the panel toggles (plus the threads-sidebar toggle) and hide themselves entirely when their side has no buttons to show.
+- `editor.search.dock` (default `"left"`): where to dock the search panel, `"left"` or `"right"`; its toggle button follows the dock like every other panel's.
+- `references_panel` (default `{ "button": true, "dock": "left", "default_width": 320 }`): the references panel's toggle button, dock side (`"left"` or `"right"`) and default width. The references panel is a branch-local crate.
+
+## Agent changes in this branch
+
+Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
+
+### File tools work across the whole filesystem
+
+`read_file`, `write_file`, `edit_file`, `delete_path`, `move_path`, `copy_path`, `create_directory` and `list_directory` accept any absolute path (or one with a `~` prefix), not only project paths and `~/.agents/skills`. Access is gated by the user's `tool_permissions` rules, and destructive operations refuse protected roots (the filesystem root, the home directory, and ancestors of a project worktree).
+
+**Path forms.** A project-relative path normally starts with a worktree root directory name (`zed/crates/foo.rs`); that prefix always resolves. A bare relative path (`crates/foo.rs`) also resolves when it is unambiguous, and a bare path into a gitignored tree (`node_modules/...`) is made to resolve by scanning that directory on demand. Anything outside the project is addressed by an absolute path (or one with a `~` prefix).
+
+### Upstream vs. this branch
+
+The file tools are a mix of upstream behavior and `zed-code` changes. Provenance, so a merge never mistakes one for the other:
+
+**Taken from upstream, unchanged:**
+
+- `Project::find_project_path` and its three branches (absolute; relative with an existing entry; root-name strip without an entry). The bare / rooted / absolute behavior described above is upstream's, not ours.
+- The `tool_permissions` model: `default`, `always_allow` / `always_deny` / `always_confirm`, and regex matching of tool input text.
+- The symlink-escape permission prompt (`authorize_symlink_access`, upstream #49255) and the sensitive-settings classification (`.zed/`, the global config directory, `~/.agents/skills`; upstream #48641, #56456).
+- Global agent skills (`resolve_global_skill_path`, upstream #57678) and the worktree primitives the branch builds on: `add_path_prefix_to_scan`, `refresh_entry*`, `should_scan_directory`, and the search-side gitignored pre-fetch in `project_search.rs` (upstream #42968).
+
+**Added or overridden by this branch (`zed-code`):**
+
+- File tools reach the whole filesystem: `resolve_external_path`, `resolve_creatable_external_path`, `resolve_direct_fs_path`, and the direct-filesystem route (arbitrary absolute / `~` paths, not just project paths and `~/.agents/skills`).
+- The user's settings become hard blocks in _every_ tool (`ensure_path_not_hidden_by_settings`, `external_path_excluded_by_settings`), checked before any prompt.
+- Protected roots (`is_protected_external_path`): the hard refusal for the filesystem root, the home directory, and worktree ancestors.
+- Gitignore stops hiding files: the ignored-directory fallback, the path-triggered scan for a bare relative path (`prescan_ignored_ancestor`), the directory listing scan (`list_directory`), and — for the search tools — the opt-in pre-scan driven by the glob's literal prefix (`find_path`, and `grep` via `prescan_ignored_dirs_for_prefix`). The scanning helpers live together in `crates/agent/src/tools/ignored_scan.rs`; `tool_permissions.rs` keeps only the permission and path-resolution logic.
+- `create_directory` resolves a bare relative path to a _new_ directory through its parent (`resolve_new_directory_parent`), the same trick `write_file` already used for a new file. Upstream advertised only the rooted/absolute forms, so a bare new directory used to fail.
+- Permission rules match every form of a path (`permission_path_forms`, `decide_permission_for_path_forms`) — upstream matches the raw text only.
+- The symlink prompt is extended to external paths and to every path form (`external_path_resolution_target`, `external_symlink_target`).
+- Actionable errors (`explain_unresolved_relative_path`, `explain_unscanned_ignored_path`, `explain_unresolved_path`).
+- This README and the protected-roots note in `assets/settings/default.json`.
+
+Where a file collides (`crates/agent/src/tools/tool_permissions.rs` was created upstream in #49255), the branch keeps upstream's public shape and layers the above on top.
+
+### The user's file-access settings are enforced by every file tool
+
+`file_scan_exclusions` and `private_files` (global and worktree-scoped) are hard blocks, not soft warnings. `ensure_path_not_hidden_by_settings` in `crates/agent/src/tools/tool_permissions.rs` is called by every file tool — read and mutating alike, in-project and out-of-project — so a path the agent may not read it also may not modify. The check runs **before** the authorization prompt, so a blocked call never asks the user to approve something that cannot happen. `find_path` filters matching paths out of its results for the same reason: a path search must not surface what the read and write tools refuse.
+
+### Permission rules match every form of a path
+
+`tool_permissions` patterns are matched against every textual form of the tool's path, not only the string the model wrote: as written, `~`-expanded, worktree-relative, and absolute (`permission_path_forms` in `crates/agent/src/tools/tool_permissions.rs`, applied by `decide_permission_for_path_forms` in `crates/agent/src/tool_permissions.rs`). A rule can therefore target any project (`^src/`) or one specific project (`^/Users/me/mycoolproject/src/`), whichever form the model happened to use. `copy_path` / `move_path` decide each path over its own forms and still require both paths to be allowed. The raw text stays among the forms, so a rule written against the literal input keeps matching.
+
+This is a branch-local change — upstream matches the raw text only — and it is a genuine semantic change: an `always_allow` now auto-approves the same file however it is spelled, so a bare-relative rule is effectively a cross-project rule. Write rules with the form in mind.
+
+The forms are derived from `Project::find_project_path`, which is exactly what the tool itself uses to resolve the path, so the file a rule is tested against is the file the tool will act on. For a bare relative path in a multi-root workspace that resolution is a guess (the first worktree with an entry), but it is the _same_ guess the tool makes — the rule and the action never disagree.
+
+### Gitignore no longer hides files from the tools
+
+A file tool now has exactly two routes, and gitignore picks neither:
+
+- **Through the worktree** — the file has a snapshot entry. The scanner has verified it, and the user's settings filter it.
+- **Directly through the filesystem** — everything else: any path outside the project, and any file inside a directory the worktree never scanned.
+
+The second case is the one that used to be a dead end. Zed's scanner deliberately skips gitignored directories (`node_modules`, `dist`, `target`) so it doesn't index tens of thousands of files, which left every file below one with no snapshot entry. The path-named tools now load that directory on demand before resolving (`prescan_ignored_ancestor`): `read_file` and `list_directory` then go through the worktree like any other file, while `delete_path`, `copy_path`, `move_path` and the edit session route the target through `resolve_direct_fs_path` (`crates/agent/src/tools/tool_permissions.rs`), which is what applies the settings and raises the symlink prompt when the ignored file resolves outside the worktree. So `read_file`, `write_file`, `edit_file`, `delete_path`, `copy_path`, `move_path` and `create_directory` all reach ignored trees now, in every worktree, not just the first.
+
+The fallback keeps the worktree's guarantees rather than dropping them:
+
+- The user's `file_scan_exclusions` / `private_files` are still enforced — global globs against the canonical target, plus the worktree's own globs when the target belongs to one. Out-of-project targets keep the global-only check, as before.
+- A path that resolves **somewhere other than itself** — something along the way is a symlink — asks the user first, naming the real canonical target. The snapshot normally catches that (the scanner marks such entries and stores their canonical path), but it never looked inside an unscanned directory, so `resolve_direct_fs_path` canonicalizes and `authorize_direct_fs_path` raises the same prompt the scanned case gets, via the existing `authorize_symlink_access`. This applies to both path forms: an absolute path into an unscanned directory used to be canonicalized and written to silently, which is the hole this closed.
+- **Deleting or moving a symlink acts on the link, not its target** — the way `rm`/`mv` and the in-project route do, inside and outside the project alike. `DirectFsPath` carries the named path (leaf not followed), and `delete_path` / `move_path` use it when the leaf is a symlink, so nothing follows the link. The escape prompt still fires, as it does for a scanned in-project symlink: the path does resolve outside the project. `copy_path` is the exception: it dereferences, like `cp` (and like the in-project copy), so copying a link copies what it points at.
+- Everything else returns `None` and keeps using the worktree.
+
+`delete_path` on the ignored _directory_ itself needed no fallback — the directory is an entry. `create_directory` resolves a not-yet-existing directory through its parent (`resolve_new_directory_parent`), the same trick `write_file` uses for a new file, so a bare path there works after the parent's on-demand scan.
+
+#### When an ignored directory gets scanned
+
+Gitignored directories stay unscanned until something asks for them. A bare relative path into one would have no snapshot entry to resolve against, so the file tools scan the directory on demand before resolving (see the first trigger below). Two worktree primitives load directories, with different reach:
+
+- `add_path_prefix_to_scan(P)` registers P as a path prefix; `should_scan_directory` then treats every descendant of P as scannable, overriding both gitignore and `file_scan_depth` for that subtree. Reach: **P's whole subtree, recursively.**
+- `refresh_entry(path)` / `refresh_entries_for_paths(...)` re-read the named paths. Reach: **those paths only** — nested ignored directories inside them stay unloaded.
+
+Who calls them:
+
+| Trigger                                                      | Primitive                                                             | Reach                            |
+| ------------------------------------------------------------ | --------------------------------------------------------------------- | -------------------------------- |
+| agent file tools: a bare relative path that doesn't resolve  | `add_path_prefix_to_scan` of the ignored ancestor, then resolve again | that subtree                     |
+| agent `find_path` — glob's literal prefix enters one         | `add_path_prefix_to_scan` for that ignored, unloaded directory        | that subtree                     |
+| agent `grep` — `include_pattern`'s literal prefix enters one | `add_path_prefix_to_scan` for that ignored, unloaded directory        | that subtree                     |
+| agent `list_directory` on an ignored directory               | `add_path_prefix_to_scan` of that directory                           | that subtree                     |
+| agent `read_file` (via the rooted or absolute form)          | `open_buffer`                                                         | the one file — no directory scan |
+| project panel: expanding an ignored directory                | `add_path_prefix_to_scan`                                             | that subtree                     |
+| opening/loading a file in the editor                         | buffer load / `refresh_entries_for_paths`                             | that path                        |
+| a language server registering a file watcher                 | `add_path_prefix_to_scan` of the watched prefix                       | that subtree                     |
+| rename / copy / drag in the panel, edit prediction           | `refresh_entry` / `refresh_entries_for_paths`                         | the named path                   |
+| filesystem watcher events                                    | rescans under the affected subtree                                    | —                                |
+
+Which agent tools scan, and how much — **all of this is branch-local** (upstream never pre-scans for these tools):
+
+- The two search tools share one rule, implemented once in `glob_literal_prefix` / `glob_reaches_dir` (`crates/agent/src/tools/ignored_scan.rs`): an ignored directory is scanned and matched **only when the glob's literal prefix names into it**. A leading `**` names no directory, so it reaches nothing ignored — that is what keeps an ordinary search from exploding into `node_modules`.
+- `find_path` scans the ignored, unloaded directory the glob enters — `root/node_modules/**` scans `node_modules`, while `root/src/**` and `**/index.js` leave it alone — and matches ignored entries only inside those same directories, so an ordinary glob never surfaces ignored content even after another tool loaded it (the result does not depend on scan history).
+- `grep` applies the same rule to `include_pattern` (through `prescan_ignored_dirs_for_prefix`, because upstream's `PathInclusionMatcher` compares prefixes against worktree-relative paths and would not understand a root-prefixed pattern). With no `include_pattern`, or with one that stays in ordinary paths or starts with a wildcard, ignored directories are neither scanned nor matched.
+- `list_directory` scans only the directory it was asked to list.
+- `read_file` does not scan a whole directory: it opens the one file. It runs the shared on-demand scan only when a **bare relative path** would otherwise fail to resolve, so the bare form resolves like the rooted/absolute one.
+- `edit_file`, `write_file`, `delete_path`, `copy_path`, `move_path`, `create_directory` run the same on-demand scan before resolving a bare relative path (for `create_directory` that path is the new directory's parent).
+
+### Errors that name the actual cause
+
+`explain_unresolved_relative_path` is the fallback for a bare relative path that still doesn't resolve inside a gitignored directory the worktree hasn't scanned; it lists every worktree-relative and absolute form the model can retry with, rather than guessing one root. `explain_unscanned_ignored_path` covers a resolved path that has no entry. The on-demand scan usually resolves such paths before either fires, so the two name the cause only when a scan can't help — a genuinely missing target, or a bare relative path whose parent also doesn't resolve — which is what keeps a model from reading "not found" as "this file doesn't exist" and giving up.
+
+### Every path form and every gate, tabulated
+
+**Path forms.** **R** = worktree-root-prefixed relative (`zed/src/a.rs`), **r** = bare relative (`src/a.rs`), **A** = absolute (`/Users/me/zed/src/a.rs`). _Ignored_ = a path inside a gitignored directory the scanner skipped; _Outside_ = any path outside every worktree.
+
+Reachability — which tool accepts which form:
+
+| Tool               | Project R               | Project r | Project A | Ignored R / A                                      | Ignored r                                   | Outside A / `~` |
+| ------------------ | ----------------------- | --------- | --------- | -------------------------------------------------- | ------------------------------------------- | --------------- |
+| `read_file`        | yes                     | yes       | yes       | yes                                                | yes, scans the directory on demand          | yes             |
+| `list_directory`   | yes                     | yes       | yes       | yes                                                | same                                        | yes             |
+| `edit_file`        | yes                     | yes       | yes       | yes                                                | same                                        | yes             |
+| `write_file`       | yes                     | yes       | yes       | yes                                                | same                                        | yes             |
+| `delete_path`      | yes                     | yes       | yes       | yes                                                | same                                        | yes             |
+| `copy_path`        | yes                     | yes       | yes       | yes                                                | same                                        | yes             |
+| `move_path`        | yes                     | yes       | yes       | yes                                                | same                                        | yes             |
+| `create_directory` | yes                     | yes       | yes       | yes (no entry required)                            | yes, scans the parent's directory on demand | yes             |
+| `grep`             | glob over project paths | —         | —         | opt-in: only when `include_pattern` names into one | —                                           | no              |
+| `find_path`        | glob over project paths | —         | —         | opt-in: only when the glob names into one          | —                                           | no              |
+
+Gates — what each tool enforces:
+
+| Tool               | Settings                  | Protected roots                   | Sensitive paths | Symlink escape                 |
+| ------------------ | ------------------------- | --------------------------------- | --------------- | ------------------------------ |
+| `read_file`        | refuse                    | not checked                       | not checked     | prompt, naming the real target |
+| `list_directory`   | refuse + entries filtered | not checked                       | not checked     | prompt                         |
+| `edit_file`        | refuse                    | not checked (edit, not overwrite) | prompt (always) | prompt                         |
+| `write_file`       | refuse                    | refuse                            | prompt (always) | prompt                         |
+| `delete_path`      | refuse                    | refuse                            | prompt (always) | prompt                         |
+| `copy_path`        | refuse                    | refuse (both paths)               | prompt (always) | prompt (both paths)            |
+| `move_path`        | refuse                    | refuse (both paths)               | prompt (always) | prompt (both paths)            |
+| `create_directory` | refuse                    | refuse                            | prompt (always) | prompt                         |
+| `grep`             | results filtered          | not checked                       | not checked     | not checked                    |
+| `find_path`        | results filtered          | not checked                       | not checked     | not checked                    |
+
+Notes:
+
+- **Settings** are `file_scan_exclusions` and `private_files` (global, plus the worktree's own for in-project paths). They are hard blocks, checked before any prompt, on read and mutating tools alike — including `create_directory` on the global skills directory, which applies them like every other tool.
+- **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
+- **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
+- **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
+- **`grep` and `find_path`** take a glob, not a path, matched against project-relative paths (`zed/src/a.rs`); an absolute glob such as `/root/zed/**` will not match. Gitignored content is **opt-in**: it is scanned and searched only when the glob's (`find_path`) or `include_pattern`'s (`grep`) literal prefix starts inside an ignored directory, so a leading `**` reaches nothing ignored. They stay project-scoped, so they cannot reach a path outside every worktree.
+
+### The agent guide is overridable at runtime
+
+The system prompt template (`crates/agent/src/templates/system_prompt.hbs`) can be replaced at runtime — no rebuild, no restart:
+
+```
+~/.config/zed/prompt_overrides/system_prompt.hbs    # macOS
+<data_dir>/prompt_overrides/system_prompt.hbs       # Linux / Windows
+```
+
+A `*.hbs` file dropped into the prompt-overrides directory (`paths::prompt_overrides_dir`, the same directory Zed already uses to override other prompts) replaces the built-in template of the same name at render time, so the next message picks it up. A file that fails to read or render falls back to the built-in template instead of panicking. Dev builds additionally read the checkout's `crates/agent/src/templates/*.hbs` at runtime via `fs_embed!` (edits there still require rebuilding the `agent` crate).
+
+### Guide content updates
+
+The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hbs`) was corrected and extended:
+
+- File tools are described as operating across the whole filesystem, stated as facts rather than preferences: a project-relative path must start with a worktree root directory name and reaches any file inside that worktree, including gitignored `node_modules`; absolute paths address anything outside the project, subject to the tool-permission rules. The wording is deliberately not a "prefer relative" style rule — that is an unverifiable preference, whereas the path forms are a property of the harness.
+- Search tools are described as staying out of gitignored directories unless the pattern names one from the project root (for example `root/node_modules/**`), and that a leading `**` does not reach them — matching the opt-in scan rule above.
+- A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
+- The `## Multi-agent delegation` section was rewritten with concrete delegation triggers, cost/benefit framing (a sub-agent costs one tool call), parallel spawning in the same turn, and optional sub-agent model selection via `list_agents_and_models`.
+
+### Test coverage for the file tools
+
+The filesystem behavior above is hard to check by hand, so it is covered by tests in the `agent` crate (`cargo test -p agent --lib`, ~800 tests). Each file tool is exercised along four axes: in-project paths, out-of-project absolute paths, gitignored content (including a second worktree with its own repository and `.gitignore`), and the user's settings (`private_files`, `file_scan_exclusions`, `tool_permissions`, protected roots). Notable cases:
+
+- `tool_permissions.rs` — `test_real_fs_external_path_resolution_and_protection` exercises the real `RealFs` canonicalization macOS applies to `/tmp`, so the external/protected classification is tested against the actual filesystem rather than a fake. It is a plain `#[test]`, not `#[gpui::test]`, because `RealFs` spawns real threads that the deterministic test scheduler forbids.
+- Symlink-escape authorization per tool, including the confirm-once and deny-policy paths.
+- Settings-blocked calls assert both the error text and that **no** authorization event was emitted, which is what pins the "check before prompt" ordering.
+- Gitignored targets are covered from both sides: each mutating tool has a test that it now edits/deletes/copies/moves a file inside an unscanned ignored directory, and `test_edit_file_gitignored_symlink_escape_asks_before_following` / `test_delete_path_gitignored_symlink_escape_asks_before_following` pin that a symlink out of one prompts with the real target and that denying it leaves the target untouched. `test_edit_file_gitignored_symlink_escape_allowed` pins the other half. `test_delete_path_gitignored_file_respects_file_scan_exclusions` and its `edit_file` counterpart pin that the fallback doesn't become a way around the user's settings.
+
+### Single-file agent diff view
+
+Clicking a changed file in a thread's edits block opens a single-file review view (`AgentDiffView`, `crates/agent_ui/src/agent_diff_view.rs`) instead of the multi-file `AgentDiffPane`; the per-row **Review** button is gone, since it duplicated the row click. The view offers hunk navigation and right-aligned Keep / Reject / Keep All / Reject All plus a View File action, opens scrolled to the first hunk, and does not duplicate the split/unified and fold controls that the buffer search bar already renders.
+
+The Keep/Reject pill for a diff hunk now renders **above** the hunk (one line up, clamped to the sticky header) instead of covering its first row. This lives in the shared diff-hunk layout, so it applies to every diff hunk renderer, including the git views.
 
 ## Recommended initial settings, keymap and agent rules
 
@@ -64,6 +244,17 @@ Unlike "Settings added in this branch" above (options this branch adds to Zed it
 - `assets/settings/initial_agents_md.md` — seeded as the global `AGENTS.md` (agent rules).
 
 A fresh Zed Code install therefore starts with a VS Code-like setup (`"base_keymap": "VSCode"`) and a ready-made agent rules file, while keeping Zed's architecture and defaults underneath.
+
+### The config directory is shared with the official Zed build
+
+Seeding writes into Zed's own config directory: this branch keeps `paths::APP_NAME` at its upstream value (`"Zed"`, `crates/paths/src/paths.rs`), and on macOS that resolves to `~/.config/zed`. The `APP_NAME_LOWERCASE`/`CARGO_BIN_NAME` assertion in `crates/zed/src/main.rs` pins the binary name to `zed`, the bundling scripts' `APP_NAME` only sets `.app` metadata, and the release channel names (`Zed Dev`, and so on) do not affect these paths. So a build of this branch reads and writes the **same** `settings.json`, `keymap.json` and `AGENTS.md` as an official Zed installed on the same machine.
+
+Two consequences:
+
+- Running a build of this branch now **creates** `~/.config/zed/settings.json` and `keymap.json` on first launch when they do not exist yet. Those files carry this branch's recommended values — `"base_keymap": "VSCode"`, the 20/16 font sizes, the Ayu Dark theme, `"auto_update": false`, the `telemetry` block — and an official Zed on the same machine will apply them too. Before the branch started seeding, a dev build left those files absent, so nothing leaked across.
+- `AGENTS.md` is new for this branch, but it is seeded into the same shared directory for the same reason.
+
+`crates/paths/src/paths.rs` already states the intended remedy ("Forks should change this to avoid colliding with Zed's user data"): giving the fork its own `APP_NAME` moves the config, data, cache and state directories away from an official install. That is a separate decision, because it also relocates an existing user's settings.
 
 ### Editor and buffer
 
