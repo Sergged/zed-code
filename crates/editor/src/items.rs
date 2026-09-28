@@ -46,11 +46,7 @@ use std::{
 };
 use text::{BufferId, BufferSnapshot, OffsetRangeExt, Selection, ToPoint as _};
 use ui::{IconDecorationKind, prelude::*};
-use util::{
-    ResultExt, TryFutureExt, debug_panic,
-    paths::UrlExt as _,
-    rel_path::RelPath,
-};
+use util::{ResultExt, TryFutureExt, debug_panic, paths::UrlExt as _, rel_path::RelPath};
 use workspace::item::{Dedup, ItemSettings, SerializableItem, TabContentParams};
 use workspace::{
     CollaboratorId, ItemId, ItemNavHistory, OpenOptions, OpenVisible, ToolbarItemLocation, ViewId,
