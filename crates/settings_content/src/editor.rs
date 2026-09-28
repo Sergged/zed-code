@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
 
 use crate::{
-    DelayMs, DiagnosticSeverityContent, ScrollbarTrack, ShowScrollbar,
+    DelayMs, DiagnosticSeverityContent, DockPosition, ScrollbarTrack, ShowScrollbar,
     serialize_f32_with_two_decimal_places,
 };
 
@@ -1017,6 +1017,10 @@ pub enum DiffViewStyle {
 pub struct SearchSettingsContent {
     /// Whether to show the project search button in the status bar.
     pub button: Option<bool>,
+    /// Where to dock the search panel.
+    ///
+    /// Default: left
+    pub dock: Option<DockPosition>,
     /// Whether to only match on whole words.
     pub whole_word: Option<bool>,
     /// Whether to match case sensitively.
