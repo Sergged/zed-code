@@ -6,7 +6,6 @@ use smallvec::SmallVec;
 use crate::prelude::*;
 
 const START_TAB_SLOT_SIZE: Pixels = px(12.);
-const END_TAB_SLOT_SIZE: Pixels = px(14.);
 
 /// The position of a [`Tab`] within a list of tabs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -108,7 +107,7 @@ impl ParentElement for Tab {
 
 impl RenderOnce for Tab {
     #[allow(refining_impl_trait)]
-    fn render(self, _: &mut Window, cx: &mut App) -> Stateful<Div> {
+    fn render(self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         let (text_color, tab_bg, _tab_hover_bg, _tab_active_bg) = match self.selected {
             false => (
                 cx.theme().colors().text_muted,
@@ -124,41 +123,9 @@ impl RenderOnce for Tab {
             ),
         };
 
-        let has_close_button = self.end_slot.is_some();
-
-        let (start_slot, end_slot) = {
-            let start_slot = h_flex()
-                .size(START_TAB_SLOT_SIZE)
-                .justify_center()
-                .children(self.start_slot);
-
-            let end_slot = h_flex()
-                .size(END_TAB_SLOT_SIZE)
-                .justify_center()
-                .children(self.end_slot);
-
-            match self.close_side {
-                TabCloseSide::End => (start_slot, end_slot),
-                TabCloseSide::Start => (end_slot, start_slot),
-            }
-        };
-
-        // When the close button is present, give its side the same amount of
-        // reserved space as the indicator side (start slot + padding) so the
-        // button doesn't sit flush against the tab's border.
-        let (pl, pr) = match (has_close_button, self.close_side) {
-            (true, TabCloseSide::End) => (
-                DynamicSpacing::Base04.px(cx),
-                DynamicSpacing::Base04.px(cx) + START_TAB_SLOT_SIZE,
-            ),
-            (true, TabCloseSide::Start) => (
-                DynamicSpacing::Base04.px(cx) + START_TAB_SLOT_SIZE,
-                DynamicSpacing::Base04.px(cx),
-            ),
-            (false, _) => (
-                DynamicSpacing::Base04.px(cx),
-                DynamicSpacing::Base04.px(cx),
-            ),
+        let (start_slot, end_slot) = match self.close_side {
+            TabCloseSide::End => (self.start_slot, self.end_slot),
+            TabCloseSide::Start => (self.end_slot, self.start_slot),
         };
 
         self.div
@@ -190,13 +157,32 @@ impl RenderOnce for Tab {
                     .group("")
                     .relative()
                     .h(Tab::content_height(cx))
-                    .pl(pl)
-                    .pr(pr)
-                    .gap(DynamicSpacing::Base04.rems(cx))
+                    .pl(DynamicSpacing::Base12.px(cx))
+                    .pr(DynamicSpacing::Base12.px(cx))
+                    .gap(DynamicSpacing::Base08.rems(cx))
                     .text_color(text_color)
-                    .child(start_slot)
+                    .when_some(start_slot, |this, content| {
+                        // Only reserve space in the leading slot when it
+                        // actually has content, keeping the leading edge tight
+                        // like other editors' tabs.
+                        this.child(
+                            h_flex()
+                                .size(START_TAB_SLOT_SIZE)
+                                .justify_center()
+                                .child(content),
+                        )
+                    })
                     .children(self.children)
-                    .child(end_slot),
+                    .child(
+                        // The trailing slot is sized to the close button so the
+                        // button and the unsaved-changes indicator share one
+                        // identical width and swapping between them doesn't
+                        // shift the layout.
+                        h_flex()
+                            .size(IconSize::Small.square(window, cx))
+                            .justify_center()
+                            .children(end_slot),
+                    ),
             )
     }
 }

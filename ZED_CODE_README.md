@@ -145,6 +145,11 @@ The global FIFO ordering across sessions is unchanged and still deliberate: `is_
 Reachability — which tool accepts which form:
 
 
+Gates — what each tool enforces:
+
+
+Notes:
+
 - **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
 - **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
 - **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
@@ -238,6 +243,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
+- The tab's trailing slot shows the unsaved-changes indicator in the place of the close button; hovering swaps in close (or unpin), VS Code-style, with no layout shift.
 ### Keymap editor
 
 - The context menu gains **Restore Default** (drops the user's unbind that suppressed a default binding) and **Add Alternative**.
