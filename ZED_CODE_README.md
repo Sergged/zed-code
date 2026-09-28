@@ -270,18 +270,22 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
 - Result rows match the threads-panel styling and get the project panel's context menu; the panel's default width comes from `project_panel.default_width`.
+- The panel has its own actions (`search_panel::Toggle`, `search_panel::ToggleFocus`), a header button that opens a plain project-search editor, collapsible file groups, file headers that can be dragged out, and an indicator when the result limit is reached.
+- The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
 
 ### References panel
 
 - Find All References opens a **dock panel**, in the branch-local `references_panel` crate.
 - The panel is dockable left/right, its status-bar button is hideable, and its width comes from `references_panel.default_width`.
 - Opening selects and centers the match the query was run from.
+- The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
 
 ### Editor
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
 - A physical mouse wheel scrolls horizontally (`shift` + wheel) by the same distance as vertically: line-based wheel deltas are converted with the line height on both axes, instead of the glyph width for the horizontal axis.
+
 ### Context menus
 
 - Menus whose entries overflow render a vertical scrollbar controlled by `context_menu.scrollbar`: `show` (`"auto"` / `"system"` / `"always"` / `"never"`, defaulting to the global `scrollbar.show`) decides when it is visible and `track` (`"track"` / `"thumb"`) whether it reserves space for a track or floats over the content. This covers every `ContextMenu`-based menu, including submenus and dropdowns. Unlike the panel settings, `track` here is not inherited from a global value — the setting is the menu's own.

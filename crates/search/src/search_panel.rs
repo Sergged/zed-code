@@ -228,6 +228,22 @@ fn build_entries(matches: &[LocationMatch], collapsed_files: &HashSet<ProjectPat
     entries
 }
 
+/// The row the uniform list should measure: the match row with the longest
+/// line. Match rows all share the same line-number gutter, so the longest
+/// `display_text` is the widest row, and its measured width is what gives the
+/// list its content width (and thus horizontal scrollability).
+fn measured_entry_index(results: &PanelResults) -> Option<usize> {
+    let widest_match_index = results
+        .matches
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, location_match)| location_match.display_text.len())
+        .map(|(match_index, _)| match_index)?;
+    results.entries.iter().position(
+        |entry| matches!(entry, Entry::Match(match_index) if *match_index == widest_match_index),
+    )
+}
+
 impl SearchPanel {
     pub async fn load(
         workspace: WeakEntity<Workspace>,
@@ -998,15 +1014,12 @@ impl SearchPanel {
             .map(|location_match| location_match.line_number)
             .max()
             .unwrap_or(0);
-        // Measure the list by the first match row instead of the first entry:
-        // the uniform list applies one measured height to every row, and file
-        // headers are shorter than match rows, so measuring a header would
-        // overlap the match rows at large font sizes.
-        let first_match_index = results
-            .entries
-            .iter()
-            .position(|entry| matches!(entry, Entry::Match(_)))
-            .unwrap_or(0);
+        // The uniform list applies the measured row's size to every row, so it
+        // has to be measured by the widest match row: measuring a file header
+        // would overlap the match rows at large font sizes, and measuring a
+        // narrow match row would shrink the list's content width, hiding the
+        // horizontal scrollbar even when longer lines exist.
+        let measured_entry_index = measured_entry_index(results);
         let file_count = results
             .entries
             .iter()
@@ -1053,7 +1066,7 @@ impl SearchPanel {
         )
         .with_sizing_behavior(ListSizingBehavior::Auto)
         .size_full()
-        .with_width_from_item(Some(first_match_index))
+        .with_width_from_item(measured_entry_index)
         .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
         .track_scroll(&self.scroll_handle);
 
