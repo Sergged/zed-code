@@ -88,6 +88,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{self, AtomicBool},
+    time::Duration,
 };
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, SystemAppearance, ThemeRegistry, deserialize_icon_theme};
@@ -2130,8 +2131,55 @@ pub fn watch_user_agents_md(fs: Arc<dyn fs::Fs>, cx: &mut App) {
 /// is missing, mirroring how the initial settings files are seeded. An existing
 /// file is never overwritten, so user edits are preserved.
 fn seed_user_agents_md_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
-    cx.background_spawn(async move {
-        let path = paths::agents_file().as_path();
+    seed_file_if_missing(
+        fs,
+        paths::agents_file().as_path(),
+        settings::initial_agents_md_content(),
+        "user AGENTS.md",
+        cx,
+    );
+}
+
+/// Creates `settings.json` from the bundled initial content when it is missing.
+/// An existing file is never overwritten, so user edits are preserved.
+pub fn seed_user_settings_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
+    seed_file_if_missing(
+        fs,
+        paths::settings_file().as_path(),
+        settings::initial_user_settings_content(),
+        "user settings",
+        cx,
+    );
+}
+
+/// Creates `keymap.json` from the bundled initial content when it is missing.
+/// An existing file is never overwritten, so user edits are preserved.
+pub fn seed_user_keymap_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
+    seed_file_if_missing(
+        fs,
+        paths::keymap_file().as_path(),
+        settings::initial_keymap_content(),
+        "user keymap",
+        cx,
+    );
+}
+
+/// Upper bound on how long startup waits for a missing config file to be
+/// written. Seeding a few small files is sub-millisecond on a local disk, so
+/// approaching this means the config directory lives on a stalled mount.
+const SEED_TIMEOUT: Duration = Duration::from_secs(1);
+
+fn seed_file_if_missing(
+    fs: Arc<dyn fs::Fs>,
+    path: &'static Path,
+    content: Cow<'static, str>,
+    label: &'static str,
+    cx: &mut App,
+) {
+    // This write deliberately stays out of the `SettingsStore` update queue: it
+    // has to land before the settings watcher starts, otherwise the app boots on
+    // `default.json` and the seeded values only arrive on a later watch event.
+    let seed = async move {
         if fs.is_file(path).await {
             return;
         }
@@ -2140,16 +2188,28 @@ fn seed_user_agents_md_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
             if let Some(parent) = path.parent() {
                 fs.create_dir(parent).await?;
             }
-            let content = settings::initial_agents_md_content();
             fs.save(path, &Rope::from(content.as_ref()), Default::default())
                 .await?;
             anyhow::Ok(())
         };
         if let Err(error) = seed_result.await {
-            log::error!("Failed to create initial user AGENTS.md: {error:#}");
+            log::error!("Failed to create initial {label}: {error:#}");
         }
-    })
-    .detach();
+    };
+
+    // On timeout the seed is dropped rather than resumed in the background: a
+    // late write could clobber a settings change made in the meantime. The file
+    // is still missing, so the next launch retries.
+    if cx
+        .foreground_executor()
+        .block_with_timeout(SEED_TIMEOUT, seed)
+        .is_err()
+    {
+        log::error!(
+            "Timed out after {SEED_TIMEOUT:?} creating initial {label} at {}",
+            path.display()
+        );
+    }
 }
 
 pub fn watch_settings_files(fs: Arc<dyn fs::Fs>, cx: &mut App) {
@@ -5551,6 +5611,41 @@ mod tests {
             onboarding::init(cx);
             app_state
         })
+    }
+
+    #[gpui::test]
+    async fn test_seed_user_settings_and_keymap(cx: &mut TestAppContext) {
+        let fs = FakeFs::new(cx.background_executor.clone());
+
+        cx.update(|cx| {
+            seed_user_settings_file(fs.clone(), cx);
+            seed_user_keymap_file(fs.clone(), cx);
+        });
+
+        assert_eq!(
+            fs.load(paths::settings_file()).await.unwrap(),
+            settings::initial_user_settings_content().as_ref(),
+        );
+        assert_eq!(
+            fs.load(paths::keymap_file()).await.unwrap(),
+            settings::initial_keymap_content().as_ref(),
+        );
+    }
+
+    #[gpui::test]
+    async fn test_seeding_user_settings_preserves_existing_file(cx: &mut TestAppContext) {
+        let fs = FakeFs::new(cx.background_executor.clone());
+        let config_dir = paths::settings_file().parent().unwrap();
+        fs.create_dir(config_dir).await.unwrap();
+        fs.insert_file(paths::settings_file(), b"{\"ui_font_size\": 42}".to_vec())
+            .await;
+
+        cx.update(|cx| seed_user_settings_file(fs.clone(), cx));
+
+        assert_eq!(
+            fs.load(paths::settings_file()).await.unwrap(),
+            "{\"ui_font_size\": 42}",
+        );
     }
 
     actions!(test_only, [ActionA, ActionB]);
