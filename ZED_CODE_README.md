@@ -67,6 +67,8 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 - `Project::find_project_path` and its three branches (absolute; relative with an existing entry; root-name strip without an entry). The bare / rooted / absolute behavior described above is upstream's, not ours.
 - The `tool_permissions` model: `default`, `always_allow` / `always_deny` / `always_confirm`, and regex matching of tool input text.
+- The symlink-escape permission prompt (`authorize_symlink_access`) and the sensitive-settings classification (`.zed/`, the global config directory, `~/.agents/skills`).
+- Global agent skills (`resolve_global_skill_path`) and the worktree primitives the branch builds on: `add_path_prefix_to_scan`, `refresh_entry*`, `should_scan_directory`, and the search-side gitignored pre-fetch in `project_search.rs`.
 
 **Added or overridden by this branch (`zed-code`):**
 

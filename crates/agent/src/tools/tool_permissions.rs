@@ -11,7 +11,7 @@ use project::{Project, ProjectPath, WorktreeSettings};
 use settings::Settings;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use util::rel_path::RelPathBuf;
+use util::rel_path::{RelPath, RelPathBuf};
 use util::{normalize_path, paths::component_matches_ignore_ascii_case};
 
 pub enum SensitiveSettingsKind {
@@ -235,6 +235,248 @@ pub async fn resolve_creatable_global_skill_path(path: &Path, fs: &dyn Fs) -> Op
     }
 }
 
+/// Best available explanation for why a model-supplied path doesn't resolve to
+/// a file the tool can act on, or `None` when there is nothing more specific to
+/// say than the caller's own message.
+///
+/// Covers both shapes of "the model can fix this", so every file tool reports
+/// them the same way:
+///
+/// - the path resolves to a [`ProjectPath`] but has no snapshot entry, because
+///   its gitignored parent directory was never scanned;
+/// - the path doesn't resolve at all, which is either a bare relative path into
+///   such a directory or a path the user's `file_scan_exclusions` covers.
+///
+/// Callers should use it as `explain_unresolved_path(..).unwrap_or_else(||
+/// their own message)`.
+pub fn explain_unresolved_path(project: &Project, path: &Path, cx: &App) -> Option<String> {
+    if let Some(project_path) = project.find_project_path(path, cx)
+        && let Some(explanation) = explain_unscanned_ignored_path(project, &project_path, cx)
+    {
+        return Some(explanation);
+    }
+
+    explain_unresolved_relative_path(project, path, cx)
+}
+
+/// Explains why a project path that resolved to a [`ProjectPath`] still has no
+/// snapshot entry, when the reason is a gitignored directory the worktree
+/// hasn't scanned.
+///
+/// The read tools can reach such files (they pre-scan ignored directories on
+/// demand), but the mutating tools resolve paths through the snapshot, so they
+/// have nothing to act on. Naming the cause keeps the model from retrying the
+/// same call — or worse, concluding the file doesn't exist.
+pub fn explain_unscanned_ignored_path(
+    project: &Project,
+    project_path: &ProjectPath,
+    cx: &App,
+) -> Option<String> {
+    let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
+    let snapshot = worktree.read(cx).snapshot();
+    if snapshot.entry_for_path(&project_path.path).is_some() {
+        return None;
+    }
+
+    let deepest_entry = project_path
+        .path
+        .ancestors()
+        .find_map(|ancestor| snapshot.entry_for_path(ancestor))?;
+    if !(deepest_entry.is_ignored && deepest_entry.kind.is_unloaded()) {
+        return None;
+    }
+
+    let path_style = project.path_style(cx);
+    Some(format!(
+        "`{}` is inside the gitignored directory `{}`, which this project hasn't scanned, so tools that modify files can't reach it. The read tools (`read_file`, `list_directory`, `grep`, `find_path`) can: use `read_file` to inspect it and tell the user which change to make.",
+        project_path.path.display(path_style),
+        deepest_entry.path.display(path_style),
+    ))
+}
+
+/// Whether the target of a direct-filesystem operation has to exist already.
+#[derive(Clone, Copy)]
+pub enum PathExistence {
+    /// The path must exist, and the whole chain above it is resolved through
+    /// the filesystem.
+    MustExist,
+    /// The path may not exist yet; only the existing prefix is resolved.
+    MayNotExist,
+}
+
+/// A path a file tool can act on through the filesystem directly, with no
+/// worktree snapshot entry to go through.
+pub struct DirectFsPath {
+    /// The canonical absolute path to read from or write to.
+    pub absolute_path: PathBuf,
+    /// The path the model named, made absolute (`~` expanded, `.`/`..` folded)
+    /// but with its final component *not* followed. Differs from
+    /// `absolute_path` when the leaf is a symlink; tools that act on the named
+    /// entry itself (delete, move) use this so a symlink is removed or renamed
+    /// rather than its target.
+    pub named_path: PathBuf,
+    /// The project path this target came from, when it lives inside a worktree.
+    ///
+    /// Callers apply that worktree's `file_scan_exclusions` / `private_files`
+    /// globs to it, which must not happen for genuinely out-of-project paths
+    /// (their globs are worktree-scoped and don't apply there).
+    pub project_path: Option<ProjectPath>,
+    /// The real target, when the requested path is inside a worktree but
+    /// resolves outside it — i.e. something along the way is a symlink.
+    ///
+    /// The snapshot normally catches this (the scanner marks such entries and
+    /// stores their canonical path), but it never looked inside an unscanned
+    /// directory, so the file tools have to canonicalize and notice themselves.
+    /// Callers must show the user this target before touching it.
+    pub symlink_escape: Option<PathBuf>,
+}
+
+/// Resolves a model-supplied path that a file tool should act on through the
+/// filesystem instead of the worktree snapshot.
+///
+/// That's two kinds of path:
+///
+/// - **Outside the project.** The normal external-path route.
+/// - **Inside the project, but the worktree never scanned its parent
+///   directory** because the parent is gitignored (`node_modules`, `dist`,
+///   `target`). The scanner skips those, so a file below one has no snapshot
+///   entry, and the read tools already reach it by loading from disk.
+///
+/// Everything else returns `None` and keeps using the worktree, which is what
+/// applies the scanner's `file_scan_exclusions` / `private_files` filtering and
+/// its symlink verification.
+pub async fn resolve_direct_fs_path(
+    path: &Path,
+    existence: PathExistence,
+    project: &Entity<Project>,
+    canonical_worktree_roots: &[PathBuf],
+    fs: &dyn Fs,
+    cx: &mut gpui::AsyncApp,
+) -> Option<DirectFsPath> {
+    let canonicalize = |path: PathBuf| async move {
+        match existence {
+            PathExistence::MustExist => fs.canonicalize(&path).await.ok(),
+            PathExistence::MayNotExist => canonicalize_with_ancestors(&path, fs).await,
+        }
+    };
+
+    // Outside the project: any absolute (or `~`-prefixed) path that resolves
+    // outside every worktree. Relative paths are left to the worktree below.
+    if let Some(normalized_path) = expand_and_normalize_absolute_path(path)
+        && let Some(canonical_path) = canonicalize(normalized_path.clone()).await
+        && !is_within_any_worktree(&canonical_path, canonical_worktree_roots)
+    {
+        // The permission rules match the path text the model wrote, while the OS
+        // acts on the resolved path. Whenever the two differ — anything along
+        // the way is a symlink — the rules decided about a different path than
+        // the one actually touched, so the user must see the real target. The
+        // one exception is a path the worktree scanner already flagged: the
+        // tool's own authorization then prompts with the same target, and
+        // prompting here as well would ask twice.
+        let snapshot_would_prompt = project.read_with(cx, |project, cx| {
+            matches!(
+                resolve_project_path(project, path, canonical_worktree_roots, cx),
+                Ok(ResolvedProjectPath::SymlinkEscape { .. })
+            )
+        });
+        let symlink_escape = (normalized_path != canonical_path && !snapshot_would_prompt)
+            .then(|| canonical_path.clone());
+        return Some(DirectFsPath {
+            symlink_escape,
+            absolute_path: canonical_path,
+            named_path: normalized_path,
+            project_path: None,
+        });
+    }
+
+    // Inside a worktree the scanner never scanned through: only when the file
+    // has no entry, and the deepest entry that does exist is an ignored
+    // directory that was left unloaded.
+    let (project_path, named_path) = project.read_with(cx, |project, cx| {
+        let project_path = project.find_project_path(path, cx)?;
+        if project.entry_for_path(&project_path, cx).is_some() {
+            return None;
+        }
+
+        let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
+        let snapshot = worktree.read(cx);
+        let deepest_entry = project_path
+            .path
+            .ancestors()
+            .find_map(|ancestor| snapshot.entry_for_path(ancestor))?;
+        if !(deepest_entry.is_ignored && deepest_entry.kind.is_unloaded()) {
+            return None;
+        }
+
+        let named_path = snapshot.absolutize(&project_path.path);
+        Some((project_path, named_path))
+    })?;
+
+    let canonical_path = canonicalize(named_path.clone()).await?;
+    let within_worktree = is_within_any_worktree(&canonical_path, canonical_worktree_roots);
+    Some(DirectFsPath {
+        symlink_escape: (!within_worktree).then(|| canonical_path.clone()),
+        absolute_path: canonical_path,
+        named_path,
+        project_path: Some(project_path),
+    })
+}
+
+/// Applies the user's settings to a direct-filesystem target, then asks the user
+/// when the requested path resolves somewhere other than itself.
+///
+/// The second half of [`resolve_direct_fs_path`]: the resolver decides which
+/// route a path takes, this decides whether it may. Settings are hard blocks and
+/// are checked first, so a blocked call never prompts.
+///
+/// Every file tool runs this for a direct-filesystem target, which is what makes
+/// an unscanned directory behave like the outside of the project: the user sees
+/// the same prompt, naming the same real target, and the same settings apply.
+///
+/// `prompt_for_symlink` controls whether this raises the "the path you named is
+/// not the file that will be touched" prompt for a `symlink_escape`. Pass
+/// `false` when the caller raises that prompt itself afterwards (the edit tools,
+/// whose [`authorize_file_edit`] handles it, so one call doesn't prompt twice).
+pub async fn authorize_direct_fs_path(
+    tool_name: &str,
+    requested_path: &str,
+    subject: &str,
+    direct_path: &DirectFsPath,
+    prompt_for_symlink: bool,
+    event_stream: &ToolCallEventStream,
+    cx: &mut gpui::AsyncApp,
+) -> Result<(), String> {
+    // Global globs can describe any path; a target that came from a worktree
+    // also has that worktree's own globs.
+    if let Some(setting) =
+        cx.update(|cx| external_path_excluded_by_settings(&direct_path.absolute_path, cx))
+    {
+        return Err(format!(
+            "Cannot {subject} because its path matches the user's global `{setting}` setting: {requested_path}"
+        ));
+    }
+    if let Some(project_path) = &direct_path.project_path {
+        cx.update(|cx| ensure_path_not_hidden_by_settings(project_path, subject, cx))
+            .map_err(|error| format!("{error:#}"))?;
+    }
+
+    if prompt_for_symlink && let Some(canonical_target) = &direct_path.symlink_escape {
+        cx.update(|cx| {
+            authorize_symlink_access(
+                tool_name,
+                requested_path,
+                canonical_target,
+                event_stream,
+                cx,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
 /// Resolves a model-supplied path that lives outside every project worktree to a
 /// canonical absolute path.
 ///
@@ -269,6 +511,29 @@ pub async fn resolve_creatable_external_path(
     let normalized_path = expand_and_normalize_absolute_path(path)?;
     let canonical_path = canonicalize_with_ancestors(&normalized_path, fs).await?;
     (!is_within_any_worktree(&canonical_path, canonical_worktree_roots)).then_some(canonical_path)
+}
+
+/// The canonical target when the absolute (or `~`-prefixed) `requested` path
+/// resolves somewhere other than itself — i.e. a symlink along the way — or
+/// `None` when it resolves to itself or isn't an absolute/`~` path.
+///
+/// Tools that resolve external paths directly through the filesystem (rather
+/// than through [`resolve_direct_fs_path`]) use this to raise the same
+/// "the path you named is not the file that will be touched" prompt: the
+/// permission rules match the text the model wrote, while the OS acts on the
+/// resolved path, so a differing resolution must be shown to the user first.
+pub fn external_path_resolution_target(requested: &Path, canonical: &Path) -> Option<PathBuf> {
+    let normalized = expand_and_normalize_absolute_path(requested)?;
+    (normalized != canonical).then(|| canonical.to_path_buf())
+}
+
+/// Like [`external_path_resolution_target`], but canonicalizes `requested`
+/// itself, for callers that don't already hold the resolved path. `None` when
+/// the path resolves to itself, isn't an absolute/`~` path, or doesn't exist.
+pub async fn external_symlink_target(requested: &Path, fs: &dyn Fs) -> Option<PathBuf> {
+    let normalized = expand_and_normalize_absolute_path(requested)?;
+    let canonical = fs.canonicalize(&normalized).await.ok()?;
+    (normalized != canonical).then_some(canonical)
 }
 
 /// Builds a project-relative path from an absolute path so the worktree-scoped
@@ -452,6 +717,152 @@ pub async fn sensitive_settings_kind(
     }
 
     None
+}
+
+/// Rejects a resolved project path that the user's `file_scan_exclusions` or
+/// `private_files` settings hide from the agent (global or worktree-scoped).
+///
+/// Every file tool runs this so read-only and mutating tools enforce the same
+/// rules: if the agent may not read a path, it may not modify it either.
+/// `subject` completes the error message, e.g. `"write to"`, `"delete"`.
+pub fn ensure_path_not_hidden_by_settings(
+    project_path: &ProjectPath,
+    subject: &str,
+    cx: &App,
+) -> Result<()> {
+    let display_path = project_path.path.to_string();
+
+    let global_settings = WorktreeSettings::get_global(cx);
+    if global_settings.is_path_excluded(&project_path.path) {
+        return Err(anyhow!(
+            "Cannot {subject} because its path matches the global `file_scan_exclusions` setting: {display_path}"
+        ));
+    }
+    if global_settings.is_path_private(&project_path.path) {
+        return Err(anyhow!(
+            "Cannot {subject} because its path matches the global `private_files` setting: {display_path}"
+        ));
+    }
+
+    let worktree_settings = WorktreeSettings::get(Some(project_path.into()), cx);
+    if worktree_settings.is_path_excluded(&project_path.path) {
+        return Err(anyhow!(
+            "Cannot {subject} because its path matches the worktree `file_scan_exclusions` setting: {display_path}"
+        ));
+    }
+    if worktree_settings.is_path_private(&project_path.path) {
+        return Err(anyhow!(
+            "Cannot {subject} because its path matches the worktree `private_files` setting: {display_path}"
+        ));
+    }
+
+    Ok(())
+}
+
+/// Explains why a model-supplied project-relative path failed to resolve, when
+/// the reason is something the model can act on.
+///
+/// Bare relative paths (without the worktree root name) are disambiguated
+/// against worktree snapshot entries, so one that points into a gitignored
+/// directory the worktree hasn't scanned (e.g. `node_modules/...`) can't be
+/// resolved — while the same file is reachable as a worktree-relative path
+/// (prefixed with the root name) or as an absolute path. Every worktree and
+/// interpretation that resolves to such a directory is listed, rather than a
+/// single guessed one, so a multi-root workspace doesn't steer the model to the
+/// wrong root. Paths matching the user's `file_scan_exclusions` setting are
+/// never accessible, in any form.
+///
+/// Returns `None` for absolute and `~`-prefixed paths (handled by the
+/// external-path machinery) and for paths with nothing specific to say, so
+/// callers keep their generic error.
+pub fn explain_unresolved_relative_path(
+    project: &Project,
+    path: &Path,
+    cx: &App,
+) -> Option<String> {
+    if path.is_absolute() || path.to_string_lossy().starts_with('~') {
+        return None;
+    }
+
+    let path_style = project.path_style(cx);
+    let mut suggestions: Vec<String> = Vec::new();
+    let mut excluded = false;
+
+    for worktree in project.worktrees(cx) {
+        let worktree = worktree.read(cx);
+        let snapshot = worktree.snapshot();
+
+        // Mirror `Project::find_project_path`'s two interpretations of a
+        // relative path: with the worktree root name as a prefix, and as a
+        // literal worktree-relative path.
+        let mut candidates = Vec::with_capacity(2);
+        if let Ok(stripped) = path.strip_prefix(worktree.root_name().as_std_path())
+            && let Ok(relative_path) = RelPath::new(stripped, path_style)
+        {
+            candidates.push(relative_path);
+        }
+        if let Ok(relative_path) = RelPath::new(path, path_style) {
+            candidates.push(relative_path);
+        }
+
+        for relative_path in candidates {
+            let project_path: ProjectPath = (snapshot.id(), relative_path.into_arc()).into();
+            let settings = WorktreeSettings::get(Some((&project_path).into()), cx);
+            if settings.is_path_excluded(&relative_path) {
+                excluded = true;
+                continue;
+            }
+
+            // The deepest existing entry decides: if the path sits inside an
+            // ignored directory that hasn't been scanned yet, hand the model the
+            // working forms to retry with. (Once such a directory is scanned its
+            // entries exist and resolution succeeds, so a miss there is a genuine
+            // "not found".)
+            let Some(deepest_entry) = relative_path
+                .ancestors()
+                .find_map(|ancestor| snapshot.entry_for_path(ancestor))
+            else {
+                continue;
+            };
+            if !(deepest_entry.is_ignored && deepest_entry.kind.is_unloaded()) {
+                continue;
+            }
+
+            for form in [
+                worktree
+                    .root_name()
+                    .join(&relative_path)
+                    .display(snapshot.path_style())
+                    .to_string(),
+                snapshot.absolutize(&relative_path).display().to_string(),
+            ] {
+                if !suggestions.contains(&form) {
+                    suggestions.push(form);
+                }
+            }
+        }
+    }
+
+    if excluded {
+        return Some(format!(
+            "`{}` matches the user's `file_scan_exclusions` setting and can't be accessed.",
+            path.display()
+        ));
+    }
+
+    if suggestions.is_empty() {
+        return None;
+    }
+
+    let forms = suggestions
+        .iter()
+        .map(|suggestion| format!("`{suggestion}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "`{}` is inside a gitignored directory the project hasn't scanned, so it can't be resolved as a bare project-relative path. Use one of: {forms}.",
+        path.display()
+    ))
 }
 
 /// Resolves a path within the project, checking for symlink escapes.
@@ -820,6 +1231,24 @@ pub fn authorize_file_edit(
         // Create-mode paths may not resolve yet, so also inspect the parent path
         // for symlink escapes before applying settings-based allow decisions.
         if resolved.is_err() {
+            // An out-of-project path never goes through the worktree, so the
+            // snapshot can't flag a symlink along the way: resolve it here and
+            // show the real target. This replaces (does not supplement) the
+            // generic tool prompt — the symlink case is strictly more specific.
+            if let Some(canonical_target) = external_symlink_target(&path_owned, fs.as_ref()).await
+            {
+                let authorize = cx.update(|cx| {
+                    authorize_symlink_access(
+                        &tool_name,
+                        &path_owned.to_string_lossy(),
+                        &canonical_target,
+                        &event_stream,
+                        cx,
+                    )
+                });
+                return authorize.await;
+            }
+
             if let Some(parent_path) = path_owned.parent() {
                 let parent_resolved = project_entity.read_with(cx, |project, cx| {
                     resolve_project_path(project, parent_path, &canonical_roots, cx)
@@ -1044,6 +1473,64 @@ mod tests {
             }
         }
         roots
+    }
+
+    #[test]
+    fn test_real_fs_external_path_resolution_and_protection() {
+        // A plain (non-gpui) test: `RealFs` runs real OS threads, which the
+        // deterministic gpui test scheduler forbids. This exercises the exact
+        // canonicalization real users hit (e.g. macOS rewriting `/tmp` to
+        // `/private/tmp`), verifying that a path outside the worktree resolves
+        // as external, is not treated as protected, and survives the same
+        // delete steps `delete_path` performs.
+        let worktree_dir = tempfile::tempdir().expect("create worktree temp dir");
+        let outside_dir = tempfile::tempdir().expect("create external temp dir");
+        let doomed_file = outside_dir.path().join("doomed.txt");
+        std::fs::write(&doomed_file, "bye").expect("write external file");
+
+        let dispatcher = Arc::new(gpui::ThreadedDispatcher::new());
+        let executor = gpui::BackgroundExecutor::new(dispatcher.clone());
+        let fs = fs::RealFs::new(None, executor.clone());
+
+        let canonical_roots = vec![
+            futures::executor::block_on(fs.canonicalize(worktree_dir.path()))
+                .expect("canonicalize worktree"),
+        ];
+
+        let resolved = futures::executor::block_on(resolve_external_path(
+            &doomed_file,
+            &canonical_roots,
+            fs.as_ref(),
+        ))
+        .expect("external path should resolve");
+        assert!(
+            !is_within_any_worktree(&resolved, &canonical_roots),
+            "resolved path must be outside every worktree"
+        );
+        assert!(
+            !is_protected_external_path(&resolved, &canonical_roots),
+            "external file must not be treated as protected: {}",
+            resolved.display()
+        );
+        assert!(
+            !futures::executor::block_on(resolves_to_global_skills_dir(&doomed_file, fs.as_ref())),
+            "external file must not be mistaken for the global skills dir"
+        );
+
+        // The same removal `delete_path` performs on the resolved path.
+        futures::executor::block_on(fs.remove_file(&resolved, fs::RemoveOptions::default()))
+            .expect("delete external file");
+        assert!(
+            !doomed_file.exists(),
+            "external file should have been deleted"
+        );
+
+        // `RealFs` keeps long-lived watcher dispatch tasks on the background
+        // executor; dropping them blocks the test thread, so leak them (the
+        // test process exits anyway once the main harness thread returns).
+        std::mem::forget(fs);
+        std::mem::forget(executor);
+        std::mem::forget(dispatcher);
     }
 
     #[gpui::test]
