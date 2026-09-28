@@ -1759,30 +1759,7 @@ impl ProjectSearchView {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        enum QuerySeed {
-            /// Content of the buffer search bar: already query syntax, with
-            /// escaping already applied if it was seeded in regex mode, so it
-            /// must never be re-escaped. It's carried over verbatim even if
-            /// the buffer search's mode differs from the project search's.
-            Query(String),
-            /// Raw text from the editor's selection or the word under the
-            /// cursor, so it gets escaped when entering a regex query.
-            Text(String),
-        }
-
-        let query_seed = workspace.active_item(cx).and_then(|item| {
-            if let Some(buffer_search_query) = buffer_search_query(workspace, item.as_ref(), cx) {
-                return Some(QuerySeed::Query(buffer_search_query));
-            }
-
-            let editor = item.act_as::<Editor>(cx)?;
-            let query = editor.query_suggestion(None, window, cx);
-            if query.is_empty() {
-                None
-            } else {
-                Some(QuerySeed::Text(query))
-            }
-        });
+        let query_seed = query_seed_from_active_item(workspace, window, cx);
 
         let search = if let Some(existing) = existing {
             workspace.activate_item(&existing, true, true, window, cx);
@@ -2598,6 +2575,42 @@ pub(crate) fn buffer_search_query(
         }
     }
     None
+}
+
+/// A query the active item suggests to preload a search with, along with how it
+/// should be treated when the search is in regex mode.
+pub(crate) enum QuerySeed {
+    /// Content of the buffer search bar: already query syntax, with escaping
+    /// already applied if it was seeded in regex mode, so it must never be
+    /// re-escaped. It's carried over verbatim even if the buffer search's mode
+    /// differs from the search's.
+    Query(String),
+    /// Raw text from the editor's selection or the word under the cursor, so it
+    /// gets escaped when entering a regex query.
+    Text(String),
+}
+
+/// The query the active item suggests for a search: the buffer search bar's
+/// query if it has one, otherwise the editor's selection or the word under the
+/// cursor.
+pub(crate) fn query_seed_from_active_item(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Option<QuerySeed> {
+    workspace.active_item(cx).and_then(|item| {
+        if let Some(buffer_search_query) = buffer_search_query(workspace, item.as_ref(), cx) {
+            return Some(QuerySeed::Query(buffer_search_query));
+        }
+
+        let editor = item.act_as::<Editor>(cx)?;
+        let query = editor.query_suggestion(None, window, cx);
+        if query.is_empty() {
+            None
+        } else {
+            Some(QuerySeed::Text(query))
+        }
+    })
 }
 
 impl Default for ProjectSearchBar {

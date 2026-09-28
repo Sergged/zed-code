@@ -67,6 +67,9 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 - `Project::find_project_path` and its three branches (absolute; relative with an existing entry; root-name strip without an entry). The bare / rooted / absolute behavior described above is upstream's, not ours.
 - The `tool_permissions` model: `default`, `always_allow` / `always_deny` / `always_confirm`, and regex matching of tool input text.
+
+**Added or overridden by this branch (`zed-code`):**
+
 - The user's `file_scan_exclusions` / `private_files` are still enforced — global globs against the canonical target, plus the worktree's own globs when the target belongs to one. Out-of-project targets keep the global-only check, as before.
 - A path that resolves **somewhere other than itself** — something along the way is a symlink — asks the user first, naming the real canonical target. The snapshot normally catches that (the scanner marks such entries and stores their canonical path), but it never looked inside an unscanned directory, so `resolve_direct_fs_path` canonicalizes and `authorize_direct_fs_path` raises the same prompt the scanned case gets, via the existing `authorize_symlink_access`. This applies to both path forms: an absolute path into an unscanned directory used to be canonicalized and written to silently, which is the hole this closed.
 - **Deleting or moving a symlink acts on the link, not its target** — the way `rm`/`mv` and the in-project route do, inside and outside the project alike. `DirectFsPath` carries the named path (leaf not followed), and `delete_path` / `move_path` use it when the leaf is a symlink, so nothing follows the link. The escape prompt still fires, as it does for a scanned in-project symlink: the path does resolve outside the project. `copy_path` is the exception: it dereferences, like `cp` (and like the in-project copy), so copying a link copies what it points at.
@@ -97,19 +100,35 @@ A thread accepts more than editor and terminal selections: a diagnostic can be a
 
 Five skills ship inside the binary next to upstream's `create-skill`: `strict-typescript`, `strict-angular`, `strict-react`, `strict-compose-plan` and `strict-implement-plan`. The seeded `AGENTS.md` tells the agent to load them (see "Agent rules" below).
 
+### Web search
+
 - **TinyFish** is added as a web-search provider; it is selected independently of the language-model provider, so `search_web` works with any model.
 - The `search_web` tool takes richer parameters — `purpose`, `location`, `language`, `include_domains` / `exclude_domains`, `domain_type` (`web` / `news`), `after_date` / `before_date`, `recency_minutes`, `page` — and each provider uses the fields it supports.
 
 Everything in this section is a `zed-code` change — upstream ships none of it. Where a change extends an upstream primitive (the panel/dock framework, the status bar, the tab bar, the diff-hunk layout, the settings schema), the primitive is upstream and only the behavior described here is ours.
 
+### Project panel
+
+### Git panel and diffs
+
+- Tree directories and status entries can be dragged out of the panel (a marked selection moves together).
 - Diff hunks in a solo diff can be staged from the diff itself.
 - A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
 - Commit and blame tooltips capture the scroll wheel only while their message overflows; otherwise the editor behind scrolls.
 - Staging updates the panel immediately — the index write refreshes the changed paths instead of waiting for the file watcher.
 - The commit message editor's height is configurable through `git_panel.message_editor_min_lines`.
 - Clicking a row's checkbox toggles it without selecting the row or starting a file drag, and leaves the row hovered so its hover-only controls stay visible.
+### Search panel
+
+- Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
+- Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
+### References panel
+
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
+- Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
+- The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
+
 ## Recommended initial settings, keymap and agent rules
 
 Unlike "Settings added in this branch" above (options this branch adds to Zed itself), the files below are the branch's **recommended starting setup**. They are seeded on first run:
