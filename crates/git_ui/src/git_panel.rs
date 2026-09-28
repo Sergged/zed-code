@@ -67,7 +67,7 @@ use multi_buffer::ExcerptBoundaryInfo;
 use notifications::status_toast::StatusToast;
 use project::git_store::GitAccess;
 use project::{
-    Fs, Project, ProjectPath,
+    Event as ProjectEvent, Fs, Project, ProjectPath,
     git_store::{
         CommitDataState, GitStoreEvent, Repository, RepositoryEvent, RepositoryId, pending_op,
     },
@@ -1484,6 +1484,15 @@ impl GitPanel {
                     | GitStoreEvent::DiffBaseChanged(_) => {}
                 },
             )
+            .detach();
+
+            // Re-render when the file focused in the editor changes so the
+            // changes list can highlight the row for the active file.
+            cx.subscribe(&project, |_, _, event: &ProjectEvent, cx| {
+                if matches!(event, ProjectEvent::ActiveEntryChanged(_)) {
+                    cx.notify();
+                }
+            })
             .detach();
 
             let mut this = Self {
@@ -8101,6 +8110,11 @@ impl GitPanel {
                                 };
                                 let repo = repo.read(cx);
 
+                                let active_repo_path =
+                                    this.focused_project_path(cx).and_then(|project_path| {
+                                        repo.project_path_to_repo_path(&project_path, cx)
+                                    });
+
                                 let mut items = Vec::with_capacity(range.end - range.start);
 
                                 let visible_flat_entry_indices =
@@ -8123,6 +8137,7 @@ impl GitPanel {
                                                 0,
                                                 has_write_access,
                                                 repo,
+                                                active_repo_path.as_ref(),
                                                 window,
                                                 cx,
                                             ));
@@ -8134,6 +8149,7 @@ impl GitPanel {
                                                 entry.depth,
                                                 has_write_access,
                                                 repo,
+                                                active_repo_path.as_ref(),
                                                 window,
                                                 cx,
                                             ));
@@ -8613,6 +8629,16 @@ impl GitPanel {
         cx.notify();
     }
 
+    /// The project path of the file currently focused in the workspace.
+    ///
+    /// Resolves through the active item so it works uniformly for plain editors,
+    /// project diffs, solo diff views, agent diff views and other viewers.
+    fn focused_project_path(&self, cx: &App) -> Option<ProjectPath> {
+        let workspace = self.workspace.upgrade()?;
+        let item = workspace.read(cx).active_item(cx)?;
+        item.project_path(cx)
+    }
+
     fn render_status_entry(
         &self,
         ix: usize,
@@ -8620,6 +8646,7 @@ impl GitPanel {
         depth: usize,
         has_write_access: bool,
         repo: &Repository,
+        active_repo_path: Option<&RepoPath>,
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -8715,13 +8742,6 @@ impl GitPanel {
 
         let info_color = cx.theme().status().info;
 
-        let base_bg = match (selected, marked) {
-            (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
-            (true, false) => info_color.alpha(selected_bg_alpha),
-            (false, true) => info_color.alpha(marked_bg_alpha),
-            _ => cx.theme().colors().ghost_element_background,
-        };
-
         let (hover_bg, active_bg) = if selected {
             (
                 info_color.alpha(selected_bg_alpha + state_opacity_step),
@@ -8732,6 +8752,24 @@ impl GitPanel {
                 cx.theme().colors().ghost_element_hover,
                 cx.theme().colors().ghost_element_active,
             )
+        };
+
+        // Mirror the row hover treatment for the file currently focused in the
+        // editor, so the open file stands out in the changes list without
+        // introducing a distinct highlight color. Selection and marks keep
+        // their own, stronger backgrounds.
+        let is_focused_file =
+            !selected && !marked && active_repo_path.is_some_and(|path| path == &entry.repo_path);
+
+        let base_bg = if is_focused_file {
+            hover_bg
+        } else {
+            match (selected, marked) {
+                (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
+                (true, false) => info_color.alpha(selected_bg_alpha),
+                (false, true) => info_color.alpha(marked_bg_alpha),
+                _ => cx.theme().colors().ghost_element_background,
+            }
         };
 
         let folder_indicator = settings.folder_indicator;
@@ -10324,6 +10362,15 @@ mod tests {
         })
     }
 
+    /// The repo-relative path of the file the panel sees as focused in the editor.
+    fn focused_repo_path(panel: &GitPanel, cx: &App) -> Option<RepoPath> {
+        let project_path = panel.focused_project_path(cx)?;
+        let repository = panel.active_repository()?;
+        repository
+            .read(cx)
+            .project_path_to_repo_path(&project_path, cx)
+    }
+
     async fn await_git_panel_entries(panel: &Entity<GitPanel>, cx: &mut VisualTestContext) {
         let handle = cx.update_window_entity(panel, |panel, _, _| {
             std::mem::replace(&mut panel.update_visible_entries_task, Task::ready(()))
@@ -11162,6 +11209,50 @@ mod tests {
         cx.run_until_parked();
 
         assert_editor_opened_with_path(&workspace, Path::new("tracked"), &mut cx);
+    }
+
+    #[gpui::test]
+    async fn test_focused_project_path_follows_active_editor(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, _, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "file.rs": "fn main() {}\n",
+                "other.rs": "fn other() {}\n",
+            }),
+            &[
+                ("file.rs", StatusCode::Modified),
+                ("other.rs", StatusCode::Modified),
+            ],
+        )
+        .await;
+
+        // Nothing is open in the editor yet, so there is no focused file.
+        assert_eq!(panel.read_with(&cx, focused_repo_path), None);
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("file.rs"), Section::Tracked);
+            panel.view_file(&ViewFile, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            panel.read_with(&cx, focused_repo_path),
+            Some(repo_path("file.rs"))
+        );
+
+        // Focusing a different file updates the panel's notion of the active file.
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("other.rs"), Section::Tracked);
+            panel.view_file(&ViewFile, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            panel.read_with(&cx, focused_repo_path),
+            Some(repo_path("other.rs"))
+        );
     }
 
     #[gpui::test]

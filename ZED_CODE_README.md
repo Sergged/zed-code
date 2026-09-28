@@ -49,6 +49,7 @@ Local tweaks in this checkout:
 
 Custom settings introduced or extended on the `zed-code` branch (defaults live in `assets/settings/default.json`; the branch's recommended starting values are seeded from `assets/settings/initial_user_settings.json`):
 
+- `git_panel.message_editor_min_lines` (default `6`): minimum height, in lines, of the commit message editor in the git panel.
 - `tabs.show_full_tab_titles` (default `false`): expand tabs to fit the full file name instead of truncating it.
 - `completion_menu_item_kind` (default `"off"`): gains an `"icon"` value that shows a syntax-colored symbol icon per completion entry.
 - `completions.suggest_selection` (default `"first"`): which completion is preselected when the completions menu opens. `"first"` always selects the first entry; `"recently_used"` preselects the most recently accepted completion among the top-scoring entries; `"recently_used_by_prefix"` remembers the completion accepted for a prefix and preselects it again when that prefix is typed.
@@ -205,6 +206,8 @@ Five skills ship inside the binary next to upstream's `create-skill`: `strict-ty
 - **TinyFish** is added as a web-search provider; it is selected independently of the language-model provider, so `search_web` works with any model.
 - The `search_web` tool takes richer parameters — `purpose`, `location`, `language`, `include_domains` / `exclude_domains`, `domain_type` (`web` / `news`), `after_date` / `before_date`, `recency_minutes`, `page` — and each provider uses the fields it supports.
 
+## Editor UI changes in Zed Code
+
 Everything in this section is a `zed-code` change — upstream ships none of it. Where a change extends an upstream primitive (the panel/dock framework, the status bar, the tab bar, the diff-hunk layout, the settings schema), the primitive is upstream and only the behavior described here is ours.
 
 ### Project panel
@@ -218,15 +221,19 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Diff hunks in a solo diff can be staged from the diff itself.
 - A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
 - Solo diffs open in **preview tabs** that replace one another, and report the active project path.
+- The changes list highlights a single row: the panel's selection follows the file focused in the editor, so switching tabs moves the highlight and closing the focused tab clears it.
 - Commit and blame tooltips capture the scroll wheel only while their message overflows; otherwise the editor behind scrolls.
 - Staging updates the panel immediately — the index write refreshes the changed paths instead of waiting for the file watcher.
 - The commit message editor's height is configurable through `git_panel.message_editor_min_lines`.
 - Clicking a row's checkbox toggles it without selecting the row or starting a file drag, and leaves the row hovered so its hover-only controls stay visible.
+- Following the editor also scrolls the panel to the newly focused row, and expands collapsed folders in tree view so the row is visible.
 ### Search panel
 
 - Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
 ### References panel
+
+### Editor
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
