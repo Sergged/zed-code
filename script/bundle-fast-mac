@@ -27,6 +27,26 @@ if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
     build_jobs=(-j "${CARGO_BUILD_JOBS}")
 fi
 
+# Pre-fetched WebRTC (see ZED_CODE_README.md): the livekit build script downloads
+# a ~240 MB archive from GitHub releases on every clean build, and that download
+# times out easily. Use a local copy only when its tag matches the tag the build
+# expects (WEBRTC_TAG in webrtc-sys/build/src/lib.rs) — a stale tag is ignored on
+# purpose, so a bumped WebRTC version is never silently reused.
+if [[ -z "${LK_CUSTOM_WEBRTC:-}" ]]; then
+    webrtc_lib_rs="$(find "${HOME}/.cargo/git/checkouts" -path '*livekit-rust-sdks*/webrtc-sys/build/src/lib.rs' 2>/dev/null | head -1)"
+    webrtc_tag=""
+    if [[ -n "${webrtc_lib_rs}" ]]; then
+        webrtc_tag="$(sed -n 's/.*WEBRTC_TAG: &str = "\([^"]*\)".*/\1/p' "${webrtc_lib_rs}" | head -1)"
+    fi
+    if [[ -n "${webrtc_tag}" && -d ".webrtc/${webrtc_tag}" ]]; then
+        export LK_CUSTOM_WEBRTC="${PWD}/.webrtc/${webrtc_tag}"
+        echo "==> Using pre-fetched WebRTC (${webrtc_tag}): ${LK_CUSTOM_WEBRTC}"
+    elif [[ -d .webrtc ]]; then
+        echo "==> .webrtc has no copy for this build's WebRTC tag (${webrtc_tag:-unknown}); it will be downloaded."
+        echo "    To pre-fetch it, see ZED_CODE_README.md ('Flaky WebRTC download')."
+    fi
+fi
+
 echo "==> Building zed + cli for ${target_triple}..."
 ZED_BUNDLE=true cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target "${target_triple}" "${build_jobs[@]}"
 
