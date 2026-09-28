@@ -91,7 +91,7 @@
           "max_output_tokens": 384000,
           "protocol": "openai_chat",
           "interleaved_reasoning": true,
-          "reasoning_effort_levels": ["none", "low", "high", "max"],
+          "reasoning_effort_levels": ["low", "high", "max"],
           "subscription": "go",
         },
         {
@@ -308,7 +308,9 @@
       "model": "go/deepseek-v4-flash",
       "enable_thinking": true,
     },
-    "sidebar_side": "right",
+    "threads_sidebar": {
+      "position": "right",
+    },
     "auto_compact": {
       "threshold": "90%",
     },
