@@ -2,6 +2,7 @@ use anyhow::Result;
 use gpui::SharedString;
 use handlebars::Handlebars;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // Dev builds read the checkout's templates at runtime instead of embedding
@@ -13,15 +14,58 @@ util::fs_embed! {
     include = ["*.hbs"],
 }
 
-pub struct Templates(Handlebars<'static>);
+/// The agent's prompt templates (the system prompt / guide, and any follow-up
+/// template files).
+///
+/// Templates can be overridden at runtime: pass an overrides directory to
+/// [`Templates::new_with_overrides`] and drop a `*.hbs` file into it named
+/// after the built-in template it replaces (e.g. `system_prompt.hbs` replaces
+/// the agent guide). Overrides are read at render time, so editing the file
+/// takes effect on the next message without a rebuild or restart. A file that
+/// fails to render falls back to the built-in template.
+pub struct Templates(Handlebars<'static>, Option<PathBuf>);
 
 impl Templates {
     pub fn new() -> Arc<Self> {
+        Self::new_with_overrides(None)
+    }
+
+    /// Like [`Templates::new`], but consults `overrides_dir` for `*.hbs`
+    /// files that replace the built-in templates of the same name.
+    pub fn new_with_overrides(overrides_dir: Option<PathBuf>) -> Arc<Self> {
         let mut handlebars = Handlebars::new();
         handlebars.set_strict_mode(true);
         handlebars.register_helper("contains", Box::new(contains));
         handlebars.register_embed_templates::<Assets>().unwrap();
-        Arc::new(Self(handlebars))
+        Arc::new(Self(handlebars, overrides_dir))
+    }
+
+    /// Renders `name`, preferring a runtime override file
+    /// (`<overrides_dir>/<name>.hbs`) over the built-in template when one is
+    /// configured. Falls back to the built-in when the override is missing,
+    /// unreadable, or fails to render.
+    fn render_with_override(&self, name: &str, context: &impl Serialize) -> Result<String> {
+        let Some(overrides_dir) = self.1.as_ref() else {
+            return Ok(self.0.render(name, context)?);
+        };
+
+        let override_path = overrides_dir.join(name);
+        if override_path.is_file() {
+            match std::fs::read_to_string(&override_path) {
+                Ok(source) => match self.0.render_template(&source, context) {
+                    Ok(rendered) => return Ok(rendered),
+                    Err(error) => log::error!(
+                        "Failed to render prompt override {override_path:?}: {error:#}; \
+                         falling back to the built-in template"
+                    ),
+                },
+                Err(error) => {
+                    log::error!("Failed to read prompt override {override_path:?}: {error:#}")
+                }
+            }
+        }
+
+        Ok(self.0.render(name, context)?)
     }
 }
 
@@ -32,7 +76,7 @@ pub trait Template: Sized {
     where
         Self: Serialize + Sized,
     {
-        Ok(templates.0.render(Self::TEMPLATE_NAME, self)?)
+        templates.render_with_override(Self::TEMPLATE_NAME, self)
     }
 }
 
