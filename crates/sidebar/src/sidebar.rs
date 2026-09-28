@@ -65,10 +65,27 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use util::ResultExt as _;
 use util::path_list::PathList;
 use workspace::{
-    CloseWindow, FocusWorkspaceSidebar, MoveProjectDown, MoveProjectUp, MultiWorkspace,
-    MultiWorkspaceEvent, NextProject, NextThread, Open, OpenMode, PreviousProject, PreviousThread,
-    ProjectGroupKey, RemovalIntent, SaveIntent, Sidebar as WorkspaceSidebar, SidebarSide, Toast,
-    ToggleWorkspaceSidebar, Workspace, notifications::NotificationId, sidebar_side_context_menu,
+    CloseWindow,
+    MoveProjectDown,
+    MoveProjectUp,
+    MultiWorkspace,
+    MultiWorkspaceEvent,
+    NextProject,
+    // FocusWorkspaceSidebar, ToggleWorkspaceSidebar, sidebar_side_context_menu — used only by
+    // the commented-out `render_sidebar_toggle_button` below.
+    NextThread,
+    Open,
+    OpenMode,
+    PreviousProject,
+    PreviousThread,
+    ProjectGroupKey,
+    RemovalIntent,
+    SaveIntent,
+    Sidebar as WorkspaceSidebar,
+    SidebarSide,
+    Toast,
+    Workspace,
+    notifications::NotificationId,
 };
 
 use git_ui_core::worktree_service::{RemoteBranchName, worktree_create_targets};
@@ -7420,6 +7437,12 @@ impl Sidebar {
         )
     }
 
+    /* The sidebar toggle button was moved out of the sidebar into the
+     * vertical status strips (see `render_sidebar_toggle` in
+     * workspace/src/status_bar.rs); this duplicate is kept here, commented,
+     * for reference. To restore it, uncomment `render_sidebar_toggle_button`
+     * below, the `.child(self.render_sidebar_toggle_button(cx))` call, and the
+     * related imports above.
     fn render_sidebar_toggle_button(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         let on_right = AgentSettings::get_global(_cx).sidebar_side() == SidebarSide::Right;
 
@@ -7473,6 +7496,7 @@ impl Sidebar {
                     })
             })
     }
+    */
 
     fn render_sidebar_bottom_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_archive = matches!(self.view, SidebarView::Archive(..));
@@ -7484,7 +7508,7 @@ impl Sidebar {
             .when(on_right, |this| this.flex_row_reverse())
             .border_t_1()
             .border_color(cx.theme().colors().border)
-            .child(self.render_sidebar_toggle_button(cx))
+            // .child(self.render_sidebar_toggle_button(cx))
             .child(
                 IconButton::new("history", IconName::Clock)
                     .icon_size(IconSize::Small)

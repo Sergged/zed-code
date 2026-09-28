@@ -54,6 +54,7 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 - `completion_menu_item_kind` (default `"off"`): gains an `"icon"` value that shows a syntax-colored symbol icon per completion entry.
 - `completions.suggest_selection` (default `"first"`): which completion is preselected when the completions menu opens. `"first"` always selects the first entry; `"recently_used"` preselects the most recently accepted completion among the top-scoring entries; `"recently_used_by_prefix"` remembers the completion accepted for a prefix and preselects it again when that prefix is typed.
 - `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
+- `status_bar.icon_scale` (default `1.0`): multiplier for the panel-button icons in the vertical status strips flanking the workspace. At `1.0` they are the same size as the bottom status bar's icons; larger values grow the icons and the strips with them. The strips host only the panel toggles (plus the threads-sidebar toggle) and hide themselves entirely when their side has no buttons to show.
 
 ## Agent changes in Zed Code
 
@@ -108,6 +109,8 @@ A file tool now has exactly two routes, and gitignore picks neither:
 
 The second case is the one that used to be a dead end. Zed's scanner deliberately skips gitignored directories (`node_modules`, `dist`, `target`) so it doesn't index tens of thousands of files, which left every file below one with no snapshot entry. The path-named tools now load that directory on demand before resolving (`prescan_ignored_ancestor`): `read_file` and `list_directory` then go through the worktree like any other file, while `delete_path`, `copy_path`, `move_path` and the edit session route the target through `resolve_direct_fs_path` (`crates/agent/src/tools/tool_permissions.rs`), which is what applies the settings and raises the symlink prompt when the ignored file resolves outside the worktree. So `read_file`, `write_file`, `edit_file`, `delete_path`, `copy_path`, `move_path` and `create_directory` all reach ignored trees now, in every worktree, not just the first.
 
+The fallback keeps the worktree's guarantees rather than dropping them:
+
 - The user's `file_scan_exclusions` / `private_files` are still enforced — global globs against the canonical target, plus the worktree's own globs when the target belongs to one. Out-of-project targets keep the global-only check, as before.
 - A path that resolves **somewhere other than itself** — something along the way is a symlink — asks the user first, naming the real canonical target. The snapshot normally catches that (the scanner marks such entries and stores their canonical path), but it never looked inside an unscanned directory, so `resolve_direct_fs_path` canonicalizes and `authorize_direct_fs_path` raises the same prompt the scanned case gets, via the existing `authorize_symlink_access`. This applies to both path forms: an absolute path into an unscanned directory used to be canonicalized and written to silently, which is the hole this closed.
 - **Deleting or moving a symlink acts on the link, not its target** — the way `rm`/`mv` and the in-project route do, inside and outside the project alike. `DirectFsPath` carries the named path (leaf not followed), and `delete_path` / `move_path` use it when the leaf is a symlink, so nothing follows the link. The escape prompt still fires, as it does for a scanned in-project symlink: the path does resolve outside the project. `copy_path` is the exception: it dereferences, like `cp` (and like the in-project copy), so copying a link copies what it points at.
@@ -121,6 +124,8 @@ Gitignored directories stay unscanned until something asks for them. A bare rela
 
 - `add_path_prefix_to_scan(P)` registers P as a path prefix; `should_scan_directory` then treats every descendant of P as scannable, overriding both gitignore and `file_scan_depth` for that subtree. Reach: **P's whole subtree, recursively.**
 - `refresh_entry(path)` / `refresh_entries_for_paths(...)` re-read the named paths. Reach: **those paths only** — nested ignored directories inside them stay unloaded.
+
+Who calls them:
 
 
 Which agent tools scan, and how much — **all of this is branch-local** (upstream never pre-scans for these tools):
@@ -153,6 +158,7 @@ Notes:
 - **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
 - **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
 - **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
+
 ### The agent guide is overridable at runtime
 
 The system prompt template (`crates/agent/src/templates/system_prompt.hbs`) can be replaced at runtime — no rebuild, no restart:
@@ -243,7 +249,12 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
+### Tabs and workspace chrome
+
 - The tab's trailing slot shows the unsaved-changes indicator in the place of the close button; hovering swaps in close (or unpin), VS Code-style, with no layout shift.
+- Vertical status strips on the left and right edges host the panel toggles, and the workspace sidebar toggle moved into them (out of the sidebar). Their icons scale with `status_bar.icon_scale`, and a strip with nothing to show hides itself.
+- Scroll input is routed by its dominant axis, so a mostly-vertical gesture scrolls horizontally-overflowing elements such as the tab bar.
+
 ### Keymap editor
 
 - The context menu gains **Restore Default** (drops the user's unbind that suppressed a default binding) and **Add Alternative**.
