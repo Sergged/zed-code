@@ -4,6 +4,7 @@ use agent_servers::{AgentServer, AgentServerDelegate};
 use anyhow::Result;
 use fs::Fs;
 use gpui::{App, Entity, Task};
+use paths::prompt_overrides_dir;
 use project::{AgentId, Project};
 
 use crate::{NativeAgent, NativeAgentConnection, ThreadStore, templates::Templates};
@@ -40,7 +41,10 @@ impl AgentServer for NativeAgentServer {
         let thread_store = self.thread_store.clone();
         cx.spawn(async move |cx| {
             log::debug!("Creating templates for native agent");
-            let templates = Templates::new();
+            // Allow the agent guide (system prompt) to be overridden at runtime
+            // with files in the prompt-overrides directory, e.g.
+            // `~/.config/zed/prompt_overrides/system_prompt.hbs`.
+            let templates = Templates::new_with_overrides(Some(prompt_overrides_dir(None)));
 
             log::debug!("Creating native agent entity");
             let agent = cx.update(|cx| NativeAgent::new(thread_store, templates, fs, cx));
