@@ -252,6 +252,8 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### References panel
 
 - Find All References opens a **dock panel**, in the branch-local `references_panel` crate.
+- The panel is dockable left/right, its status-bar button is hideable, and its width comes from `references_panel.default_width`.
+- Opening selects and centers the match the query was run from.
 ### Editor
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.

@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
+mod panel_settings;
+
 use editor::actions::FindAllReferences;
-use editor::{Editor, EditorSettings};
+use editor::{Editor, EditorSettings, ToOffset};
 use file_icons::FileIcons;
 use gpui::{
-    Action, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter,
+    Action, App, AsyncWindowContext, ClickEvent, Context, Entity, EntityId, EventEmitter,
     ExternalDragPayload, FileDragPaths, FocusHandle, Focusable, Hsla, KeyContext,
     ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent, Pixels, Point,
     Render, ScrollStrategy, UniformListScrollHandle, WeakEntity, Window, actions, uniform_list,
@@ -14,8 +16,7 @@ use language::ToPoint;
 use lsp_locations::{LocationMatch, build_location_matches, render_matched_line};
 use menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::{Project, ProjectPath};
-use project_panel::ProjectPanel;
-use project_panel::{ContextMenuPlacement, project_panel_settings::ProjectPanelSettings};
+use project_panel::{ContextMenuPlacement, ProjectPanel};
 use theme_settings::ThemeSettings;
 use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
 use ui::{CommonAnimationExt, ScrollAxes, Scrollbars, Tab, Tooltip, WithScrollbar, prelude::*};
@@ -23,6 +24,9 @@ use util::ResultExt as _;
 use workspace::Workspace;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 use workspace::item::{ItemSettings, PreviewTabsSettings, Settings};
+
+use crate::panel_settings::ReferencesPanelSettings;
+use settings::update_settings_file;
 
 actions!(
     references_panel,
@@ -898,28 +902,40 @@ impl Panel for ReferencesPanel {
         REFERENCES_PANEL_KEY
     }
 
-    fn position(&self, _window: &Window, _cx: &App) -> DockPosition {
-        DockPosition::Left
+    fn position(&self, _window: &Window, cx: &App) -> DockPosition {
+        ReferencesPanelSettings::get_global(cx).dock
     }
 
     fn position_is_valid(&self, position: DockPosition) -> bool {
-        matches!(position, DockPosition::Left)
+        matches!(position, DockPosition::Left | DockPosition::Right)
     }
 
     fn set_position(
         &mut self,
-        _position: DockPosition,
+        position: DockPosition,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        let fs = <dyn fs::Fs>::global(cx);
+        update_settings_file(fs, cx, move |settings, _| {
+            settings.references_panel.get_or_insert_default().dock = Some(position.into());
+        });
     }
 
     fn default_size(&self, _window: &Window, cx: &App) -> Pixels {
-        ProjectPanelSettings::get_global(cx).default_width
+        ReferencesPanelSettings::get_global(cx).default_width
     }
 
-    fn icon(&self, _window: &Window, _cx: &App) -> Option<ui::IconName> {
-        Some(IconName::Quote)
+    fn icon(&self, _window: &Window, cx: &App) -> Option<ui::IconName> {
+        ReferencesPanelSettings::get_global(cx)
+            .button
+            .then_some(IconName::Quote)
+    }
+
+    fn hide_button_setting(&self, _cx: &App) -> Option<workspace::HideStatusItem> {
+        Some(workspace::HideStatusItem::new(|settings| {
+            settings.references_panel.get_or_insert_default().button = Some(false);
+        }))
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {

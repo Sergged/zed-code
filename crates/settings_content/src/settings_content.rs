@@ -227,6 +227,9 @@ pub struct SettingsContent {
     /// Configuration for the collab panel visual settings.
     pub collaboration_panel: Option<PanelSettingsContent>,
 
+    /// Configuration for the references panel visual settings.
+    pub references_panel: Option<PanelSettingsContent>,
+
     pub debugger: Option<DebuggerSettingsContent>,
 
     /// Configuration for Diagnostics-related features.
@@ -407,9 +410,9 @@ fallible_options::flattened_deserialize!(SettingsContent {
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, outline_panel, project_panel,
-        node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
-        title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
-        instrumentation,
+        node, proxy, reduce_motion, references_panel, server_url, credentials_url, session,
+        telemetry, terminal, title_bar, vim_mode, calls, which_key, vim, modeline_lines,
+        feature_flags, instrumentation,
     },
     defaults: {},
 });
@@ -700,11 +703,13 @@ pub enum SteppingGranularity {
     MergeFrom,
     PartialEq,
     Eq,
+    Default,
     strum::VariantArray,
     strum::VariantNames,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum DockPosition {
+    #[default]
     Left,
     Bottom,
     Right,
