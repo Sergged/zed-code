@@ -16797,6 +16797,7 @@ dependencies = [
  "project",
  "regex",
  "release_channel",
+ "remote_connection",
  "rodio",
  "schemars 1.0.4",
  "search",
