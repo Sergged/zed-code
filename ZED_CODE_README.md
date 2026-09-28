@@ -133,6 +133,8 @@ Cancelling a permission prompt used to leave the conversation in a state where e
 
 The global FIFO ordering across sessions is unchanged and still deliberate: `is_first_tool_call` uses it to decide which single card carries the buttons, so only one prompt is actionable at a time.
 
+### Errors that name the actual cause
+
 `explain_unresolved_relative_path` is the fallback for a bare relative path that still doesn't resolve inside a gitignored directory the worktree hasn't scanned; it lists every worktree-relative and absolute form the model can retry with, rather than guessing one root. `explain_unscanned_ignored_path` covers a resolved path that has no entry. The on-demand scan usually resolves such paths before either fires, so the two name the cause only when a scan can't help — a genuinely missing target, or a bare relative path whose parent also doesn't resolve — which is what keeps a model from reading "not found" as "this file doesn't exist" and giving up.
 
 ### Every path form and every gate, tabulated
@@ -156,6 +158,13 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 
 - File tools are described as operating across the whole filesystem, stated as facts rather than preferences: a project-relative path that starts with a worktree root name, an absolute path, and a `~`-prefixed path all resolve — including into gitignored content such as `node_modules` — while a bare project-relative path works only when it is unambiguous (gitignored directories are scanned on demand). The wording is deliberately not a "prefer relative" style rule — that is an unverifiable preference, whereas the path forms are a property of the harness.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
+| Outcome                          | Meaning                                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------------------------ |
+| `No errors or warnings.`         | A server checked the file and it is clean                                                  |
+| `has not been checked`           | Servers are attached, none has reported yet — expected right after a move, rename, or edit |
+| `No language server is attached` | This tool cannot check the file; use the terminal                                          |
+| `Diagnostics may be stale.`      | The refresh failed, so the output may predate the edits                                    |
+
 The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.
 ### Test coverage for the file tools
 
