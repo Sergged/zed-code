@@ -541,6 +541,57 @@ pub fn decide_permission_for_path(
     decide_permission_for_paths(tool_name, &[raw_path.to_string()], settings)
 }
 
+/// Decides permission for one logical path that the model may have written in
+/// several textual forms: the raw input, the worktree-relative path, and the
+/// absolute path.
+///
+/// Rules match tool input text, so a rule written for one form (say `^src/`)
+/// would otherwise miss the same file spelled another way (say an absolute
+/// path). Matching every form lets a rule target any project (a bare-relative
+/// pattern) or one specific project (an absolute pattern).
+///
+/// Unlike [`decide_permission_for_paths`], which requires *every* path to be
+/// allowed, a form that matches no rule is not a vote here: an `always_allow`
+/// matching **any** form allows the file.
+pub fn decide_permission_for_path_forms(
+    tool_name: &str,
+    forms: &[String],
+    settings: &AgentSettings,
+) -> ToolPermissionDecision {
+    // The decision with no rule match, used to tell a matched form from one
+    // that fell through to the tool's default.
+    let default_decision = decide_permission_from_settings(tool_name, &[], settings);
+
+    let mut matched: Option<ToolPermissionDecision> = None;
+    for form in forms {
+        let decision = decide_permission_for_path(tool_name, form, settings);
+        if decision != default_decision {
+            matched = Some(match matched {
+                Some(previous) => most_restrictive(previous, decision),
+                None => decision,
+            });
+        }
+    }
+
+    matched.unwrap_or(default_decision)
+}
+
+/// Like [`decide_permission_for_path_forms`], for several paths at once (the
+/// source and destination of `copy_path` / `move_path`). Each path is decided
+/// over its own forms; the decisions combine with [`most_restrictive`], so
+/// every path must still be allowed.
+pub fn decide_permission_for_path_groups(
+    tool_name: &str,
+    groups: &[Vec<String>],
+    settings: &AgentSettings,
+) -> ToolPermissionDecision {
+    groups
+        .iter()
+        .map(|forms| decide_permission_for_path_forms(tool_name, forms, settings))
+        .reduce(most_restrictive)
+        .unwrap_or_else(|| decide_permission_from_settings(tool_name, &[], settings))
+}
+
 pub fn most_restrictive(
     a: ToolPermissionDecision,
     b: ToolPermissionDecision,
@@ -2345,6 +2396,117 @@ mod tests {
             ToolPermissionDecision::from_input(tool, &[simplified], &permissions, ShellKind::Posix);
 
         most_restrictive(raw_decision, simplified_decision)
+    }
+
+    fn forms_perm(
+        tool: &str,
+        forms: &[&str],
+        deny: &[&str],
+        allow: &[&str],
+    ) -> ToolPermissionDecision {
+        let mut tools = collections::HashMap::default();
+        tools.insert(
+            Arc::from(tool),
+            ToolRules {
+                default: None,
+                always_allow: allow
+                    .iter()
+                    .map(|p| CompiledRegex::new(p, false).unwrap())
+                    .collect(),
+                always_deny: deny
+                    .iter()
+                    .map(|p| CompiledRegex::new(p, false).unwrap())
+                    .collect(),
+                always_confirm: vec![],
+                invalid_patterns: vec![],
+            },
+        );
+        let settings = test_agent_settings(ToolPermissions {
+            default: ToolPermissionMode::Confirm,
+            tools,
+        });
+        let forms: Vec<String> = forms.iter().map(|form| form.to_string()).collect();
+        decide_permission_for_path_forms(tool, &forms, &settings)
+    }
+
+    #[test]
+    fn decide_permission_for_path_forms_matches_any_form() {
+        // A relative rule matches the same file written as an absolute path,
+        // because the worktree-relative form is among the forms checked.
+        let decision = forms_perm(
+            EditFileTool::NAME,
+            &["/proj/src/main.rs", "src/main.rs"],
+            &["^src/"],
+            &[],
+        );
+        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
+
+        // Without the relative form, the same rule does not match.
+        let decision = forms_perm(EditFileTool::NAME, &["/proj/src/main.rs"], &["^src/"], &[]);
+        assert_eq!(decision, ToolPermissionDecision::Confirm);
+
+        // An absolute allow rule matches the file written as a bare relative path.
+        let decision = forms_perm(
+            EditFileTool::NAME,
+            &["src/main.rs", "/proj/src/main.rs"],
+            &[],
+            &["^/proj/src/"],
+        );
+        assert_eq!(decision, ToolPermissionDecision::Allow);
+    }
+
+    #[test]
+    fn decide_permission_for_path_groups_requires_every_path_allowed() {
+        let settings_with = |deny: &[&str], allow: &[&str]| {
+            let mut tools = collections::HashMap::default();
+            tools.insert(
+                Arc::from("copy_path"),
+                ToolRules {
+                    default: None,
+                    always_allow: allow
+                        .iter()
+                        .map(|p| CompiledRegex::new(p, false).unwrap())
+                        .collect(),
+                    always_deny: deny
+                        .iter()
+                        .map(|p| CompiledRegex::new(p, false).unwrap())
+                        .collect(),
+                    always_confirm: vec![],
+                    invalid_patterns: vec![],
+                },
+            );
+            test_agent_settings(ToolPermissions {
+                default: ToolPermissionMode::Confirm,
+                tools,
+            })
+        };
+
+        let source = vec!["src/a.rs".to_string()];
+        let destination = vec!["dst/a.rs".to_string()];
+
+        // Both paths allowed -> allow.
+        let decision = decide_permission_for_path_groups(
+            "copy_path",
+            &[source.clone(), destination.clone()],
+            &settings_with(&[], &["^src/", "^dst/"]),
+        );
+        assert_eq!(decision, ToolPermissionDecision::Allow);
+
+        // Only one path allowed -> not all -> default confirm.
+        let decision = decide_permission_for_path_groups(
+            "copy_path",
+            &[source.clone(), destination.clone()],
+            &settings_with(&[], &["^src/"]),
+        );
+        assert_eq!(decision, ToolPermissionDecision::Confirm);
+
+        // A deny on either path wins.
+        let decision = decide_permission_for_path_groups(
+            "copy_path",
+            &[source, destination],
+            &settings_with(&["^dst/"], &["^src/", "^dst/"]),
+        );
+        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
     }
 
     #[test]

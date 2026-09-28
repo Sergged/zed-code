@@ -1236,6 +1236,16 @@
     // (commands, paths, URLs, etc.). For `copy_path` and `move_path`,
     // patterns are matched independently against each path (source and
     // destination).
+    //
+    // Independent of these rules, the destructive file tools (edit_file and
+    // write_file in overwrite mode, delete_path, move_path, copy_path,
+    // create_directory) refuse a few paths outright — not a prompt, and not
+    // configurable: the filesystem root, the user's home directory, and any
+    // ancestor of an open worktree. A single call to one of those paths can
+    // wipe out everything or work unrelated to the conversation, irreversibly,
+    // so they are a floor below the rules rather than a policy. A project's own
+    // worktree root is not protected: deleting the project itself goes through
+    // the rules above.
     "tool_permissions": {
       // Global default permission when no tool-specific rules match.
       // "allow" - Auto-approve without prompting

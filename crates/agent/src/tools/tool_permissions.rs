@@ -1,6 +1,6 @@
 use crate::{
     Thread, ToolCallEventStream, ToolPermissionContext, ToolPermissionDecision,
-    decide_permission_for_path,
+    decide_permission_for_path_forms,
 };
 use agent_client_protocol::schema::v1 as acp;
 use agent_skills::is_agents_skills_path;
@@ -555,6 +555,46 @@ pub fn resolve_project_path(
     Ok(ResolvedProjectPath::Safe(project_path))
 }
 
+/// The textual forms of a model-supplied path that permission rules should be
+/// matched against: the path as written, plus the worktree-relative and
+/// absolute forms when it resolves into a worktree.
+///
+/// Rules match tool input text, so matching all of these lets a rule target any
+/// project (a bare-relative pattern such as `^src/`) or one specific project
+/// (an absolute pattern such as `^/Users/me/proj/src/`) regardless of how the
+/// model spelled the path.
+pub fn permission_path_forms(project: &Project, path: &Path, cx: &App) -> Vec<String> {
+    let mut forms = vec![path.to_string_lossy().into_owned()];
+
+    // Expand a `~`-prefixed path so `~/.agents/skills/...` and
+    // `/Users/me/.agents/skills/...` can share one rule.
+    if let Some(expanded) = expand_home_prefix(path) {
+        let expanded = normalize_path(&expanded).to_string_lossy().into_owned();
+        if !forms.contains(&expanded) {
+            forms.push(expanded);
+        }
+    }
+
+    if let Some(project_path) = project.find_project_path(path, cx) {
+        let relative = project_path
+            .path
+            .display(project.path_style(cx))
+            .to_string();
+        if !forms.contains(&relative) {
+            forms.push(relative);
+        }
+
+        if let Some(absolute) = project.absolute_path(&project_path, cx) {
+            let absolute = absolute.to_string_lossy().into_owned();
+            if !forms.contains(&absolute) {
+                forms.push(absolute);
+            }
+        }
+    }
+
+    forms
+}
+
 /// Prompts the user for permission when a path resolves through a symlink to a
 /// location outside the project. This check is an additional gate after
 /// settings-based deny decisions: even if a tool is configured as "always allow,"
@@ -719,7 +759,12 @@ pub fn authorize_file_edit(
     let path_str = path.to_string_lossy();
 
     let settings = agent_settings::AgentSettings::get_global(cx);
-    let decision = decide_permission_for_path(tool_name, &path_str, settings);
+    let forms = thread
+        .read_with(cx, |thread, cx| {
+            permission_path_forms(thread.project().read(cx), path, cx)
+        })
+        .unwrap_or_else(|_| vec![path_str.to_string()]);
+    let decision = decide_permission_for_path_forms(tool_name, &forms, settings);
 
     if let ToolPermissionDecision::Deny(reason) = decision {
         return Task::ready(Err(anyhow!("{}", reason)));

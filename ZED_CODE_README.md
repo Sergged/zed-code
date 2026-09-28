@@ -70,6 +70,25 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 **Added or overridden by this branch (`zed-code`):**
 
+- The user's settings become hard blocks in _every_ tool (`ensure_path_not_hidden_by_settings`, `external_path_excluded_by_settings`), checked before any prompt.
+- Protected roots (`is_protected_external_path`): the hard refusal for the filesystem root, the home directory, and worktree ancestors.
+- Gitignore stops hiding files: the ignored-directory fallback, the path-triggered scan for a bare relative path (`prescan_ignored_ancestor`), the directory listing scan (`list_directory`), and — for the search tools — the opt-in pre-scan driven by the glob's literal prefix (`find_path`, and `grep` via `prescan_ignored_dirs_for_prefix`). The scanning helpers live together in `crates/agent/src/tools/ignored_scan.rs`; `tool_permissions.rs` keeps only the permission and path-resolution logic.
+- `create_directory` resolves a bare relative path to a _new_ directory through its parent (`resolve_new_directory_parent`), the same trick `write_file` already used for a new file. Upstream advertised only the rooted/absolute forms, so a bare new directory used to fail.
+- Permission rules match every form of a path (`permission_path_forms`, `decide_permission_for_path_forms`) — upstream matches the raw text only.
+- The symlink prompt is extended to external paths and to every path form (`external_path_resolution_target`, `external_symlink_target`).
+- Actionable errors (`explain_unresolved_relative_path`, `explain_unscanned_ignored_path`, `explain_unresolved_path`).
+- This README and the protected-roots note in `assets/settings/default.json`.
+
+`file_scan_exclusions` and `private_files` (global and worktree-scoped) are hard blocks, not soft warnings. `ensure_path_not_hidden_by_settings` in `crates/agent/src/tools/tool_permissions.rs` is called by every file tool — read and mutating alike, in-project and out-of-project — so a path the agent may not read it also may not modify. The check runs **before** the authorization prompt, so a blocked call never asks the user to approve something that cannot happen. `find_path` filters matching paths out of its results for the same reason: a path search must not surface what the read and write tools refuse.
+
+### Permission rules match every form of a path
+
+`tool_permissions` patterns are matched against every textual form of the tool's path, not only the string the model wrote: as written, `~`-expanded, worktree-relative, and absolute (`permission_path_forms` in `crates/agent/src/tools/tool_permissions.rs`, applied by `decide_permission_for_path_forms` in `crates/agent/src/tool_permissions.rs`). A rule can therefore target any project (`^src/`) or one specific project (`^/Users/me/mycoolproject/src/`), whichever form the model happened to use. `copy_path` / `move_path` decide each path over its own forms and still require both paths to be allowed. The raw text stays among the forms, so a rule written against the literal input keeps matching.
+
+This is a branch-local change — upstream matches the raw text only — and it is a genuine semantic change: an `always_allow` now auto-approves the same file however it is spelled, so a bare-relative rule is effectively a cross-project rule. Write rules with the form in mind.
+
+The forms are derived from `Project::find_project_path`, which is exactly what the tool itself uses to resolve the path, so the file a rule is tested against is the file the tool will act on. For a bare relative path in a multi-root workspace that resolution is a guess (the first worktree with an entry), but it is the _same_ guess the tool makes — the rule and the action never disagree.
+
 - The user's `file_scan_exclusions` / `private_files` are still enforced — global globs against the canonical target, plus the worktree's own globs when the target belongs to one. Out-of-project targets keep the global-only check, as before.
 - A path that resolves **somewhere other than itself** — something along the way is a symlink — asks the user first, naming the real canonical target. The snapshot normally catches that (the scanner marks such entries and stores their canonical path), but it never looked inside an unscanned directory, so `resolve_direct_fs_path` canonicalizes and `authorize_direct_fs_path` raises the same prompt the scanned case gets, via the existing `authorize_symlink_access`. This applies to both path forms: an absolute path into an unscanned directory used to be canonicalized and written to silently, which is the hole this closed.
 - **Deleting or moving a symlink acts on the link, not its target** — the way `rm`/`mv` and the in-project route do, inside and outside the project alike. `DirectFsPath` carries the named path (leaf not followed), and `delete_path` / `move_path` use it when the leaf is a symlink, so nothing follows the link. The escape prompt still fires, as it does for a scanned in-project symlink: the path does resolve outside the project. `copy_path` is the exception: it dereferences, like `cp` (and like the in-project copy), so copying a link copies what it points at.
@@ -79,16 +98,39 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 #### When an ignored directory gets scanned
 
+- `add_path_prefix_to_scan(P)` registers P as a path prefix; `should_scan_directory` then treats every descendant of P as scannable, overriding both gitignore and `file_scan_depth` for that subtree. Reach: **P's whole subtree, recursively.**
+- `refresh_entry(path)` / `refresh_entries_for_paths(...)` re-read the named paths. Reach: **those paths only** — nested ignored directories inside them stay unloaded.
+
+- `read_file` does not scan a whole directory: it opens the one file. It runs the shared on-demand scan only when a **bare relative path** would otherwise fail to resolve, so the bare form resolves like the rooted/absolute one.
+- `edit_file`, `write_file`, `delete_path`, `copy_path`, `move_path`, `create_directory` run the same on-demand scan before resolving a bare relative path (for `create_directory` that path is the new directory's parent).
+
 The global FIFO ordering across sessions is unchanged and still deliberate: `is_first_tool_call` uses it to decide which single card carries the buttons, so only one prompt is actionable at a time.
 
+`explain_unresolved_relative_path` is the fallback for a bare relative path that still doesn't resolve inside a gitignored directory the worktree hasn't scanned; it lists every worktree-relative and absolute form the model can retry with, rather than guessing one root. `explain_unscanned_ignored_path` covers a resolved path that has no entry. The on-demand scan usually resolves such paths before either fires, so the two name the cause only when a scan can't help — a genuinely missing target, or a bare relative path whose parent also doesn't resolve — which is what keeps a model from reading "not found" as "this file doesn't exist" and giving up.
+
+### Every path form and every gate, tabulated
+
+**Path forms.** **R** = worktree-root-prefixed relative (`zed/src/a.rs`), **r** = bare relative (`src/a.rs`), **A** = absolute (`/Users/me/zed/src/a.rs`). _Ignored_ = a path inside a gitignored directory the scanner skipped; _Outside_ = any path outside every worktree.
+
+Reachability — which tool accepts which form:
+
+- **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
+- **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
+- **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
+The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.
 - `tool_permissions.rs` — `test_real_fs_external_path_resolution_and_protection` exercises the real `RealFs` canonicalization macOS applies to `/tmp`, so the external/protected classification is tested against the actual filesystem rather than a fake. It is a plain `#[test]`, not `#[gpui::test]`, because `RealFs` spawns real threads that the deterministic test scheduler forbids.
 - Symlink-escape authorization per tool, including the confirm-once and deny-policy paths.
 - Settings-blocked calls assert both the error text and that **no** authorization event was emitted, which is what pins the "check before prompt" ordering.
+- Gitignored targets are covered from both sides: each mutating tool has a test that it now edits/deletes/copies/moves a file inside an unscanned ignored directory. `test_edit_file_gitignored_symlink_escape_asks_before_following` and `test_edit_file_gitignored_symlink_escape_allowed` pin that editing through a symlink out of one prompts with the real target. `test_delete_path_gitignored_symlink_deletes_link_not_target` and `test_delete_path_external_symlink_deletes_link_not_target` pin the other half — deleting a symlink removes the link, leaves the target untouched, and never names the target in the prompt. `test_delete_path_gitignored_file_respects_file_scan_exclusions` and its `edit_file` counterpart pin that the fallback doesn't become a way around the user's settings.
+- `test_write_then_read_outside_project` is the regression test for the single-file worktree trap: it writes the same external path twice (the second write used to fail with "parent directory doesn't exist") and then reads the file back. `test_write_file_outside_project_tilde_path` and `test_read_tilde_path_outside_project` pin the `~` form, `test_move_path_external_symlink_moves_link_not_target` the move-by-link semantics, and `test_find_path_loaded_ignored_content_stays_hidden` that `find_path` results don't depend on what another tool happened to scan.
+- Path forms _below_ an unscanned gitignored directory are pinned per tool, each form against its own fixture: `test_list_directory_path_inside_gitignored_directory_all_path_forms` (bare / rooted / absolute) and `test_resolve_symbol_in_gitignored_directory`. Each form gets a fresh `Project` on purpose — sharing one project lets the first form's scan load the directory and makes the remaining forms pass without the fix, which is exactly how a green test can prove nothing. The negative half is pinned too: `test_list_directory_missing_path_inside_gitignored_directory_is_plain_not_found` and `test_resolve_symbol_missing_file_in_gitignored_directory` assert that a genuinely absent target still reports itself as absent rather than as a gitignore problem, so the model doesn't read "not found" as "try another path form" and retry forever.
 The toolbar mirrors `SoloDiffView` left to right, which meant splitting it into two registered toolbar items rather than one:
 
 - `AgentDiffViewStyleToolbar` (`PrimaryLeft`, registered **before** `Breadcrumbs`) — Show Full File and the split/unified controls, so the file path follows them.
 - `AgentDiffViewToolbar` (`PrimaryRight`) — the `+`/`-` stat, hunk navigation, Reject / Keep, Reject All / Keep All, and View File.
+
+The path comes from implementing `Item::breadcrumbs`, and the stat from `BufferDiffSnapshot::changed_row_counts` — `SoloDiffView` reads the same numbers off the git index, but the agent's diff is the buffer against its pristine base, so the hunks are counted directly.
 
 No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiffStyleToolbar` only match their own item types, and the chain `act_as_type(SplittableEditor) == None` → `uses_hidden_splittable_editor == true` → `needs_expand_collapse_option == false` keeps the search bar from re-rendering the split/unified and fold buttons. The same `false` sends it to `Secondary`, which is the separate plate below the toolbar.
 
@@ -116,6 +158,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Tree directories and status entries can be dragged out of the panel (a marked selection moves together).
 - Diff hunks in a solo diff can be staged from the diff itself.
 - A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
+- Solo diffs open in **preview tabs** that replace one another, and report the active project path.
 - Commit and blame tooltips capture the scroll wheel only while their message overflows; otherwise the editor behind scrolls.
 - Staging updates the panel immediately — the index write refreshes the changed paths instead of waiting for the file watcher.
 - The commit message editor's height is configurable through `git_panel.message_editor_min_lines`.
