@@ -86,8 +86,8 @@ The file tools are a mix of upstream behavior and `zed-code` changes. Provenance
 
 - `Project::find_project_path` and its three branches (absolute; relative with an existing entry; root-name strip without an entry). The bare / rooted / absolute behavior described above is upstream's, not ours.
 - The `tool_permissions` model: `default`, `always_allow` / `always_deny` / `always_confirm`, and regex matching of tool input text.
-- The symlink-escape permission prompt (`authorize_symlink_access`, upstream #49255) and the sensitive-settings classification (`.zed/`, the global config directory, `~/.agents/skills`; upstream #48641, #56456).
-- Global agent skills (`resolve_global_skill_path`, upstream #57678) and the worktree primitives the branch builds on: `add_path_prefix_to_scan`, `refresh_entry*`, `should_scan_directory`, and the search-side gitignored pre-fetch in `project_search.rs` (upstream #42968).
+- The symlink-escape permission prompt (`authorize_symlink_access`) and the sensitive-settings classification (`.zed/`, the global config directory, `~/.agents/skills`).
+- Global agent skills (`resolve_global_skill_path`) and the worktree primitives the branch builds on: `add_path_prefix_to_scan`, `refresh_entry*`, `should_scan_directory`, and the search-side gitignored pre-fetch in `project_search.rs`.
 
 **Added or overridden by this branch (`zed-code`):**
 
@@ -269,41 +269,52 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Project panel
 
 - A **Project** header above the tree with an expand/collapse-all toggle.
-- **Read-only affordances**: for a read-only project (no write access, remote/WSL file system) the write actions — rename, create, paste, delete, drag — are hidden or disabled instead of failing when clicked.
 
 ### Git panel and diffs
 
 - Tree directories and status entries can be dragged out of the panel (a marked selection moves together).
-- Status rows gain a hover **View File** action; directories get a context menu (stage / unstage / discard a folder, reveal in the OS file manager).
+- Status rows gain a hover **View File** action; directories get a context menu (stage / unstage / discard a folder, add the folder to `.gitignore`, reveal in the OS file manager).
 - Diff hunks in a solo diff can be staged from the diff itself.
-- A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view.
+- A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
 - Solo diffs open in **preview tabs** that replace one another, and report the active project path.
 - The row of the file focused in the editor is highlighted in the panel.
 - Commit and blame tooltips capture the scroll wheel only while their message overflows; otherwise the editor behind scrolls.
 - Staging updates the panel immediately — the index write refreshes the changed paths instead of waiting for the file watcher.
+- The commit message editor's height is configurable through `git_panel.message_editor_min_lines`.
+- Clicking a row's checkbox toggles it without selecting the row or starting a file drag, and leaves the row hovered so its hover-only controls stay visible.
+- The highlighted "active" row follows the focused item in the workspace, so it also clears when that tab is closed.
 
 ### Search panel
 
 - Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
-- Result rows match the threads-panel styling and get the project panel's context menu; the references panel shares the project panel's default width.
+- Result rows match the threads-panel styling and get the project panel's context menu; the panel's default width comes from `project_panel.default_width`.
 - `search.dock` chooses the side.
+- The panel has its own actions (`search_panel::Toggle`, `search_panel::ToggleFocus`), a header button that opens a plain project-search editor, collapsible file groups, file headers that can be dragged out, and an indicator when the result limit is reached.
+- The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
 
 ### References panel
 
-- Find All References opens a **dock panel** (the branch-local `references_panel` crate) instead of a picker.
+- Find All References opens a **dock panel**, in the branch-local `references_panel` crate.
 - The panel is dockable left/right, its status-bar button is hideable, and its width comes from `references_panel.default_width`.
 - Opening selects and centers the match the query was run from.
+- The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
 
 ### Editor
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
-- The completion menu can show a syntax-colored symbol icon per entry (`completion_menu_item_kind: "icon"`) and preselect an entry based on recent use (`completions.suggest_selection`).
+- The completion menu can show a syntax-colored symbol icon per entry (`completion_menu_item_kind: "icon"`) and preselect an entry based on recent use (`completions.suggest_selection`); the recent-use memory is keyed on the completion's filter text, so resolving a completion — which can rewrite its label and insert text — does not drop it from the memory.
+- A physical mouse wheel scrolls horizontally (`shift` + wheel) by the same distance as vertically: line-based wheel deltas are converted with the line height on both axes, instead of the glyph width for the horizontal axis.
+
+### Context menus
+
+- Menus whose entries overflow render a vertical scrollbar that follows the global `scrollbar` settings: `scrollbar.show` (`"auto"` / `"system"` / `"always"` / `"never"`) decides when it is visible and `scrollbar.track` (`"track"` / `"thumb"`) whether it reserves space for a track or floats over the content. This covers every `ContextMenu`-based menu, including submenus and dropdowns.
 
 ### Tabs and workspace chrome
 
 - The tab's trailing slot shows the unsaved-changes indicator in the place of the close button; hovering swaps in close (or unpin), VS Code-style, with no layout shift.
+- The tab's outer padding and label gap account for the padding around the close button's icon, so the icon keeps its intended distance to the tab edge.
 - Vertical status strips on the left and right edges host the panel toggles, and the workspace sidebar toggle moved into them (out of the sidebar). Their icons scale with `status_bar.icon_scale`, and a strip with nothing to show hides itself.
 - Scroll input is routed by its dominant axis, so a mostly-vertical gesture scrolls horizontally-overflowing elements such as the tab bar.
 
@@ -311,14 +322,14 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - The context menu gains **Restore Default** (drops the user's unbind that suppressed a default binding) and **Add Alternative**.
 
-### Settings window
-
-- An **Others** page lists every `settings.json` key that has no dedicated page, generated from the settings schema.
-
 ### Tasks
 
 - Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
 - The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
+
+### Migrations
+
+The migration banner lists exactly what a settings or keymap migration would change: the file is parsed before and after the migration and the differing entries are diffed into dotted paths, shown in the banner's tooltip. The diff itself (`migrator::settings_diff`) is a reusable helper, not banner-specific.
 
 ## Recommended initial settings, keymap and agent rules
 
@@ -329,6 +340,8 @@ Unlike "Settings added in this branch" above (options this branch adds to Zed it
 - `assets/settings/initial_agents_md.md` — seeded as the global `AGENTS.md` (agent rules).
 
 A fresh Zed Code install therefore starts with a VS Code-like setup (`"base_keymap": "VSCode"`) and a ready-made agent rules file, while keeping Zed's architecture and defaults underneath.
+
+The project-settings template `assets/settings/initial_local_settings.json` is separate: it is not seeded on first run, but written into `.zed/settings.json` when a project settings file is opened (`zed: open project settings file`, or the Settings UI). It ships one commented-out block — `languages.JavaScript` / `languages.TypeScript` with `"formatter": []` and `code_actions_on_format: { "source.fixAll.eslint": true }` — for projects where Prettier runs through ESLint (`eslint-plugin-prettier`). Uncommented, only `source.fixAll.eslint` runs on save and the built-in formatter stays off. It is opt-in per project on purpose: in a project without a working ESLint the fix resolves no actions and nothing formats those languages at all.
 
 ### The config directory is shared with the official Zed build
 
@@ -388,7 +401,7 @@ Two consequences:
 - `favorite_models`: `go/deepseek-v4-flash`, `go/kimi-k3`, `go/deepseek-v4-pro`, `go/minimax-m3`, `go/glm-5.2` (thinking/effort set per entry).
 - Tool permissions: `write_file` and `edit_file` always allowed; `terminal` auto-allowed for a read-only allowlist (`grep`, `head`, `echo`, `tail`, `ls`, `date`, `wc`, `cat`, `sort`, `uniq`, `sed`, `du`, `pgrep`, `stat`, `find`, `strings`); `fetch` allowed for `skills.sh`, `raw.githubusercontent.com`, `api.github.com`; `search_web` allowed.
 - Sandbox: `allow_unsandboxed: true`, `network_hosts: ["*.npmjs.org"]`.
-- Layout and behavior: `agent.dock` / `sidebar_side: "right"`, default width 420, `message_editor_min_lines: 2`, `auto_compact.threshold: "90%"`, `thinking_display: "auto"`, edit/terminal cards collapsed, single-file review off.
+- Layout and behavior: `agent.dock` / `threads_sidebar.position: "right"`, default width 420, `message_editor_min_lines: 2`, `auto_compact.threshold: "90%"`, `thinking_display: "auto"`, edit/terminal cards collapsed, single-file review off.
 
 ### Custom models (`language_models.opencode`)
 
