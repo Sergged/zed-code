@@ -109,6 +109,8 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 ### Project panel
 
+- A **Project** header above the tree with an expand/collapse-all toggle.
+
 ### Git panel and diffs
 
 - Tree directories and status entries can be dragged out of the panel (a marked selection moves together).
@@ -126,6 +128,10 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
+### Keymap editor
+
+- The context menu gains **Restore Default** (drops the user's unbind that suppressed a default binding) and **Add Alternative**.
+
 - Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
 - The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
 
