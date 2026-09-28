@@ -117,6 +117,112 @@ fn run_migrations(text: &str, migrations: &[MigrationType]) -> Result<Option<Str
     Ok(result.filter(|new_text| text != new_text))
 }
 
+/// A single setting that differs between the text before and after a migration.
+///
+/// Migrations are imperative code, not a declarative "old key -> new key" table,
+/// so the only way to say what changed is to compare the two documents. `before`
+/// is `None` when the setting was added, `after` is `None` when it was removed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingChange {
+    /// Dotted path of the setting within the file, e.g. `agent.sidebar_side`.
+    pub path: String,
+    pub before: Option<serde_json::Value>,
+    pub after: Option<serde_json::Value>,
+}
+
+/// Lists the settings a migration changed, by comparing `old_text` and
+/// `new_text`.
+///
+/// Returns an empty list when either side cannot be parsed — a text-level
+/// migration can leave the document invalid — so callers fall back to a generic
+/// message instead of reporting nothing.
+pub fn settings_diff(old_text: &str, new_text: &str) -> Vec<SettingChange> {
+    let Ok(old) = parse_json_with_comments::<serde_json_lenient::Value>(old_text) else {
+        return Vec::new();
+    };
+    let Ok(new) = parse_json_with_comments::<serde_json_lenient::Value>(new_text) else {
+        return Vec::new();
+    };
+    let (Ok(old), Ok(new)) = (serde_json::to_value(&old), serde_json::to_value(&new)) else {
+        return Vec::new();
+    };
+
+    let mut changes = Vec::new();
+    diff_values("", &old, &new, &mut changes);
+    changes
+}
+
+fn diff_values(
+    path: &str,
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+    changes: &mut Vec<SettingChange>,
+) {
+    use serde_json::Value;
+
+    if old == new {
+        return;
+    }
+
+    match (old, new) {
+        (Value::Object(old_object), Value::Object(new_object)) => {
+            for (key, old_value) in old_object {
+                let path = join_diff_path(path, key);
+                match new_object.get(key) {
+                    Some(new_value) => diff_values(&path, old_value, new_value, changes),
+                    None => changes.push(SettingChange {
+                        path,
+                        before: Some(old_value.clone()),
+                        after: None,
+                    }),
+                }
+            }
+            for (key, new_value) in new_object {
+                if !old_object.contains_key(key) {
+                    changes.push(SettingChange {
+                        path: join_diff_path(path, key),
+                        before: None,
+                        after: Some(new_value.clone()),
+                    });
+                }
+            }
+        }
+        (Value::Array(old_items), Value::Array(new_items)) => {
+            for (index, old_value) in old_items.iter().enumerate() {
+                let path = format!("{path}[{index}]");
+                match new_items.get(index) {
+                    Some(new_value) => diff_values(&path, old_value, new_value, changes),
+                    None => changes.push(SettingChange {
+                        path,
+                        before: Some(old_value.clone()),
+                        after: None,
+                    }),
+                }
+            }
+            for index in old_items.len()..new_items.len() {
+                changes.push(SettingChange {
+                    path: format!("{path}[{index}]"),
+                    before: None,
+                    after: Some(new_items[index].clone()),
+                });
+            }
+        }
+        _ => changes.push(SettingChange {
+            path: path.to_string(),
+            before: Some(old.clone()),
+            after: Some(new.clone()),
+        }),
+    }
+}
+
+fn join_diff_path(path: &str, key: &str) -> String {
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
+    }
+}
+
 pub fn migrate_keymap(text: &str) -> Result<Option<String>> {
     let migrations: &[MigrationType] = &[
         MigrationType::TreeSitter(
@@ -413,6 +519,42 @@ static EDIT_PREDICTION_SETTINGS_MIGRATION_QUERY: LazyLock<Query> = LazyLock::new
 mod tests {
     use super::*;
     use indoc::indoc;
+
+    #[test]
+    fn test_settings_diff_reports_added_removed_and_changed_settings() {
+        let old = r#"{"agent": {"sidebar_side": "right", "dock": "left"}}"#;
+        let new = r#"{"agent": {"threads_sidebar": {"position": "right"}, "dock": "right"}}"#;
+
+        let mut changes = settings_diff(old, new);
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+
+        assert_eq!(
+            changes,
+            vec![
+                SettingChange {
+                    path: "agent.dock".into(),
+                    before: Some(serde_json::json!("left")),
+                    after: Some(serde_json::json!("right")),
+                },
+                SettingChange {
+                    path: "agent.sidebar_side".into(),
+                    before: Some(serde_json::json!("right")),
+                    after: None,
+                },
+                SettingChange {
+                    path: "agent.threads_sidebar".into(),
+                    before: None,
+                    after: Some(serde_json::json!({"position": "right"})),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_settings_diff_is_empty_when_unchanged_or_unparseable() {
+        assert!(settings_diff(r#"{"a": 1}"#, r#"{"a": 1}"#).is_empty());
+        assert!(settings_diff("{ not json", r#"{"a": 1}"#).is_empty());
+    }
 
     #[track_caller]
     fn assert_migrated_correctly(migrated: Option<String>, expected: Option<&str>) {

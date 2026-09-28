@@ -296,6 +296,8 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
 - The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
 
+The migration banner lists exactly what a settings or keymap migration would change: the file is parsed before and after the migration and the differing entries are diffed into dotted paths, shown in the banner's tooltip. The diff itself (`migrator::settings_diff`) is a reusable helper, not banner-specific.
+
 ## Recommended initial settings, keymap and agent rules
 
 Unlike "Settings added in this branch" above (options this branch adds to Zed itself), the files below are the branch's **recommended starting setup**. They are seeded on first run:
