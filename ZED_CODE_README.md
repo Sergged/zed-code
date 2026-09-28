@@ -320,6 +320,8 @@ Unlike "Settings added in this branch" above (options this branch adds to Zed it
 
 A fresh Zed Code install therefore starts with a VS Code-like setup (`"base_keymap": "VSCode"`) and a ready-made agent rules file, while keeping Zed's architecture and defaults underneath.
 
+The project-settings template `assets/settings/initial_local_settings.json` is separate: it is not seeded on first run, but written into `.zed/settings.json` when a project settings file is opened (`zed: open project settings file`, or the Settings UI). It ships one commented-out block — `languages.JavaScript` / `languages.TypeScript` with `"formatter": []` and `code_actions_on_format: { "source.fixAll.eslint": true }` — for projects where Prettier runs through ESLint (`eslint-plugin-prettier`). Uncommented, only `source.fixAll.eslint` runs on save and the built-in formatter stays off. It is opt-in per project on purpose: in a project without a working ESLint the fix resolves no actions and nothing formats those languages at all.
+
 ### The config directory is shared with the official Zed build
 
 Seeding writes into Zed's own config directory: this branch keeps `paths::APP_NAME` at its upstream value (`"Zed"`, `crates/paths/src/paths.rs`), and on macOS that resolves to `~/.config/zed`. The `APP_NAME_LOWERCASE`/`CARGO_BIN_NAME` assertion in `crates/zed/src/main.rs` pins the binary name to `zed`, the bundling scripts' `APP_NAME` only sets `.app` metadata, and the release channel names (`Zed Dev`, and so on) do not affect these paths. So a build of this branch reads and writes the **same** `settings.json`, `keymap.json` and `AGENTS.md` as an official Zed installed on the same machine.
