@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use editor::Editor;
 use fs::Fs;
 use gpui::WeakEntity;
-use migrator::{migrate_keymap, migrate_settings};
+use migrator::{SettingChange, migrate_keymap, migrate_settings, settings_diff};
 use settings::{KeymapFile, Settings, SettingsStore};
 use util::ResultExt;
 use workspace::notifications::NotifyTaskExt;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use gpui::{Entity, EventEmitter, Global, Task, TextStyle, TextStyleRefinement};
 use markdown::{Markdown, MarkdownElement, MarkdownStyle};
 use theme_settings::ThemeSettings;
-use ui::prelude::*;
+use ui::{Tooltip, prelude::*};
 use workspace::item::ItemHandle;
 use workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace};
 
@@ -27,6 +27,7 @@ pub struct MigrationBanner {
     migration_type: Option<MigrationType>,
     should_migrate_task: Option<Task<()>>,
     markdown: Option<Entity<Markdown>>,
+    changes: Vec<SettingChange>,
 }
 
 pub enum MigrationEvent {
@@ -71,6 +72,7 @@ impl MigrationBanner {
             migration_type: None,
             should_migrate_task: None,
             markdown: None,
+            changes: Vec::new(),
         }
     }
 
@@ -82,7 +84,7 @@ impl MigrationBanner {
             } => {
                 if *migrating_in_memory {
                     self.migration_type = Some(*migration_type);
-                    self.show(cx);
+                    self.refresh_and_show(cx);
                 } else {
                     cx.emit(ToolbarItemEvent::ChangeLocation(
                         ToolbarItemLocation::Hidden,
@@ -93,7 +95,21 @@ impl MigrationBanner {
         }
     }
 
-    fn show(&mut self, cx: &mut Context<Self>) {
+    /// Reads the settings or keymap file, computes which entries the migration
+    /// changes, and shows the banner with that list as a tooltip.
+    fn refresh_and_show(&mut self, cx: &mut Context<Self>) {
+        let Some(migration_type) = self.migration_type else {
+            return;
+        };
+        let fs = <dyn Fs>::global(cx);
+        self.should_migrate_task = Some(cx.spawn(async move |this, cx| {
+            if let Some(changes) = migration_changes(fs, migration_type).await {
+                this.update(cx, |this, cx| this.show(changes, cx)).log_err();
+            }
+        }));
+    }
+
+    fn show(&mut self, changes: Vec<SettingChange>, cx: &mut Context<Self>) {
         let (file_type, backup_file_name) = match self.migration_type {
             Some(MigrationType::Keymap) => (
                 "keymap",
@@ -121,6 +137,7 @@ impl MigrationBanner {
         );
 
         self.markdown = Some(cx.new(|cx| Markdown::new(migration_text.into(), None, None, cx)));
+        self.changes = changes;
 
         cx.emit(ToolbarItemEvent::ChangeLocation(
             ToolbarItemLocation::Secondary,
@@ -132,6 +149,7 @@ impl MigrationBanner {
         self.should_migrate_task.take();
         self.migration_type.take();
         self.markdown.take();
+        self.changes.clear();
         cx.notify();
     }
 }
@@ -142,7 +160,7 @@ impl ToolbarItemView for MigrationBanner {
     fn set_active_pane_item(
         &mut self,
         active_pane_item: Option<&dyn ItemHandle>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         self.reset(cx);
@@ -156,28 +174,10 @@ impl ToolbarItemView for MigrationBanner {
 
         if &target == paths::keymap_file() {
             self.migration_type = Some(MigrationType::Keymap);
-            let fs = <dyn Fs>::global(cx);
-            let should_migrate = cx.background_spawn(should_migrate_keymap(fs));
-            self.should_migrate_task = Some(cx.spawn_in(window, async move |this, cx| {
-                if let Ok(true) = should_migrate.await {
-                    this.update(cx, |this, cx| {
-                        this.show(cx);
-                    })
-                    .log_err();
-                }
-            }));
+            self.refresh_and_show(cx);
         } else if &target == paths::settings_file() {
             self.migration_type = Some(MigrationType::Settings);
-            let fs = <dyn Fs>::global(cx);
-            let should_migrate = cx.background_spawn(should_migrate_settings(fs));
-            self.should_migrate_task = Some(cx.spawn_in(window, async move |this, cx| {
-                if let Ok(true) = should_migrate.await {
-                    this.update(cx, |this, cx| {
-                        this.show(cx);
-                    })
-                    .log_err();
-                }
-            }));
+            self.refresh_and_show(cx);
         }
 
         ToolbarItemLocation::Hidden
@@ -187,10 +187,12 @@ impl ToolbarItemView for MigrationBanner {
 impl Render for MigrationBanner {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let migration_type = self.migration_type;
+        let changed_settings = format_changed_settings(migration_type, &self.changes);
         let settings = ThemeSettings::get_global(cx);
         let ui_font_family = settings.ui_font.family.clone();
         let line_height = settings.ui_font_size(cx) * 1.3;
         h_flex()
+            .id("migration-banner")
             .py_1()
             .pl_2()
             .pr_1()
@@ -199,6 +201,9 @@ impl Render for MigrationBanner {
             .border_1()
             .border_color(cx.theme().colors().border_variant)
             .rounded_sm()
+            .when(!changed_settings.is_empty(), |this| {
+                this.tooltip(Tooltip::text(changed_settings))
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -259,20 +264,75 @@ impl Render for MigrationBanner {
     }
 }
 
-async fn should_migrate_keymap(fs: Arc<dyn Fs>) -> Result<bool> {
-    let old_text = KeymapFile::load_keymap_file(&fs).await?;
-    if let Ok(Some(_)) = migrate_keymap(&old_text) {
-        return Ok(true);
+async fn migration_changes(
+    fs: Arc<dyn Fs>,
+    migration_type: MigrationType,
+) -> Option<Vec<SettingChange>> {
+    let (old_text, new_text) = match migration_type {
+        MigrationType::Keymap => {
+            let old_text = KeymapFile::load_keymap_file(&fs).await.ok()?;
+            let new_text = migrate_keymap(&old_text).ok().flatten()?;
+            (old_text, new_text)
+        }
+        MigrationType::Settings => {
+            let old_text = SettingsStore::load_settings(&fs).await.ok()?;
+            let new_text = migrate_settings(&old_text).ok().flatten()?;
+            (old_text, new_text)
+        }
     };
-    Ok(false)
+    Some(settings_diff(&old_text, &new_text))
 }
 
-async fn should_migrate_settings(fs: Arc<dyn Fs>) -> Result<bool> {
-    let old_text = SettingsStore::load_settings(&fs).await?;
-    if let Ok(Some(_)) = migrate_settings(&old_text) {
-        return Ok(true);
+/// Cap on how many changed settings the tooltip lists, so a sweeping migration
+/// does not produce an unusable wall of text.
+const MAX_TOOLTIP_CHANGES: usize = 20;
+const MAX_TOOLTIP_VALUE_CHARS: usize = 80;
+
+/// Renders the changed settings as tooltip lines, one per setting.
+fn format_changed_settings(
+    migration_type: Option<MigrationType>,
+    changes: &[SettingChange],
+) -> String {
+    if changes.is_empty() {
+        return String::new();
+    }
+
+    let header = match migration_type {
+        Some(MigrationType::Keymap) => "The migration updates these key bindings:",
+        _ => "The migration updates these settings:",
     };
-    Ok(false)
+    let mut lines = Vec::with_capacity(changes.len() + 1);
+    lines.push(header.to_string());
+
+    for change in changes.iter().take(MAX_TOOLTIP_CHANGES) {
+        let line = match (&change.before, &change.after) {
+            (Some(before), Some(after)) => format!(
+                "{}: {} -> {}",
+                change.path,
+                value_text(before),
+                value_text(after)
+            ),
+            (Some(before), None) => format!("{}: {} (removed)", change.path, value_text(before)),
+            (None, Some(after)) => format!("{}: {} (added)", change.path, value_text(after)),
+            (None, None) => continue,
+        };
+        lines.push(line);
+    }
+
+    if changes.len() > MAX_TOOLTIP_CHANGES {
+        lines.push(format!("…and {} more", changes.len() - MAX_TOOLTIP_CHANGES));
+    }
+
+    lines.join("\n")
+}
+
+fn value_text(value: &serde_json::Value) -> String {
+    let mut text = value.to_string();
+    if text.chars().count() > MAX_TOOLTIP_VALUE_CHARS {
+        text = text.chars().take(MAX_TOOLTIP_VALUE_CHARS).collect();
+        text.push('…');
+    }
+    text
 }
 
 async fn write_keymap_migration(fs: Arc<dyn Fs>) -> Result<()> {
