@@ -270,6 +270,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Smooth scrolling is animated per frame along a composed easing curve, and stepping through buffer/project search results smooth-scrolls to each match.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
+- A physical mouse wheel scrolls horizontally (`shift` + wheel) by the same distance as vertically: line-based wheel deltas are converted with the line height on both axes, instead of the glyph width for the horizontal axis.
 
 ### Tabs and workspace chrome
 

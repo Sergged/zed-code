@@ -540,7 +540,11 @@ impl EditorElement {
 
                                 gpui::ScrollDelta::Lines(lines) => {
                                     //Not trackpad
-                                    point(lines.x * glyph_width, lines.y * line_height)
+                                    // Line deltas are the same unit on both axes, so convert
+                                    // them the same way; using the glyph width for the
+                                    // horizontal axis would make one notch scroll fewer
+                                    // pixels than a vertical notch.
+                                    point(lines.x * line_height, lines.y * line_height)
                                 }
                             };
 
@@ -1362,6 +1366,87 @@ mod tests {
             cx.update_editor(|editor, _, _| editor.hovered_diff_hunk_row),
             Some(hunk_row),
             "hovering the controls should keep the hunk active",
+        );
+    }
+
+    /// A physical mouse wheel produces line-based deltas. A notch of horizontal
+    /// scrolling should cover the same distance on screen as a notch of vertical
+    /// scrolling, so line deltas must be converted with the same unit on both axes.
+    #[gpui::test]
+    async fn test_horizontal_wheel_scroll_moves_the_same_pixels_as_vertical(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+        let mut cx = EditorTestContext::new(cx).await;
+
+        // Content that overflows the viewport on both axes.
+        let long_line = "x".repeat(1000);
+        let content = vec![long_line.as_str(); 100].join("\n");
+        cx.set_state(&format!("ˇ{content}"));
+        cx.run_until_parked();
+
+        let (line_height, em_width, wheel_position, initial_scroll) =
+            cx.update_editor(|editor, window, cx| {
+                let position_map = editor
+                    .last_position_map
+                    .as_ref()
+                    .expect("editor was laid out");
+                (
+                    position_map.line_height,
+                    position_map.em_layout_width,
+                    position_map.text_hitbox.bounds.center(),
+                    editor.snapshot(window, cx).scroll_position(),
+                )
+            });
+        assert_eq!(
+            initial_scroll,
+            gpui::Point::new(0., 0.),
+            "the editor should start scrolled to the top left",
+        );
+        assert!(
+            line_height > em_width,
+            "test assumes a monospace glyph is narrower than a line is tall",
+        );
+
+        // One wheel notch scrolling down.
+        cx.simulate_event(ScrollWheelEvent {
+            position: wheel_position,
+            delta: ScrollDelta::Lines(point(0., -1.)),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        let scroll_after_vertical =
+            cx.update_editor(|editor, window, cx| editor.snapshot(window, cx).scroll_position());
+        assert!(
+            scroll_after_vertical.y > 0.,
+            "the wheel should have scrolled the editor vertically",
+        );
+
+        // One wheel notch scrolling to the right, as platforms report it when
+        // shift is held down.
+        cx.simulate_event(ScrollWheelEvent {
+            position: wheel_position,
+            delta: ScrollDelta::Lines(point(-1., 0.)),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        let scroll_after_horizontal =
+            cx.update_editor(|editor, window, cx| editor.snapshot(window, cx).scroll_position());
+        assert!(
+            scroll_after_horizontal.x > 0.,
+            "the wheel should have scrolled the editor horizontally",
+        );
+        assert_eq!(
+            scroll_after_horizontal.y, scroll_after_vertical.y,
+            "a horizontal-only notch should not change the vertical scroll position",
+        );
+
+        let vertical_pixels = scroll_after_vertical.y * f64::from(line_height);
+        let horizontal_pixels = scroll_after_horizontal.x * f64::from(em_width);
+        assert!(
+            (vertical_pixels - horizontal_pixels).abs() < 2.0,
+            "a wheel notch should move the same number of pixels on both axes, \
+             but vertical moved {vertical_pixels}px and horizontal moved {horizontal_pixels}px",
         );
     }
 }
