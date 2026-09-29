@@ -25945,6 +25945,118 @@ async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+async fn test_suggest_selection_scrolls_preselected_completion_into_view(cx: &mut TestAppContext) {
+    init_test(cx, |language_settings| {
+        language_settings.defaults.completions = Some(CompletionSettingsContent {
+            words: Some(WordsCompletionMode::Disabled),
+            suggest_selection: Some(SuggestSelection::RecentlyUsed),
+            ..Default::default()
+        });
+    });
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions::default()),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.lsp
+        .set_request_handler::<lsp::request::Completion, _, _>(move |_, _| async move {
+            Ok(Some(lsp::CompletionResponse::Array(vec![
+                lsp::CompletionItem {
+                    label: "console".into(),
+                    ..lsp::CompletionItem::default()
+                },
+                lsp::CompletionItem {
+                    label: "const".into(),
+                    ..lsp::CompletionItem::default()
+                },
+                lsp::CompletionItem {
+                    label: "constant".into(),
+                    ..lsp::CompletionItem::default()
+                },
+            ])))
+        });
+
+    // Nothing is remembered yet, so the first completion is selected and the list is only
+    // scrolled the minimum amount, like before.
+    cx.set_state("conˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    cx.update_editor(|editor, _, _| {
+        let context_menu = editor.context_menu.borrow();
+        let Some(menu) = context_menu.as_ref() else {
+            panic!("expected completion menu to be open");
+        };
+        let CodeContextMenu::Completions(completions_menu) = menu else {
+            panic!("expected completion menu to be open");
+        };
+        assert_eq!(
+            completion_menu_entries(completions_menu),
+            &["const", "constant", "console"]
+        );
+        assert_eq!(completions_menu.selected_item, 0);
+        let deferred = CodeContextMenu::primary_scroll_handle(menu)
+            .0
+            .borrow()
+            .deferred_scroll_to_item;
+        assert_eq!(
+            deferred.map(|deferred| deferred.strategy),
+            Some(gpui::ScrollStrategy::Nearest)
+        );
+    });
+
+    // Accept the last completion.
+    cx.update_editor(|editor, window, cx| {
+        if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow_mut().as_mut()
+        {
+            menu.selected_item = 2;
+        }
+        editor.confirm_completion(&ConfirmCompletion::default(), window, cx);
+    });
+    cx.executor().run_until_parked();
+
+    // Reopening the menu preselects it and scrolls it to the top of the menu, instead of
+    // leaving it at the bottom edge of the visible window.
+    cx.set_state("conˇ");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.executor().run_until_parked();
+    cx.condition(|editor, _| editor.context_menu_visible())
+        .await;
+    cx.update_editor(|editor, _, _| {
+        let context_menu = editor.context_menu.borrow();
+        let Some(menu) = context_menu.as_ref() else {
+            panic!("expected completion menu to be open");
+        };
+        let CodeContextMenu::Completions(completions_menu) = menu else {
+            panic!("expected completion menu to be open");
+        };
+        assert_eq!(
+            completion_menu_entries(completions_menu),
+            &["const", "constant", "console"]
+        );
+        assert_eq!(completions_menu.selected_item, 2);
+        let deferred = CodeContextMenu::primary_scroll_handle(menu)
+            .0
+            .borrow()
+            .deferred_scroll_to_item;
+        assert_eq!(
+            deferred.map(|deferred| (deferred.item_index, deferred.strategy)),
+            Some((2, gpui::ScrollStrategy::Top)),
+            "the preselected completion should be scrolled to the top of the menu when it opens"
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_as_is_completions(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
     let mut cx = EditorLspTestContext::new_rust(
