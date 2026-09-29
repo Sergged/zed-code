@@ -171,6 +171,7 @@ Gates — what each tool enforces:
 
 Notes:
 
+- **Settings** are `file_scan_exclusions` and `private_files` (global, plus the worktree's own for in-project paths). They are hard blocks, checked before any prompt, on read and mutating tools alike. The global skills directory used to be an exception in `create_directory`; it no longer is, so every tool applies the settings the same way.
 - **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
 - **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
 - **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
@@ -201,6 +202,8 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 | `Diagnostics may be stale.`      | The refresh failed, so the output may predate the edits                                    |
 
 The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.
+
+**Tool descriptions live in doc comments.** `AgentTool::description()` (`crates/agent/src/thread.rs`) reads the doc comment of the tool's `Input` struct out of the generated `JsonSchema`, and the doc comments on the struct's fields become the parameter descriptions; the `tools!` macro in `crates/agent/src/tools.rs` assembles both into the request. So everything the model is told about a tool is whatever is written above `struct XToolInput` in `crates/agent/src/tools/*_tool.rs`. Those were corrected the same way as the guide: the "global skills" special case was dropped (any absolute or `~`-prefixed path outside the project is accepted, and the skills directory is just one example), and the `~` form was added to `read_file`, `write_file`, `edit_file`, `list_directory` and `create_directory`.
 
 ### Test coverage for the file tools
 

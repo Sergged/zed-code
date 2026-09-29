@@ -26,7 +26,7 @@ use util::markdown::MarkdownInlineCode;
 /// A path outside the project may be absolute; it is subject to the user's agent tool permission rules.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListDirectoryToolInput {
-    /// The path of the directory to list: a project-relative path starting with a project root directory (which reaches any directory inside the project, including gitignored content such as `node_modules`), or an absolute path for anything outside the project. Absolute paths are subject to the user's agent tool permission rules. Paths under `~/.agents/skills` are also supported.
+    /// The path of the directory to list: a project-relative path starting with a project root directory (which reaches any directory inside the project, including gitignored content such as `node_modules`), or an absolute (or `~`-prefixed) path for anything outside the project. Every form is subject to the user's agent tool permission rules.
     ///
     /// <example>
     /// If the project has the following root directories:

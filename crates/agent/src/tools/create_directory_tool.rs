@@ -56,7 +56,8 @@ pub struct CreateDirectoryToolInput {
     /// </example>
     ///
     /// <example>
-    /// To create a global agent skill directory, you may provide a path under `~/.agents/skills`, such as `~/.agents/skills/my-skill`.
+    /// Outside the project, any absolute or `~`-prefixed path is accepted — for
+    /// example `~/.agents/skills/my-skill` to create a global agent skill directory.
     /// </example>
     pub path: String,
 
@@ -65,7 +66,7 @@ pub struct CreateDirectoryToolInput {
         doc = "Justification for creating a directory **outside** the project, shown to the \
         user (attributed to you) in the approval prompt that grants sandboxed terminal \
         commands write access to it. Required only for out-of-project paths; ignored for \
-        paths inside the project or the global skills dir."
+        paths inside the project."
     )]
     #[cfg_attr(
         not(any(target_os = "linux", target_os = "macos")),

@@ -92,9 +92,9 @@ fn write_lines_numbered<'a>(
     }
 }
 
-/// Read a file under the global skills directory directly via the filesystem,
-/// bypassing project/worktree resolution. Used for skill resources that live
-/// outside any worktree.
+/// Reads a file that lives outside every worktree directly via the filesystem,
+/// bypassing project/worktree resolution: any absolute (or `~`-prefixed) path
+/// the user's permission rules allow.
 ///
 /// Skill resources are expected to be plain text (Markdown, scripts, configs).
 /// Image rendering, the action log, and the buffer-backed outline path are
@@ -158,10 +158,10 @@ use crate::{AgentTool, ToolCallEventStream, ToolInput, outline};
 /// - This tool supports reading image files. Supported formats: PNG, JPEG, WebP, GIF, BMP, TIFF.
 ///   Image files are returned as visual content that you can analyze directly.
 ///
-/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute and `~`-prefixed paths are accepted too, and every form is subject to the user's agent tool permission rules.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadFileToolInput {
-    /// The path of the file to read: a project-relative path starting with a project root directory (which reaches any file inside the project, including gitignored content such as `node_modules`), or an absolute path for anything outside the project. Absolute paths are subject to the user's agent tool permission rules.
+    /// The path of the file to read: a project-relative path starting with a project root directory (which reaches any file inside the project, including gitignored content such as `node_modules`), or an absolute (or `~`-prefixed) path for anything outside the project. Every form is subject to the user's agent tool permission rules.
     ///
     /// <example>
     /// If the project has the following root directories:
@@ -174,7 +174,8 @@ pub struct ReadFileToolInput {
     /// </example>
     ///
     /// <example>
-    /// To read a global agent skill file, you may provide a path under `~/.agents/skills`, such as `~/.agents/skills/my-skill/SKILL.md`.
+    /// Outside the project, any absolute or `~`-prefixed path is accepted — for
+    /// example `~/.agents/skills/my-skill/SKILL.md` to read a global agent skill file.
     /// </example>
     pub path: String,
     /// Optional line number to start reading on (1-based index)
@@ -2339,5 +2340,43 @@ mod test {
             panic!("expected text content");
         };
         assert_eq!(text.as_ref(), "     1\ttop secret");
+    }
+
+    /// A `~` path outside the project is expanded and read directly through the
+    /// filesystem, exactly like an absolute path.
+    #[gpui::test]
+    async fn test_read_tilde_path_outside_project(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/root"), json!({})).await;
+        fs.insert_tree(path!("/Users/zed"), json!({ "notes.md": "home notes" }))
+            .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let tool = Arc::new(ReadFileTool::new(project, action_log, true));
+
+        let result = cx
+            .update(|cx| {
+                let input = ReadFileToolInput {
+                    path: "~/notes.md".to_string(),
+                    start_line: None,
+                    end_line: None,
+                };
+                tool.run(
+                    ToolInput::resolved(input),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let LanguageModelToolResultContent::Text(text) =
+            result.expect("a `~` path outside the project should be readable")
+        else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.as_ref(), "     1\thome notes");
     }
 }
