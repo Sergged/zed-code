@@ -16,7 +16,7 @@ pub mod visual_tests;
 pub(crate) mod windows_only_instance;
 
 use agent_settings::{UserAgentsMdState, init_user_agents_md};
-use agent_ui::{AgentDiffToolbar, AgentDiffViewToolbar};
+use agent_ui::{AgentDiffToolbar, AgentDiffViewStyleToolbar, AgentDiffViewToolbar};
 use anyhow::Context as _;
 pub use app_menus::*;
 use assets::Assets;
@@ -1484,6 +1484,10 @@ fn initialize_pane(
             toolbar.add_item(solo_diff_style_toolbar, window, cx);
             let file_diff_style_toolbar = cx.new(FileDiffStyleToolbar::new);
             toolbar.add_item(file_diff_style_toolbar, window, cx);
+            // Registered before `Breadcrumbs` so the file path follows the view
+            // toggles, matching `SoloDiffStyleToolbar` in the git panel.
+            let agent_diff_view_style_toolbar = cx.new(AgentDiffViewStyleToolbar::new);
+            toolbar.add_item(agent_diff_view_style_toolbar, window, cx);
             let breadcrumbs = cx.new(|_| Breadcrumbs::new());
             toolbar.add_item(breadcrumbs, window, cx);
             let buffer_search_bar = cx.new(|cx| {
