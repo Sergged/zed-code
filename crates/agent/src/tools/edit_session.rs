@@ -368,8 +368,8 @@ pub(crate) struct EditSession {
 /// The destination of an edit session, identified by its absolute path on
 /// disk. `project_path` is `Some` for files that live inside one of the
 /// project's worktrees (i.e. that the standard project-path machinery can
-/// resolve), and `None` for global skill files reached through the
-/// `~/.agents/skills` allowlist.
+/// resolve), and `None` for any path outside every worktree — the global skills
+/// directory among them.
 struct EditSessionTarget {
     abs_path: PathBuf,
     project_path: Option<ProjectPath>,

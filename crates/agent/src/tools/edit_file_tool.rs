@@ -35,7 +35,7 @@ const DEFAULT_UI_TEXT: &str = "Editing file";
 /// Never include any part of the line number prefix in `old_text` or `new_text`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EditFileToolInput {
-    /// The full path of the file to edit. A project-relative path that starts with one of the project's root directories always resolves; a bare project-relative path (`src/main.rs`) also works when it is unambiguous. An absolute path is accepted too, and every form is subject to the user's agent tool permission rules.
+    /// The full path of the file to edit. A project-relative path that starts with one of the project's root directories always resolves; a bare project-relative path (`src/main.rs`) also works when it is unambiguous. An absolute or `~`-prefixed path is accepted too, and every form is subject to the user's agent tool permission rules.
     ///
     /// The following examples assume we have two root directories in the project:
     /// - /a/b/backend
@@ -52,7 +52,8 @@ pub struct EditFileToolInput {
     /// </example>
     ///
     /// <example>
-    /// To edit a global agent skill file, you may provide a path under `~/.agents/skills`, such as `~/.agents/skills/my-skill/SKILL.md`.
+    /// Outside the project, any absolute or `~`-prefixed path is accepted — for
+    /// example `~/.agents/skills/my-skill/SKILL.md` to edit a global agent skill file.
     /// </example>
     pub path: PathBuf,
 

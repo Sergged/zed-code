@@ -23,10 +23,10 @@ const DEFAULT_UI_TEXT: &str = "Writing file";
 ///
 /// Before using this tool, verify the directory path is correct (only applicable when creating new files). Use the `list_directory` tool to verify the parent directory exists and is the correct location
 ///
-/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute paths are accepted too, and every form is subject to the user's agent tool permission rules.
+/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute and `~`-prefixed paths are accepted too, and every form is subject to the user's agent tool permission rules.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WriteFileToolInput {
-    /// The full path of the file to create or overwrite. A project-relative path that starts with one of the project's root directories always resolves; a bare project-relative path (`src/main.rs`) also works when it is unambiguous. An absolute path is accepted too, and every form is subject to the user's agent tool permission rules.
+    /// The full path of the file to create or overwrite. A project-relative path that starts with one of the project's root directories always resolves; a bare project-relative path (`src/main.rs`) also works when it is unambiguous. An absolute or `~`-prefixed path is accepted too, and every form is subject to the user's agent tool permission rules.
     ///
     /// The following examples assume we have two root directories in the project:
     /// - /a/b/backend
@@ -43,7 +43,8 @@ pub struct WriteFileToolInput {
     /// </example>
     ///
     /// <example>
-    /// To create or overwrite a global agent skill file, you may provide a path under `~/.agents/skills`, such as `~/.agents/skills/my-skill/SKILL.md`.
+    /// Outside the project, any absolute or `~`-prefixed path is accepted — for
+    /// example `~/.agents/skills/my-skill/SKILL.md` to write a global agent skill file.
     /// </example>
     pub path: PathBuf,
 
@@ -340,7 +341,7 @@ mod tests {
         fs.insert_tree(path!("/root"), json!({})).await;
         let skill_dir = agent_skills::global_skills_dir().join("my-skill");
         fs.insert_tree(&skill_dir, json!({})).await;
-        let (write_tool, _project, _action_log, fs, _thread) =
+        let (write_tool, project, _action_log, fs, _thread) =
             setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
 
         let input_path = PathBuf::from("~")
@@ -393,6 +394,33 @@ mod tests {
             fs.load(&skill_file).await.unwrap().replace("\r\n", "\n"),
             "# My Skill\n"
         );
+
+        // The write opened a single-file worktree for the skill file, so this
+        // also pins that the file is still reachable afterwards: a worktree
+        // rooted at the file must not turn it into "project content" and push
+        // the read onto the in-project route.
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let read_tool = Arc::new(crate::tools::ReadFileTool::new(project, action_log, true));
+        let result = cx
+            .update(|cx| {
+                read_tool.run(
+                    ToolInput::resolved(crate::tools::ReadFileToolInput {
+                        path: skill_file.to_string_lossy().into_owned(),
+                        start_line: None,
+                        end_line: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let language_model::LanguageModelToolResultContent::Text(text) =
+            result.expect("a global skill file the agent just wrote should be readable")
+        else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.as_ref(), "     1\t# My Skill\n");
     }
 
     #[gpui::test]
@@ -1488,6 +1516,104 @@ mod tests {
             "writing an absolute path outside the project should succeed: {result:?}"
         );
         assert!(fs.is_file(&target).await, "the file should exist on disk");
+    }
+
+    /// A `~` path outside the project the same route as an absolute one: the
+    /// tilde is expanded, not treated as a relative path inside the project.
+    #[gpui::test]
+    async fn test_write_file_outside_project_tilde_path(cx: &mut TestAppContext) {
+        init_test(cx);
+        allow_all_tool_permissions(cx);
+
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "src": { "main.rs": "fn main() {}" } }),
+        )
+        .await;
+        fs.create_dir(path!("/Users/zed").as_ref()).await.unwrap();
+        let (write_tool, _project, _action_log, fs, _thread) =
+            setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
+
+        let target = std::path::PathBuf::from(path!("/Users/zed/notes.md"));
+        let task = cx.update(|cx| {
+            write_tool.clone().run(
+                ToolInput::resolved(WriteFileToolInput {
+                    path: std::path::PathBuf::from("~/notes.md"),
+                    content: "# Notes\n".into(),
+                }),
+                ToolCallEventStream::test().0,
+                cx,
+            )
+        });
+
+        let result = task.await;
+        assert!(
+            result.is_ok(),
+            "writing a `~` path outside the project should succeed: {result:?}"
+        );
+        assert!(
+            fs.is_file(&target).await,
+            "the file should be created under the home directory"
+        );
+    }
+
+    /// Writing a file outside the project must not make the project claim it.
+    /// `open_local_buffer` creates a single-file worktree for the target, and
+    /// counting that as project content pushes every later operation on the
+    /// path onto the in-project route, where it fails as "not in the project"
+    /// (or "parent directory doesn't exist"). The regression shows up as
+    /// writing the same external path twice and as reading back what the agent
+    /// just wrote.
+    #[gpui::test]
+    async fn test_write_then_read_outside_project(cx: &mut TestAppContext) {
+        let (write_tool, project, _action_log, fs, _thread) =
+            setup_test(cx, json!({ "src": { "main.rs": "fn main() {}" } })).await;
+        allow_all_tool_permissions(cx);
+        fs.create_dir(path!("/outside").as_ref()).await.unwrap();
+
+        let target = std::path::PathBuf::from(path!("/outside/notes.md"));
+        for _ in 0..2 {
+            let result = cx
+                .update(|cx| {
+                    write_tool.clone().run(
+                        ToolInput::resolved(WriteFileToolInput {
+                            path: target.clone(),
+                            content: "# Notes\n".into(),
+                        }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await;
+            assert!(
+                result.is_ok(),
+                "writing the same external path twice should keep working: {result:?}"
+            );
+        }
+
+        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let read_tool = Arc::new(crate::tools::ReadFileTool::new(project, action_log, true));
+        let result = cx
+            .update(|cx| {
+                read_tool.run(
+                    ToolInput::resolved(crate::tools::ReadFileToolInput {
+                        path: target.to_string_lossy().into_owned(),
+                        start_line: None,
+                        end_line: None,
+                    }),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+            .await;
+
+        let language_model::LanguageModelToolResultContent::Text(text) =
+            result.expect("the file the agent wrote should be readable")
+        else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.as_ref(), "     1\t# Notes\n");
     }
 
     #[gpui::test]
