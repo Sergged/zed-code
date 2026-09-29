@@ -9,10 +9,11 @@ use editor::{Editor, EditorEvent};
 use futures::{StreamExt, channel::mpsc};
 use fuzzy::StringMatchCandidate;
 use gpui::{
-    Action, App, AsyncApp, ClipboardItem, DEFAULT_ADDITIONAL_WINDOW_SIZE, Div, Entity, FocusHandle,
-    Focusable, Global, KeyContext, ListState, ReadGlobal as _, Role, ScrollHandle, Stateful,
-    Subscription, Task, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions, actions, div, list, point, prelude::*, px, uniform_list,
+    Action, App, AsyncApp, Bounds, ClipboardItem, DEFAULT_ADDITIONAL_WINDOW_SIZE, Div, Entity,
+    FocusHandle, Focusable, Global, KeyContext, ListState, ReadGlobal as _, Role, ScrollHandle,
+    Stateful, Subscription, Task, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowOptions, actions, div, list, point, prelude::*, px,
+    uniform_list,
 };
 
 use language::Buffer;
@@ -889,6 +890,16 @@ fn open_settings_editor_with(
             },
         };
 
+        // On Windows the settings window opens maximized: with the sidebar and the
+        // settings pane shown side by side, the default size leaves too little room
+        // and makes the setting descriptions wrap aggressively. The bounds are the
+        // restore size, so unmaximizing the window brings it back to the default.
+        let window_bounds = if cfg!(windows) {
+            WindowBounds::Maximized(Bounds::centered(None, scaled_bounds, cx))
+        } else {
+            WindowBounds::centered(scaled_bounds, cx)
+        };
+
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
@@ -911,7 +922,7 @@ fn open_settings_editor_with(
                     width: SIDEBAR_WIDTH + CONTENT_MIN_WIDTH,
                     height: px(240.0),
                 }),
-                window_bounds: Some(WindowBounds::centered(scaled_bounds, cx)),
+                window_bounds: Some(window_bounds),
                 ..Default::default()
             },
             |window, cx| {
