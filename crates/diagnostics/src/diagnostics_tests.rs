@@ -2033,6 +2033,126 @@ async fn test_hover_popover_scrolls_editor_when_not_scrollable(cx: &mut TestAppC
 }
 
 #[gpui::test]
+async fn test_diagnostic_popover_buttons_are_laid_out_horizontally(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            hover_provider: None,
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+
+    cx.set_state(indoc! { "
+        fn teˇst() { println!(); }
+    " });
+
+    let lsp_store =
+        cx.update_editor(|editor, _, cx| editor.project().unwrap().read(cx).lsp_store());
+    let range = cx.lsp_range(indoc! { "
+        fn «test»() { println!(); }
+    " });
+    let hover_delay = cx.update(|_, cx| EditorSettings::get_global(cx).hover_popover_delay.0 + 1);
+
+    let set_diagnostic_message = |cx: &mut EditorLspTestContext, message: Option<String>| {
+        cx.update(|_, cx| {
+            lsp_store.update(cx, |lsp_store, cx| {
+                lsp_store.update_diagnostics(
+                    LanguageServerId(0),
+                    lsp::PublishDiagnosticsParams {
+                        uri: lsp::Uri::from_file_path(path!("/root/dir/file.rs")).unwrap(),
+                        version: None,
+                        diagnostics: message
+                            .map(|message| lsp::Diagnostic {
+                                range,
+                                severity: Some(lsp::DiagnosticSeverity::ERROR),
+                                message: lsp::DiagnosticMessage::from(message),
+                                ..Default::default()
+                            })
+                            .into_iter()
+                            .collect(),
+                    },
+                    None,
+                    DiagnosticSourceKind::Pushed,
+                    &[],
+                    cx,
+                )
+            })
+        })
+        .unwrap();
+    };
+
+    let hover_over_test = |cx: &mut EditorLspTestContext| {
+        let hover_point = cx.display_point(indoc! { "
+            fn teˇst() { println!(); }
+        " });
+        cx.update_editor(|editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            let anchor = snapshot
+                .buffer_snapshot()
+                .anchor_before(hover_point.to_offset(&snapshot, editor::Bias::Left));
+            editor::hover_popover::hover_at(editor, Some(anchor), None, window, cx)
+        });
+    };
+
+    let actions_bounds = |cx: &mut EditorLspTestContext| {
+        cx.cx
+            .debug_bounds("diagnostic-actions")
+            .expect("diagnostic popover buttons should have been drawn")
+    };
+
+    // The content takes the space it needs and the buttons sit next to it,
+    // rather than being stacked on top of the text.
+    let assert_buttons_are_beside_content = |cx: &mut EditorLspTestContext, description: &str| {
+        let actions = actions_bounds(cx);
+        let content = cx
+            .cx
+            .debug_bounds("diagnostic-content")
+            .expect("diagnostic popover content should have been drawn");
+        assert!(
+            actions.size.width > actions.size.height,
+            "{description}: buttons should be laid out horizontally, got {actions:?}"
+        );
+        assert!(
+            content.size.width > px(0.),
+            "{description}: content should have a width, got {content:?}"
+        );
+        assert!(
+            actions.origin.x >= content.origin.x + content.size.width,
+            "{description}: buttons should not overlap the content, got content {content:?} and actions {actions:?}"
+        );
+    };
+
+    // The buttons sit in a single row in the top-right corner, both for a
+    // short one-line message and for a longer one.
+    set_diagnostic_message(&mut cx, Some("A test diagnostic message.".to_string()));
+    cx.background_executor.run_until_parked();
+    hover_over_test(&mut cx);
+    cx.background_executor
+        .advance_clock(Duration::from_millis(hover_delay));
+    cx.background_executor.run_until_parked();
+
+    assert_buttons_are_beside_content(&mut cx, "single-line diagnostic");
+
+    // A multi-line diagnostic message keeps the same horizontal layout.
+    set_diagnostic_message(&mut cx, None);
+    cx.background_executor.run_until_parked();
+    set_diagnostic_message(
+        &mut cx,
+        Some("first line\nsecond line\nthird line".to_string()),
+    );
+    cx.background_executor.run_until_parked();
+    hover_over_test(&mut cx);
+    cx.background_executor
+        .advance_clock(Duration::from_millis(hover_delay));
+    cx.background_executor.run_until_parked();
+
+    assert_buttons_are_beside_content(&mut cx, "multi-line diagnostic");
+}
+
+#[gpui::test]
 async fn test_diagnostics_with_code(cx: &mut TestAppContext) {
     init_test(cx);
 
