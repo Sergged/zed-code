@@ -1525,18 +1525,15 @@ impl CompletionsMenu {
             match_entry_indices.push(entries.len());
             entries.push(CompletionMenuEntry::Match(mat.clone()));
         }
-        let selected_match_index = self
-            .suggest_memory
-            .select(
-                self.suggest_selection,
-                self.language.as_ref(),
-                &query,
-                &filter_matches,
-                &completions,
-            )
-            .unwrap_or(0);
+        let preselected_match_index = self.suggest_memory.select(
+            self.suggest_selection,
+            self.language.as_ref(),
+            &query,
+            &filter_matches,
+            &completions,
+        );
         let selected_item = match_entry_indices
-            .get(selected_match_index)
+            .get(preselected_match_index.unwrap_or(0))
             .copied()
             .unwrap_or(0);
         drop(completions);
@@ -1544,6 +1541,14 @@ impl CompletionsMenu {
         *self.entries.borrow_mut() = entries.into_boxed_slice();
         self.selected_item = selected_item;
         self.handle_selection_changed(provider.as_deref(), window, cx);
+        if preselected_match_index.is_some() && self.last_rendered_range.borrow().is_none() {
+            // The menu is being opened with a preselected completion, which can be far down the
+            // list. `handle_selection_changed` only scrolls the minimum amount needed to bring it
+            // into view, which leaves it at the very bottom edge of the menu; scroll it to the top
+            // of the visible window instead, so that it is visible as soon as the menu opens.
+            self.scroll_handle
+                .scroll_to_item(self.selected_item, ScrollStrategy::Top);
+        }
     }
 
     pub fn sort_string_matches(
