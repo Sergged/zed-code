@@ -1429,17 +1429,22 @@ impl DiagnosticPopover {
             })
             .child(
                 div()
-                    .relative()
+                    .h_flex()
+                    .items_start()
                     .py_1()
                     .pl_2()
-                    .pr_8()
+                    .pr_2()
                     .bg(self.background_color)
                     .border_1()
                     .border_color(self.border_color)
                     .rounded_lg()
+                    .gap_1()
                     .child(
                         div()
                             .id("diagnostic-content-container")
+                            .debug_selector(|| "diagnostic-content".to_string())
+                            .flex_1()
+                            .min_w_0()
                             .max_w(max_size.width)
                             .max_h(max_size.height)
                             .overflow_y_scroll()
@@ -1486,12 +1491,14 @@ impl DiagnosticPopover {
                             .as_shared_string()
                             .clone();
                         let range = self.local_diagnostic.range.clone();
+                        // A single row keeps the buttons within the first line of
+                        // the diagnostic, whichever way the message wraps.
                         div()
-                            .absolute()
-                            .top_1()
-                            .right_1()
+                            .id("diagnostic-actions")
+                            .debug_selector(|| "diagnostic-actions".to_string())
+                            .flex_none()
                             .flex()
-                            .flex_col()
+                            .flex_row()
                             .items_center()
                             .gap_0p5()
                             .child(
