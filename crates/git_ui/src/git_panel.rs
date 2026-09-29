@@ -8759,15 +8759,15 @@ impl GitPanel {
             )
         };
 
-        // Mirror the row hover treatment for the file currently focused in the
-        // editor, so the open file stands out in the changes list without
-        // introducing a distinct highlight color. Selection and marks keep
-        // their own, stronger backgrounds.
+        // Give the file currently focused in the editor the row's active
+        // (pressed) treatment, so the open file stands out in the changes list.
+        // Hover keeps its own, lighter treatment, and selection and marks keep
+        // their stronger backgrounds.
         let is_focused_file =
             !selected && !marked && active_repo_path.is_some_and(|path| path == &entry.repo_path);
 
         let base_bg = if is_focused_file {
-            hover_bg
+            active_bg
         } else {
             match (selected, marked) {
                 (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
