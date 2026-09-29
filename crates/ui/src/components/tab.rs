@@ -133,14 +133,22 @@ impl RenderOnce for Tab {
         // padding so the icon keeps the intended distance to the tab's edge.
         let (end_slot_icon_size, end_slot_padding) = IconSize::Small.square_components(window, cx);
         let end_slot_size = end_slot_icon_size + end_slot_padding * 2.;
-        let outer_padding = DynamicSpacing::Base12.px(cx);
-        // The close button's box includes padding around its icon; subtract it
-        // from the gap as well so the space between the label and the icon
-        // matches the intended spacing.
-        let gap = DynamicSpacing::Base08.px(cx) - end_slot_padding;
-        let (pl, pr) = match self.close_side {
-            TabCloseSide::End => (outer_padding, outer_padding - end_slot_padding),
-            TabCloseSide::Start => (outer_padding - end_slot_padding, outer_padding),
+        // The tab's outer element reserves 1px on each side (position padding
+        // or border), and the close button's box includes padding around its
+        // icon. Compensate for both so the three visible insets — left edge to
+        // file icon, label to close icon, close icon to right edge — are equal.
+        let inset = DynamicSpacing::Base12.px(cx);
+        let (pl, gap, pr) = match self.close_side {
+            TabCloseSide::End => (
+                inset - px(1.),
+                inset - end_slot_padding,
+                inset - end_slot_padding - px(1.),
+            ),
+            TabCloseSide::Start => (
+                inset + end_slot_padding - px(1.),
+                inset - end_slot_padding,
+                inset - px(1.),
+            ),
         };
 
         self.div
@@ -199,6 +207,88 @@ impl RenderOnce for Tab {
                             .children(end_slot),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IconButtonShape;
+    use gpui::{Render, TestAppContext};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct GeometryProbe {
+        icon_padding: Rc<Cell<Pixels>>,
+    }
+
+    impl Render for GeometryProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.icon_padding
+                .set(IconSize::Small.square_components(window, cx).1);
+            h_flex().child(
+                Tab::new("probe")
+                    .position(TabPosition::Middle(Ordering::Less))
+                    .child(
+                        h_flex()
+                            .debug_selector(|| "probe-content".into())
+                            .gap_1()
+                            .child(
+                                div()
+                                    .debug_selector(|| "probe-icon".into())
+                                    .child(Icon::new(IconName::FileRust).size(IconSize::Small)),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "probe-label".into())
+                                    .child(Label::new("main.rs").single_line()),
+                            ),
+                    )
+                    .end_slot(
+                        div().debug_selector(|| "probe-close".into()).child(
+                            IconButton::new("close", IconName::Close)
+                                .shape(IconButtonShape::Square)
+                                .size(ButtonSize::None)
+                                .icon_size(IconSize::Small),
+                        ),
+                    ),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn test_tab_insets_are_equal(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let icon_padding = Rc::new(Cell::new(px(0.)));
+        let (_probe, cx) = cx.add_window_view({
+            let icon_padding = icon_padding.clone();
+            |_, _| GeometryProbe { icon_padding }
+        });
+        cx.run_until_parked();
+
+        let tab = cx.debug_bounds("TAB-probe").unwrap();
+        let icon = cx.debug_bounds("probe-icon").unwrap();
+        let label = cx.debug_bounds("probe-label").unwrap();
+        let close = cx.debug_bounds("probe-close").unwrap();
+        // The close button's box is `icon + padding` on each side, so the icon
+        // glyph sits `padding` inside the measured button box.
+        let padding = icon_padding.get();
+
+        let left_to_icon = icon.left() - tab.left();
+        let label_to_close_icon = (close.left() + padding) - label.right();
+        let close_icon_to_right = tab.right() - (close.right() - padding);
+
+        let tolerance = px(0.5);
+        let within = |a: Pixels, b: Pixels| a - b < tolerance && b - a < tolerance;
+        assert!(
+            within(left_to_icon, label_to_close_icon) && within(left_to_icon, close_icon_to_right),
+            "tab insets should be equal, got left edge to icon: {left_to_icon:?}, \
+             label to close icon: {label_to_close_icon:?}, close icon to right edge: {close_icon_to_right:?}"
+        );
     }
 }
 
