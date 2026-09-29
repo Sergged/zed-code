@@ -41,6 +41,15 @@ pub enum ResolvedProjectPath {
 /// project using the provided `Fs`. The returned paths can be passed to
 /// [`resolve_project_path`] and related helpers so that they don't need to
 /// perform blocking filesystem I/O themselves.
+///
+/// A worktree whose root is a single file is not a project folder and is left
+/// out. Zed creates one of those whenever `open_local_buffer` opens a file
+/// outside every worktree — which is exactly what the file tools do for an
+/// out-of-project target — and `Project::default_visible_worktree_paths`
+/// likewise reports such a worktree's parent rather than the file. Counting it
+/// would make a file the agent just wrote outside the project look in-project,
+/// so the external route would be skipped and the path would fail as "not in
+/// the project" from then on.
 pub async fn canonicalize_worktree_roots<C: gpui::AppContext>(
     project: &Entity<Project>,
     fs: &Arc<dyn Fs>,
@@ -49,7 +58,10 @@ pub async fn canonicalize_worktree_roots<C: gpui::AppContext>(
     let abs_paths: Vec<Arc<Path>> = project.read_with(cx, |project, cx| {
         project
             .worktrees(cx)
-            .map(|worktree| worktree.read(cx).abs_path())
+            .filter_map(|worktree| {
+                let worktree = worktree.read(cx);
+                (!worktree.is_single_file()).then(|| worktree.abs_path())
+            })
             .collect()
     });
 
@@ -1453,26 +1465,15 @@ mod tests {
         });
     }
 
+    /// The tests below exercise the same worktree roots the tools use, so they
+    /// call the production helper instead of re-deriving it (and drifting from
+    /// it).
     async fn worktree_roots(
         project: &Entity<Project>,
         fs: &Arc<dyn Fs>,
         cx: &TestAppContext,
     ) -> Vec<PathBuf> {
-        let abs_paths: Vec<Arc<Path>> = project.read_with(cx, |project, cx| {
-            project
-                .worktrees(cx)
-                .map(|wt| wt.read(cx).abs_path())
-                .collect()
-        });
-
-        let mut roots = Vec::with_capacity(abs_paths.len());
-        for p in &abs_paths {
-            match fs.canonicalize(p).await {
-                Ok(c) => roots.push(c),
-                Err(_) => roots.push(p.to_path_buf()),
-            }
-        }
-        roots
+        canonicalize_worktree_roots(project, fs, cx).await
     }
 
     #[test]
