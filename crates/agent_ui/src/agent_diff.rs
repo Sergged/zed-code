@@ -805,7 +805,7 @@ fn render_diff_hunk_controls(
         .mr_0p5()
         .gap_1()
         .px_0p5()
-        .pb_1()
+        .py_1()
         .border_x_1()
         .border_t_1()
         .border_b_1()
@@ -813,7 +813,6 @@ fn render_diff_hunk_controls(
         .rounded_t_md()
         .rounded_b_md()
         .bg(cx.theme().colors().editor_background)
-        .gap_1()
         .block_mouse_except_scroll()
         .when(opaque_window, |this| this.shadow_md())
         .children(vec![

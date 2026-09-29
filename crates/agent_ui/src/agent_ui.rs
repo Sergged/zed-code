@@ -80,7 +80,7 @@ pub use crate::inline_assistant::InlineAssistant;
 pub use crate::message_editor::MessageEditorEvent;
 pub use crate::thread_metadata_store::ThreadId;
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
-pub use agent_diff_view::{AgentDiffView, AgentDiffViewToolbar};
+pub use agent_diff_view::{AgentDiffView, AgentDiffViewStyleToolbar, AgentDiffViewToolbar};
 pub use conversation_view::open_markdown_in_workspace;
 pub use conversation_view::{ConversationView, StateChange};
 pub use external_source_prompt::ExternalSourcePrompt;

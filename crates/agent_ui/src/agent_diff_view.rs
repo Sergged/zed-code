@@ -16,7 +16,8 @@ use action_log::ActionLogTelemetry;
 use anyhow::Result;
 use buffer_diff::BufferDiff;
 use editor::{
-    Anchor, Direction, Editor, EditorEvent, EditorSettings, SplittableEditor, ToggleSplitDiff,
+    Anchor, DiffStyleControls, Direction, Editor, EditorEvent, EditorSettings, SplittableEditor,
+    ToggleSplitDiff,
     actions::{GoToHunk, GoToPreviousHunk},
 };
 use gpui::{
@@ -24,15 +25,16 @@ use gpui::{
     Focusable, IntoElement, Render, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
     div,
 };
-use language::{Anchor as TextAnchor, Buffer, OffsetRangeExt as _, Point};
-use multi_buffer::{MultiBuffer, excerpt_context_lines};
+use language::{Anchor as TextAnchor, Buffer, HighlightedText, OffsetRangeExt as _, Point};
+use multi_buffer::{MultiBuffer, PathKey, excerpt_context_lines};
 use project::{Project, ProjectPath};
 use settings::{Settings, SettingsStore};
 use std::any::{Any, TypeId};
 use std::ops::Range;
 use std::sync::Arc;
 use ui::{
-    Button, Color, Divider, Icon, IconButton, IconName, KeyBinding, Label, Tooltip, prelude::*,
+    Button, Color, DiffStat, Divider, Icon, IconButton, IconName, KeyBinding, Label, Tooltip,
+    prelude::*,
 };
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
@@ -45,9 +47,11 @@ use workspace::{
 pub struct AgentDiffView {
     thread: Entity<AcpThread>,
     buffer: Entity<Buffer>,
+    diff: Entity<BufferDiff>,
     editor: Entity<SplittableEditor>,
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
+    showing_full_file: bool,
     _settings_subscription: Subscription,
 }
 
@@ -147,9 +151,11 @@ impl AgentDiffView {
         Self {
             thread,
             buffer,
+            diff,
             editor,
             focus_handle,
             workspace,
+            showing_full_file,
             _settings_subscription: settings_subscription,
         }
     }
@@ -202,6 +208,28 @@ impl AgentDiffView {
             .collect()
     }
 
+    fn toggle_showing_full_file(&mut self, cx: &mut Context<Self>) {
+        let showing_full_file = !self.showing_full_file;
+        let (ranges, context_line_count) =
+            Self::excerpt_ranges(&self.buffer, &self.diff, showing_full_file, cx);
+
+        self.editor.update(cx, |editor, cx| {
+            let path = PathKey::for_buffer(&self.buffer, cx);
+            editor.remove_excerpts_for_path(path.clone(), cx);
+            editor.update_excerpts_for_path(
+                path,
+                self.buffer.clone(),
+                ranges,
+                context_line_count,
+                self.diff.clone(),
+                cx,
+            );
+        });
+
+        self.showing_full_file = showing_full_file;
+        cx.notify();
+    }
+
     fn keep(&mut self, _: &Keep, window: &mut Window, cx: &mut Context<Self>) {
         let rhs_editor = self.editor.read(cx).rhs_editor().clone();
         rhs_editor.update(cx, |editor, cx| {
@@ -247,6 +275,13 @@ impl AgentDiffView {
         action_log.update(cx, |action_log, cx| {
             action_log.keep_all_edits(Some(telemetry), cx)
         });
+    }
+
+    /// Rows added and removed in this file's diff, for the toolbar's `+`/`-`
+    /// stat. `SoloDiffView` reads this from the git index; the agent's diff is
+    /// the buffer against its pristine base, so count the hunks directly.
+    fn diff_row_counts(&self, cx: &App) -> (u32, u32) {
+        self.diff.read(cx).snapshot(cx).changed_row_counts()
     }
 
     /// Opens the working-tree file this diff reviews in the editor.
@@ -343,6 +378,27 @@ impl Item for AgentDiffView {
         ))
     }
 
+    fn breadcrumb_location(&self, _: &App) -> ToolbarItemLocation {
+        ToolbarItemLocation::PrimaryLeft
+    }
+
+    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<gpui::Font>)> {
+        let file = self.buffer.read(cx).file()?;
+        let text: SharedString = file.full_path(cx).to_string_lossy().into();
+
+        Some((
+            vec![HighlightedText {
+                text,
+                highlights: vec![],
+            }],
+            Some(
+                theme_settings::ThemeSettings::get_global(cx)
+                    .buffer_font
+                    .clone(),
+            ),
+        ))
+    }
+
     fn telemetry_event_text(&self) -> Option<&'static str> {
         Some("Agent Diff View Opened")
     }
@@ -421,6 +477,13 @@ impl Item for AgentDiffView {
     ) -> Option<gpui::AnyEntity> {
         if type_id == TypeId::of::<Self>() {
             Some(self_handle.clone().into())
+        } else if type_id == TypeId::of::<SplittableEditor>() {
+            // Hiding the splittable editor keeps the buffer search bar in its own
+            // row below this toolbar, where it complements the buttons instead
+            // of displacing them, and keeps it from re-rendering the
+            // split/unified and fold controls this toolbar already owns. Same
+            // choice as `SoloDiffView`.
+            None
         } else {
             self.editor.act_as_type(type_id, cx)
         }
@@ -454,8 +517,82 @@ impl Render for AgentDiffView {
     }
 }
 
-/// Toolbar for [`AgentDiffView`]: hunk navigation plus per-file Keep/Reject and
-/// View File.
+/// Left toolbar for [`AgentDiffView`]: the file-view toggles, mirroring
+/// `SoloDiffStyleToolbar`. The file path itself comes from the shared
+/// `Breadcrumbs` item, which is registered after this one, so the row reads
+/// Show Full File, split/unified, path.
+pub struct AgentDiffViewStyleToolbar {
+    active_view: Option<WeakEntity<AgentDiffView>>,
+}
+
+impl AgentDiffViewStyleToolbar {
+    pub fn new(_: &mut Context<Self>) -> Self {
+        Self { active_view: None }
+    }
+
+    fn active_view(&self) -> Option<Entity<AgentDiffView>> {
+        self.active_view.as_ref()?.upgrade()
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for AgentDiffViewStyleToolbar {}
+
+impl ToolbarItemView for AgentDiffViewStyleToolbar {
+    fn set_active_pane_item(
+        &mut self,
+        active_pane_item: Option<&dyn ItemHandle>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self.active_view = active_pane_item
+            .and_then(|item| item.act_as::<AgentDiffView>(cx))
+            .map(|entity| entity.downgrade());
+
+        if self.active_view.is_some() {
+            ToolbarItemLocation::PrimaryLeft
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
+}
+
+impl Render for AgentDiffViewStyleToolbar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(view) = self.active_view() else {
+            return Empty.into_any_element();
+        };
+
+        let (showing_full_file, editor) = {
+            let view = view.read(cx);
+            (view.showing_full_file, view.editor.clone())
+        };
+
+        let (expand_icon, expand_tooltip) = if showing_full_file {
+            (IconName::ChevronDownUp, "Show Changes Only")
+        } else {
+            (IconName::ChevronUpDown, "Show Full File")
+        };
+
+        h_flex()
+            .pl_0p5()
+            .gap_1()
+            .child(
+                IconButton::new("agent-diff-toggle-excerpts", expand_icon)
+                    .icon_size(IconSize::Small)
+                    .tooltip(Tooltip::text(expand_tooltip))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(view) = this.active_view() {
+                            view.update(cx, |view, cx| view.toggle_showing_full_file(cx));
+                        }
+                    })),
+            )
+            .child(DiffStyleControls::new(editor))
+            .into_any_element()
+    }
+}
+
+/// Right toolbar for [`AgentDiffView`]: diff stat, hunk navigation, and the
+/// per-file Keep/Reject plus View File actions, mirroring `SoloDiffGitToolbar`.
 pub struct AgentDiffViewToolbar {
     active_view: Option<WeakEntity<AgentDiffView>>,
 }
@@ -510,7 +647,7 @@ impl ToolbarItemView for AgentDiffViewToolbar {
             .map(|entity| entity.downgrade());
 
         if self.active_view.is_some() {
-            ToolbarItemLocation::PrimaryLeft
+            ToolbarItemLocation::PrimaryRight
         } else {
             ToolbarItemLocation::Hidden
         }
@@ -525,15 +662,20 @@ impl Render for AgentDiffViewToolbar {
 
         let focus_handle = view.read(cx).focus_handle.clone();
         let editor_focus_handle = view.read(cx).editor.read(cx).focus_handle(cx);
+        let (added_rows, removed_rows) = view.read(cx).diff_row_counts(cx);
 
-        // Hunk navigation stays at the left; the review actions are pushed to
-        // the toolbar's right edge. The platform's buffer-search bar renders the
-        // fold/expand and split/unified controls for multibuffer items, so we
-        // don't repeat them here (same as `AgentDiffPane`).
+        // This view hides itself as a `SplittableEditor`, so the buffer search
+        // bar deploys in its own row below the toolbar and does not render the
+        // split/unified and fold controls that `AgentDiffViewStyleToolbar` owns
+        // (same arrangement as `SoloDiffView`).
         h_flex()
-            .flex_1()
-            .pl_0p5()
-            .gap_1()
+            .gap_1p5()
+            .child(DiffStat::new(
+                "agent-diff-stat",
+                added_rows as usize,
+                removed_rows as usize,
+            ))
+            .child(Divider::vertical().ml_1())
             .child(
                 IconButton::new("agent-diff-prev-hunk", IconName::ArrowUp)
                     .icon_size(IconSize::Small)
@@ -558,61 +700,55 @@ impl Render for AgentDiffViewToolbar {
                         this.dispatch_to_editor(&GoToHunk, window, cx)
                     })),
             )
+            .child(Divider::vertical())
             .child(
-                h_flex()
-                    .ml_auto()
-                    .gap_1()
-                    .child(
-                        Button::new("agent-diff-reject", "Reject")
-                            .key_binding(
-                                KeyBinding::for_action_in(&Reject, &focus_handle, cx)
-                                    .map(|kb| kb.size(rems_from_px(12_f32))),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch(&Reject, window, cx)
-                            })),
+                Button::new("agent-diff-reject", "Reject")
+                    .key_binding(
+                        KeyBinding::for_action_in(&Reject, &focus_handle, cx)
+                            .map(|kb| kb.size(rems_from_px(12_f32))),
                     )
-                    .child(
-                        Button::new("agent-diff-keep", "Keep")
-                            .key_binding(
-                                KeyBinding::for_action_in(&Keep, &focus_handle, cx)
-                                    .map(|kb| kb.size(rems_from_px(12_f32))),
-                            )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.dispatch(&Keep, window, cx)),
-                            ),
-                    )
-                    .child(Divider::vertical())
-                    .child(
-                        Button::new("agent-diff-reject-all", "Reject All")
-                            .key_binding(
-                                KeyBinding::for_action_in(&RejectAll, &focus_handle, cx)
-                                    .map(|kb| kb.size(rems_from_px(12_f32))),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch(&RejectAll, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("agent-diff-keep-all", "Keep All")
-                            .key_binding(
-                                KeyBinding::for_action_in(&KeepAll, &focus_handle, cx)
-                                    .map(|kb| kb.size(rems_from_px(12_f32))),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch(&KeepAll, window, cx)
-                            })),
-                    )
-                    .child(Divider::vertical())
-                    .child(
-                        Button::new("agent-diff-view-file", "View File")
-                            .tooltip(Tooltip::text("View File"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(view) = this.active_view() {
-                                    view.update(cx, |view, cx| view.view_file(window, cx));
-                                }
-                            })),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.dispatch(&Reject, window, cx)),
                     ),
+            )
+            .child(
+                Button::new("agent-diff-keep", "Keep")
+                    .key_binding(
+                        KeyBinding::for_action_in(&Keep, &focus_handle, cx)
+                            .map(|kb| kb.size(rems_from_px(12_f32))),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.dispatch(&Keep, window, cx))),
+            )
+            .child(Divider::vertical())
+            .child(
+                Button::new("agent-diff-reject-all", "Reject All")
+                    .key_binding(
+                        KeyBinding::for_action_in(&RejectAll, &focus_handle, cx)
+                            .map(|kb| kb.size(rems_from_px(12_f32))),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.dispatch(&RejectAll, window, cx)),
+                    ),
+            )
+            .child(
+                Button::new("agent-diff-keep-all", "Keep All")
+                    .key_binding(
+                        KeyBinding::for_action_in(&KeepAll, &focus_handle, cx)
+                            .map(|kb| kb.size(rems_from_px(12_f32))),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.dispatch(&KeepAll, window, cx)),
+                    ),
+            )
+            .child(Divider::vertical())
+            .child(
+                Button::new("agent-diff-view-file", "View File")
+                    .tooltip(Tooltip::text("View File"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(view) = this.active_view() {
+                            view.update(cx, |view, cx| view.view_file(window, cx));
+                        }
+                    })),
             )
             .into_any_element()
     }
