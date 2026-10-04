@@ -19,7 +19,6 @@
     "git_diff": true,
     "cursors": true,
     "show": "always",
-    "track": "track",
   },
   "gutter": {
     "folds": false,
