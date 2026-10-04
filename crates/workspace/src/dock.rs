@@ -347,6 +347,15 @@ impl Into<settings::DockPosition> for DockPosition {
     }
 }
 
+impl From<settings::DockSide> for DockPosition {
+    fn from(value: settings::DockSide) -> Self {
+        match value {
+            settings::DockSide::Left => Self::Left,
+            settings::DockSide::Right => Self::Right,
+        }
+    }
+}
+
 impl From<TerminalDockPosition> for DockPosition {
     fn from(value: TerminalDockPosition) -> Self {
         match value {
