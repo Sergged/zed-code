@@ -9,7 +9,7 @@ use editor::{
     DiffHunkRenderer, Direction, Editor, EditorEvent, EditorSettings, MultiBuffer,
     MultiBufferSnapshot, SelectionEffects, SplittableEditor, ToPoint,
     actions::{GoToHunk, GoToPreviousHunk},
-    multibuffer_context_lines,
+    diff_hunk_controls_pill, multibuffer_context_lines,
     scroll::Autoscroll,
 };
 
@@ -18,7 +18,7 @@ use gpui::{
     Global, SharedString, Subscription, Task, TaskExt, WeakEntity, Window, prelude::*,
 };
 
-use language::{Buffer, Capability, OffsetRangeExt, Point};
+use language::{Anchor, Buffer, BufferId, Capability, OffsetRangeExt, Point};
 use multi_buffer::PathKey;
 use project::{Project, ProjectItem, ProjectPath};
 use settings::{Settings, SettingsStore};
@@ -28,7 +28,9 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use ui::{CommonAnimationExt, Divider, IconButtonShape, KeyBinding, Tooltip, prelude::*};
+use ui::{
+    CommonAnimationExt, Divider, IconButtonShape, KeyBinding, LineHeightStyle, Tooltip, prelude::*,
+};
 use util::{ResultExt, truncate_and_trailoff};
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
@@ -365,24 +367,76 @@ fn keep_edits_in_ranges(
         .diff_hunks_in_ranges(&ranges, buffer_snapshot)
         .collect::<Vec<_>>();
 
+    let hunks_by_buffer = resolve_hunks_by_buffer(editor, &diff_hunks_in_ranges, cx);
+    if hunks_by_buffer.is_empty() {
+        return;
+    }
+
     update_editor_selection(editor, buffer_snapshot, &diff_hunks_in_ranges, window, cx);
 
-    let multibuffer = editor.buffer().clone();
-    for hunk in &diff_hunks_in_ranges {
-        let buffer = multibuffer.read(cx).buffer(hunk.buffer_id);
-        if let Some(buffer) = buffer {
-            let action_log = thread.read(cx).action_log().clone();
-            let telemetry = ActionLogTelemetry::from(thread.read(cx));
+    let action_log = thread.read(cx).action_log().clone();
+    let telemetry = ActionLogTelemetry::from(thread.read(cx));
+    for (buffer, ranges) in hunks_by_buffer {
+        for range in ranges {
             action_log.update(cx, |action_log, cx| {
-                action_log.keep_edits_in_range(
-                    buffer,
-                    hunk.buffer_range.clone(),
-                    Some(telemetry),
-                    cx,
-                )
+                action_log.keep_edits_in_range(buffer.clone(), range, Some(telemetry.clone()), cx)
             });
         }
     }
+}
+
+/// Groups hunks by the working buffer they address.
+///
+/// The LHS of a split diff holds an *inverted* diff, so a hunk collected there
+/// reports the base-text buffer as its `buffer_id`. Passing that straight to the
+/// action log makes it silently drop the review, which is why Keep and Reject did
+/// nothing when clicked in the left column. Resolving the hunks maps them back to
+/// the buffer the user actually edits; hunks whose buffer has no diff registered
+/// already address it directly and are used as-is.
+fn resolve_hunks_by_buffer(
+    editor: &Editor,
+    hunks: &[multi_buffer::MultiBufferDiffHunk],
+    cx: &App,
+) -> Vec<(Entity<Buffer>, Vec<Range<Anchor>>)> {
+    let multibuffer = editor.buffer().read(cx);
+    let mut hunks_by_buffer_id: HashMap<BufferId, Vec<multi_buffer::MultiBufferDiffHunk>> =
+        HashMap::default();
+    for hunk in hunks {
+        hunks_by_buffer_id
+            .entry(hunk.buffer_id)
+            .or_default()
+            .push(hunk.clone());
+    }
+
+    let mut resolved_hunks = Vec::new();
+    for hunks in hunks_by_buffer_id.into_values() {
+        let resolved = editor.resolve_diff_hunks(hunks.clone(), cx);
+        if resolved.is_empty() {
+            if let Some(buffer) = multibuffer.buffer(hunks[0].buffer_id) {
+                resolved_hunks.push((
+                    buffer,
+                    hunks.into_iter().map(|hunk| hunk.buffer_range).collect(),
+                ));
+            }
+            continue;
+        }
+
+        for resolved in resolved {
+            let Some(buffer) = resolved.buffer else {
+                continue;
+            };
+            resolved_hunks.push((
+                buffer,
+                resolved
+                    .hunks
+                    .into_iter()
+                    .map(|hunk| hunk.buffer_range)
+                    .collect(),
+            ));
+        }
+    }
+
+    resolved_hunks
 }
 
 pub(crate) fn reject_edits_in_ranges(
@@ -398,26 +452,18 @@ pub(crate) fn reject_edits_in_ranges(
         .diff_hunks_in_ranges(&ranges, buffer_snapshot)
         .collect::<Vec<_>>();
 
-    update_editor_selection(editor, buffer_snapshot, &diff_hunks_in_ranges, window, cx);
-
-    let multibuffer = editor.buffer().clone();
-
-    let mut ranges_by_buffer = HashMap::default();
-    for hunk in &diff_hunks_in_ranges {
-        let buffer = multibuffer.read(cx).buffer(hunk.buffer_id);
-        if let Some(buffer) = buffer {
-            ranges_by_buffer
-                .entry(buffer.clone())
-                .or_insert_with(Vec::new)
-                .push(hunk.buffer_range.clone());
-        }
+    let hunks_by_buffer = resolve_hunks_by_buffer(editor, &diff_hunks_in_ranges, cx);
+    if hunks_by_buffer.is_empty() {
+        return;
     }
+
+    update_editor_selection(editor, buffer_snapshot, &diff_hunks_in_ranges, window, cx);
 
     let action_log = thread.read(cx).action_log().clone();
     let telemetry = ActionLogTelemetry::from(thread.read(cx));
     let mut undo_buffers = Vec::new();
 
-    for (buffer, ranges) in ranges_by_buffer {
+    for (buffer, ranges) in hunks_by_buffer {
         action_log
             .update(cx, |action_log, cx| {
                 let (task, undo_info) =
@@ -796,27 +842,12 @@ fn render_diff_hunk_controls(
     cx: &mut App,
 ) -> AnyElement {
     let editor = editor.clone();
-    // Drop shadows render as a dark halo on transparent windows.
-    let opaque_window =
-        cx.theme().window_background_appearance() == gpui::WindowBackgroundAppearance::Opaque;
 
-    h_flex()
-        .h(line_height)
-        .mr_0p5()
-        .gap_1()
-        .px_0p5()
-        .py_1()
-        .border_x_1()
-        .border_t_1()
-        .border_b_1()
-        .border_color(cx.theme().colors().border)
-        .rounded_t_md()
-        .rounded_b_md()
-        .bg(cx.theme().colors().editor_background)
-        .block_mouse_except_scroll()
-        .when(opaque_window, |this| this.shadow_md())
+    diff_hunk_controls_pill(line_height, cx)
         .children(vec![
             Button::new(("reject", row as u64), "Reject")
+                .full_height()
+                .label_line_height_style(LineHeightStyle::UiLabel)
                 .disabled(is_created_file)
                 .key_binding(
                     KeyBinding::for_action_in(&Reject, &editor.read(cx).focus_handle(cx), cx)
@@ -841,6 +872,8 @@ fn render_diff_hunk_controls(
                     }
                 }),
             Button::new(("keep", row as u64), "Keep")
+                .full_height()
+                .label_line_height_style(LineHeightStyle::UiLabel)
                 .key_binding(
                     KeyBinding::for_action_in(&Keep, &editor.read(cx).focus_handle(cx), cx)
                         .map(|kb| kb.size(rems_from_px(12_f32))),
@@ -2338,6 +2371,128 @@ mod tests {
         assert_eq!(
             diff_toolbar.read_with(cx, |toolbar, cx| toolbar.location(cx)),
             ToolbarItemLocation::Hidden
+        );
+    }
+
+    /// Bug A: Keep and Reject must work when invoked from the left side of the split.
+    ///
+    /// The LHS holds an inverted diff whose `buffer_id` is the base-text buffer, so
+    /// before the fix the hunk ranges were handed to the action log against a buffer it
+    /// does not track and the review was silently dropped — the cursor moved and nothing
+    /// else happened.
+    #[gpui::test]
+    async fn test_keep_and_reject_from_split_lhs(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.editor.diff_view_style = Some(DiffViewStyle::Split);
+                });
+            });
+            prompt_store::init(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            language_model::init(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/test"),
+            json!({"file1": "abc\ndef\nghi\njkl\nmno\npqr\nstu\nvwx\nyz"}),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/test").as_ref()], cx).await;
+        let buffer_path = project
+            .read_with(cx, |project, cx| {
+                project.find_project_path("test/file1", cx)
+            })
+            .unwrap();
+
+        let connection = Rc::new(acp_thread::StubAgentConnection::new());
+        let thread = cx
+            .update(|cx| {
+                connection.clone().new_session(
+                    project.clone(),
+                    PathList::new(&[Path::new(path!("/test"))]),
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        let action_log = cx.read(|cx| thread.read(cx).action_log().clone());
+
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let agent_diff = cx.new_window_entity(|window, cx| {
+            AgentDiffPane::new(thread.clone(), workspace.downgrade(), window, cx)
+        });
+
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(buffer_path, cx))
+            .await
+            .unwrap();
+
+        // Agent deletes lines 2 and 5, producing two hunks.
+        cx.update(|_, cx| {
+            action_log.update(cx, |log, cx| log.buffer_read(buffer.clone(), cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer
+                    .edit([(Point::new(1, 0)..Point::new(2, 0), "")], None, cx)
+                    .unwrap();
+                buffer.finalize_last_transaction();
+            });
+            buffer.update(cx, |buffer, cx| {
+                buffer
+                    .edit([(Point::new(4, 0)..Point::new(5, 0), "")], None, cx)
+                    .unwrap();
+                buffer.finalize_last_transaction();
+            });
+            action_log.update(cx, |log, cx| log.buffer_edited(buffer.clone(), cx));
+        });
+        cx.run_until_parked();
+
+        assert!(agent_diff.read_with(cx, |diff, cx| diff.editor.read(cx).is_split()));
+        let lhs = agent_diff
+            .read_with(cx, |diff, cx| diff.editor.read(cx).lhs_editor().cloned())
+            .expect("split view should have a left side");
+
+        // Drive Reject through the LHS editor, which is what a click on the left
+        // column's hunk pill ends up doing.
+        let lhs_position = lhs.read_with(cx, |editor, cx| {
+            editor
+                .buffer()
+                .read(cx)
+                .read(cx)
+                .anchor_before(Point::new(1, 0))
+        });
+        cx.update(|window, cx| {
+            lhs.update(cx, |editor, cx| {
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                    selections.select_ranges([lhs_position..lhs_position])
+                });
+            });
+        });
+        lhs.update_in(cx, |editor, window, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            reject_edits_in_ranges(
+                editor,
+                &snapshot,
+                &thread,
+                vec![lhs_position..lhs_position],
+                workspace.downgrade(),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        // The rejected hunk is back in the buffer, which is what silently failed before.
+        assert_eq!(
+            buffer.read_with(cx, |buffer, _| buffer.text()),
+            "abc\ndef\nghi\njkl\nmno\npqr\nstu\nvwx\nyz",
+            "Reject invoked from the LHS must revert the agent's deletion"
         );
     }
 
