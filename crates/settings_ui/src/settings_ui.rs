@@ -628,6 +628,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::InactiveOpacity>(render_editable_number_field)
         .add_basic_renderer::<settings::MinimumContrast>(render_editable_number_field)
         .add_basic_renderer::<settings::ShowScrollbar>(render_dropdown)
+        .add_basic_renderer::<settings::ScrollbarTrack>(render_dropdown)
         .add_basic_renderer::<settings::ScrollbarDiagnostics>(render_dropdown)
         .add_basic_renderer::<settings::ShowMinimap>(render_dropdown)
         .add_basic_renderer::<settings::DisplayIn>(render_dropdown)

@@ -3645,9 +3645,83 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
 }
 
 fn search_and_files_page() -> SettingsPage {
-    fn search_section() -> [SettingsPageItem; 10] {
+    fn search_section() -> [SettingsPageItem; 13] {
         [
             SettingsPageItem::SectionHeader("Search"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Search Panel Dock",
+                description: "Where to dock the search panel.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("search.dock"),
+                    pick: |settings_content| settings_content.editor.search.as_ref()?.dock.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.editor.search.get_or_insert_default().dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Scrollbar",
+                description: "Show the scrollbar in the search panel.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("search.scrollbar.show"),
+                    pick: |settings_content| {
+                        show_scrollbar_or_editor(settings_content, |settings_content| {
+                            settings_content
+                                .editor
+                                .search
+                                .as_ref()?
+                                .scrollbar
+                                .as_ref()?
+                                .show
+                                .as_ref()
+                        })
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .search
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .show = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Scrollbar Track",
+                description: "Whether the search panel scrollbar reserves space for a track next to the content or floats over it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("search.scrollbar.track"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .search
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .track
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .search
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .track = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Whole Word",
                 description: "Search for whole words by default.",
@@ -4061,7 +4135,7 @@ fn search_and_files_page() -> SettingsPage {
 }
 
 fn window_and_layout_page() -> SettingsPage {
-    fn status_bar_section() -> [SettingsPageItem; 12] {
+    fn status_bar_section() -> [SettingsPageItem; 13] {
         [
             SettingsPageItem::SectionHeader("Status Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4278,6 +4352,25 @@ fn window_and_layout_page() -> SettingsPage {
                             .status_bar
                             .get_or_insert_default()
                             .show_active_file = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Icon Scale",
+                description: "Multiplier for the panel button icons in the vertical status strips on the left and right edges of the workspace (1.0 = the same size as the bottom status bar's icons).",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("status_bar.icon_scale"),
+                    pick: |settings_content| {
+                        settings_content.status_bar.as_ref()?.icon_scale.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .status_bar
+                            .get_or_insert_default()
+                            .icon_scale = value;
                     },
                 }),
                 metadata: None,
@@ -4605,7 +4698,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn tab_bar_section() -> [SettingsPageItem; 9] {
+    fn tab_bar_section() -> [SettingsPageItem; 10] {
         [
             SettingsPageItem::SectionHeader("Tab Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4645,6 +4738,29 @@ fn window_and_layout_page() -> SettingsPage {
                     pick: |settings_content| settings_content.tabs.as_ref()?.file_icons.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.tabs.get_or_insert_default().file_icons = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Full Tab Titles",
+                description: "Render the full tab title, expanding the tab width to fit the file name instead of truncating it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("tabs.show_full_tab_titles"),
+                    pick: |settings_content| {
+                        settings_content
+                            .tabs
+                            .as_ref()?
+                            .show_full_tab_titles
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .tabs
+                            .get_or_insert_default()
+                            .show_full_tab_titles = value;
                     },
                 }),
                 metadata: None,
@@ -5338,7 +5454,7 @@ fn window_and_layout_page() -> SettingsPage {
 }
 
 fn panels_page() -> SettingsPage {
-    fn project_panel_section() -> [SettingsPageItem; 30] {
+    fn project_panel_section() -> [SettingsPageItem; 31] {
         [
             SettingsPageItem::SectionHeader("Project Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5381,7 +5497,7 @@ fn panels_page() -> SettingsPage {
             SettingsPageItem::DynamicItem(DynamicItem {
                 discriminant: SettingItem {
                     title: "Project Panel Title Tooltips Delay",
-                    description: "Delay in milliseconds before tooltips appear for project panel titles. Also applies to the tooltip shown when hovering over editor tabs.",
+                    description: "Delay in milliseconds before tooltips appear for project panel titles. Also applies to the tooltips shown when hovering over editor tabs and git panel entries.",
                     field: Box::new(SettingField {
                         organization_override: None,
                         json_path: Some("project_panel.title_tooltip_delay$"),
@@ -5694,6 +5810,33 @@ fn panels_page() -> SettingsPage {
                             .project_panel
                             .get_or_insert_default()
                             .bold_folder_labels = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Scrollbar Track",
+                description: "Whether the project panel scrollbar reserves space for a track next to the content or floats over it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("project_panel.scrollbar.track"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_panel
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .track
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_panel
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .track = value;
                     },
                 }),
                 metadata: None,
@@ -6398,7 +6541,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn git_panel_section() -> [SettingsPageItem; 19] {
+    fn git_panel_section() -> [SettingsPageItem; 20] {
         [
             SettingsPageItem::SectionHeader("Git Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6639,7 +6782,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Primary Click Behavior",
-                description: "Default action when clicking a changed file in the Git panel.",
+                description: "Default action when clicking a changed file in the Git panel. With preview tabs enabled, a single click opens it as a preview tab and a double click opens it as a persistent tab; with preview tabs disabled, a single click opens a persistent tab and a double click does nothing.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("git_panel.entry_primary_click_action"),
@@ -6724,6 +6867,33 @@ fn panels_page() -> SettingsPage {
                             .git_panel
                             .get_or_insert_default()
                             .message_editor_min_lines = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Scroll Bar Track",
+                description: "Whether the git panel scrollbar reserves space for a track next to the content or floats over it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("git_panel.scrollbar.track"),
+                    pick: |settings_content| {
+                        settings_content
+                            .git_panel
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .track
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .git_panel
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .track = value;
                     },
                 }),
                 metadata: None,
@@ -6990,6 +7160,191 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    fn references_panel_section() -> [SettingsPageItem; 6] {
+        [
+            SettingsPageItem::SectionHeader("References Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "References Panel Button",
+                description: "Show the references panel button in the status bar.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("references_panel.button"),
+                    pick: |settings_content| {
+                        settings_content.references_panel.as_ref()?.button.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .references_panel
+                            .get_or_insert_default()
+                            .button = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "References Panel Dock",
+                description: "Where to dock the references panel.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("references_panel.dock"),
+                    pick: |settings_content| {
+                        settings_content.references_panel.as_ref()?.dock.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .references_panel
+                            .get_or_insert_default()
+                            .dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "References Panel Default Width",
+                description: "Default width of the references panel in pixels.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("references_panel.default_width"),
+                    pick: |settings_content| {
+                        settings_content
+                            .references_panel
+                            .as_ref()?
+                            .default_width
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .references_panel
+                            .get_or_insert_default()
+                            .default_width = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Scrollbar",
+                description: "Show the scrollbar in the references panel.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("references_panel.scrollbar.show"),
+                    pick: |settings_content| {
+                        show_scrollbar_or_editor(settings_content, |settings_content| {
+                            settings_content
+                                .references_panel
+                                .as_ref()?
+                                .scrollbar
+                                .as_ref()?
+                                .show
+                                .as_ref()
+                        })
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .references_panel
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .show = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Scrollbar Track",
+                description: "Whether the references panel scrollbar reserves space for a track next to the content or floats over it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("references_panel.scrollbar.track"),
+                    pick: |settings_content| {
+                        settings_content
+                            .references_panel
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .track
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .references_panel
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .track = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
+    fn context_menu_section() -> [SettingsPageItem; 3] {
+        [
+            SettingsPageItem::SectionHeader("Context Menu"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Scrollbar",
+                description: "Show the scrollbar in context menus and dropdowns that overflow.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("context_menu.scrollbar.show"),
+                    pick: |settings_content| {
+                        show_scrollbar_or_editor(settings_content, |settings_content| {
+                            settings_content
+                                .context_menu
+                                .as_ref()?
+                                .scrollbar
+                                .as_ref()?
+                                .show
+                                .as_ref()
+                        })
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .context_menu
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .show = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Scrollbar Track",
+                description: "Whether the context menu scrollbar reserves space for a track next to the content or floats over it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("context_menu.scrollbar.track"),
+                    pick: |settings_content| {
+                        settings_content
+                            .context_menu
+                            .as_ref()?
+                            .scrollbar
+                            .as_ref()?
+                            .track
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .context_menu
+                            .get_or_insert_default()
+                            .scrollbar
+                            .get_or_insert_default()
+                            .track = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     SettingsPage {
         title: "Panels",
         items: concat_sections![
@@ -6997,6 +7352,8 @@ fn panels_page() -> SettingsPage {
             terminal_panel_section(),
             outline_panel_section(),
             git_panel_section(),
+            references_panel_section(),
+            context_menu_section(),
             debugger_panel_section(),
             collaboration_panel_section(),
             agent_panel_section(),
