@@ -23,10 +23,7 @@ use askpass::AskPassDelegate;
 use client::zed_urls;
 use collections::{BTreeMap, HashMap, HashSet};
 use db::kvp::KeyValueStore;
-use editor::{
-    Editor, EditorElement, EditorMode, EditorSettings, MultiBuffer, MultiBufferOffset,
-    SizingBehavior,
-};
+use editor::{Editor, EditorElement, EditorMode, MultiBuffer, MultiBufferOffset, SizingBehavior};
 use editor::{EditorStyle, RewrapOptions};
 use file_icons::FileIcons;
 use futures::StreamExt as _;
@@ -8216,7 +8213,7 @@ impl GitPanel {
                             .tracked_scroll_handle(&self.scroll_handle)
                             .with_track_along_for(
                                 ScrollAxes::Vertical,
-                                EditorSettings::get_global(cx).scrollbar.track,
+                                GitPanelSettings::get_global(cx).scrollbar.track,
                                 cx.theme().colors().panel_background,
                             )
                             .with_track_along(

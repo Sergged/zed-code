@@ -48,7 +48,10 @@ struct ReferencesPanelScrollbarAccessor;
 
 impl ScrollbarVisibility for ReferencesPanelScrollbarAccessor {
     fn visibility(&self, cx: &App) -> ShowScrollbar {
-        EditorSettings::get_global(cx).scrollbar.show
+        ReferencesPanelSettings::get_global(cx)
+            .scrollbar
+            .show
+            .unwrap_or_else(|| EditorSettings::get_global(cx).scrollbar.show)
     }
 }
 
@@ -739,7 +742,7 @@ impl ReferencesPanel {
                     .tracked_scroll_handle(&self.scroll_handle.clone())
                     .with_track_along_for(
                         ScrollAxes::Vertical,
-                        EditorSettings::get_global(cx).scrollbar.track,
+                        ReferencesPanelSettings::get_global(cx).scrollbar.track,
                         cx.theme().colors().panel_background,
                     )
                     .with_track_along(ScrollAxes::Horizontal, cx.theme().colors().panel_background)
@@ -968,7 +971,11 @@ impl Panel for ReferencesPanel {
     ) {
         let fs = <dyn fs::Fs>::global(cx);
         update_settings_file(fs, cx, move |settings, _| {
-            settings.references_panel.get_or_insert_default().dock = Some(position.into());
+            let dock = match position {
+                DockPosition::Left | DockPosition::Bottom => settings::DockSide::Left,
+                DockPosition::Right => settings::DockSide::Right,
+            };
+            settings.references_panel.get_or_insert_default().dock = Some(dock);
         });
     }
 
@@ -1066,6 +1073,60 @@ mod tests {
                 .panel::<ReferencesPanel>(cx)
                 .expect("panel should be registered in the left dock")
         })
+    }
+
+    #[gpui::test]
+    async fn test_panel_never_docks_at_the_bottom(cx: &mut TestAppContext) {
+        let mut cx = rust_cx(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+
+        // `references_panel.dock` only accepts left/right, so a stale or
+        // hand-written "bottom" fails to parse and leaves the setting unset.
+        // Either way the panel must land in a side dock, never the bottom one.
+        cx.update_global(|store: &mut settings::SettingsStore, app| {
+            store.update_user_settings(app, |settings| {
+                settings.references_panel = Some(settings::ReferencesPanelSettingsContent {
+                    button: Some(true),
+                    dock: None,
+                    default_width: None,
+                    scrollbar: None,
+                });
+            });
+        });
+
+        let _ = add_panel(&mut cx);
+
+        let workspace = cx.workspace.clone();
+        let (in_bottom_dock, in_left_dock) = cx.update(|_window, cx| {
+            (
+                workspace
+                    .read(cx)
+                    .bottom_dock()
+                    .read(cx)
+                    .panel::<ReferencesPanel>()
+                    .is_some(),
+                workspace
+                    .read(cx)
+                    .left_dock()
+                    .read(cx)
+                    .panel::<ReferencesPanel>()
+                    .is_some(),
+            )
+        });
+        assert!(
+            !in_bottom_dock,
+            "the references panel must never be added to the bottom dock"
+        );
+        assert!(
+            in_left_dock,
+            "the references panel should be added to a side dock"
+        );
     }
 
     #[gpui::test]

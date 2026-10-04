@@ -1,4 +1,4 @@
-use editor::{EditorSettings, ui_scrollbar_settings_from_raw};
+use editor::{EditorSettings, ui_scrollbar_settings_from_raw, ui_scrollbar_track_from_raw};
 use gpui::Pixels;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -6,12 +6,13 @@ use settings::{
     FolderIndicator, GitPanelClickBehavior, GitPanelGroupBy, GitPanelSortBy, IntoGpui,
     RegisterSetting, Settings, StatusStyle,
 };
-use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
+use ui::scrollbars::{ScrollbarTrack, ScrollbarVisibility, ShowScrollbar};
 use workspace::dock::DockPosition;
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ScrollbarSettings {
     pub show: Option<ShowScrollbar>,
+    pub track: ScrollbarTrack,
 }
 
 #[derive(Debug, Clone, PartialEq, RegisterSetting)]
@@ -65,6 +66,7 @@ impl GitPanelSettings {
 impl Settings for GitPanelSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         let git_panel = content.git_panel.clone().unwrap();
+        let scrollbar = git_panel.scrollbar.clone().unwrap();
         Self {
             button: git_panel.button.unwrap(),
             dock: git_panel.dock.unwrap().into(),
@@ -73,11 +75,11 @@ impl Settings for GitPanelSettings {
             file_icons: git_panel.file_icons.unwrap(),
             folder_indicator: git_panel.folder_indicator.unwrap(),
             scrollbar: ScrollbarSettings {
-                show: git_panel
-                    .scrollbar
-                    .unwrap()
-                    .show
-                    .map(ui_scrollbar_settings_from_raw),
+                show: scrollbar.show.map(ui_scrollbar_settings_from_raw),
+                track: scrollbar
+                    .track
+                    .map(ui_scrollbar_track_from_raw)
+                    .unwrap_or_default(),
             },
             fallback_branch_name: git_panel.fallback_branch_name.unwrap(),
             sort_by: git_panel.sort_by.unwrap(),

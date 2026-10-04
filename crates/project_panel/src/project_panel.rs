@@ -61,7 +61,8 @@ use theme_settings::ThemeSettings;
 use ui::{
     ContextMenu, DecoratedIcon, IconButton, IconDecoration, IconDecorationKind, IndentGuideColors,
     IndentGuideLayout, Indicator, KeyBinding, ListItem, ListItemSpacing, ProjectEmptyState,
-    ScrollAxes, ScrollableHandle, Scrollbars, StickyCandidate, Tab, Tooltip, WithScrollbar, prelude::*,
+    ScrollAxes, ScrollableHandle, Scrollbars, StickyCandidate, Tab, Tooltip, WithScrollbar,
+    prelude::*,
 };
 use util::{
     ResultExt, TakeUntilExt, TryFutureExt,
@@ -7966,8 +7967,9 @@ impl Render for ProjectPanel {
                             Scrollbars::for_settings::<ProjectPanelScrollbarProxy>()
                                 .tracked_scroll_handle(&self.scroll_handle);
                         if horizontal_scroll {
-                            scrollbars = scrollbars.with_track_along(
+                            scrollbars = scrollbars.with_track_along_for(
                                 ScrollAxes::Horizontal,
+                                ProjectPanelSettings::get_global(cx).scrollbar.track,
                                 cx.theme().colors().panel_background,
                             );
                         }

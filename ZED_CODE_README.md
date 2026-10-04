@@ -65,6 +65,10 @@ Custom settings introduced or extended on the `zed-code` branch (defaults live i
 - `completions.suggest_selection` (default `"first"`): which completion is preselected when the completions menu opens. `"first"` always selects the first entry; `"recently_used"` preselects the most recently accepted completion among the top-scoring entries; `"recently_used_by_prefix"` remembers the completion accepted for a prefix and preselects it again when that prefix is typed.
 - `project_panel.title_tooltip_delay`: now also applies to the tooltips of editor tabs and git panel entries.
 - `status_bar.icon_scale` (default `1.0`): multiplier for the panel-button icons in the vertical status strips flanking the workspace. At `1.0` they are the same size as the bottom status bar's icons; larger values grow the icons and the strips with them. The strips host only the panel toggles (plus the threads-sidebar toggle) and hide themselves entirely when their side has no buttons to show.
+- `search.dock` (default `"left"`): where to dock the search panel, `"left"` or `"right"`; its toggle button follows the dock like every other panel's. Typed as a two-valued dock side, so the settings dropdown offers only those two.
+- `references_panel` (default `{ "button": true, "dock": "left", "default_width": 320 }`): the references panel's toggle button, dock side (`"left"` or `"right"`) and default width. The references panel is a branch-local crate. Like the search panel, its `dock` only accepts `left`/`right`; a stale `"bottom"` fails to parse instead of dropping the panel into the bottom dock.
+- `context_menu.scrollbar` (default `{ "show": null, "track": "track" }`): when the scrollbar of an overflowing context menu or dropdown is visible, and whether it reserves a track.
+
 All of these are also editable in the Settings window (Panels, Search & Files, Editor, Window & Layout pages).
 
 ## Agent changes in Zed Code
@@ -277,6 +281,8 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Deploy Search (`cmd-shift-f`) opens the search **dock panel** rather than a project-search multibuffer.
 - Opening the panel seeds the query from the editor selection (or the word under the cursor, or the buffer search bar) and runs it.
 - Result rows match the threads-panel styling and get the project panel's context menu; the panel's default width comes from `project_panel.default_width`.
+- `search.dock` chooses the side; only `left` and `right` are accepted.
+- The panel's scrollbar visibility follows `search.scrollbar.show` (inheriting the global `scrollbar.show` when unset), and `search.scrollbar.track` decides whether it reserves a track.
 - The panel has its own actions (`search_panel::Toggle`, `search_panel::ToggleFocus`), a header button that opens a plain project-search editor, collapsible file groups, file headers that can be dragged out, and an indicator when the result limit is reached.
 - The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
 

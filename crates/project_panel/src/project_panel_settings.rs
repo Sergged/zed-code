@@ -1,4 +1,4 @@
-use editor::{EditorSettings, ui_scrollbar_settings_from_raw};
+use editor::{EditorSettings, ui_scrollbar_settings_from_raw, ui_scrollbar_track_from_raw};
 use gpui::Pixels;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use settings::{
     ProjectPanelSortOrder, ProjectPanelTitleTooltipDelay, RegisterSetting, Settings,
     ShowDiagnostics, ShowIndentGuides,
 };
-use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
+use ui::scrollbars::{ScrollbarTrack, ScrollbarVisibility, ShowScrollbar};
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, RegisterSetting)]
 pub struct ProjectPanelSettings {
@@ -50,6 +50,11 @@ pub struct ScrollbarSettings {
     ///
     /// Default: inherits editor scrollbar settings
     pub show: Option<ShowScrollbar>,
+    /// Whether the scrollbar reserves space for a track next to the content.
+    /// Not inherited: there is no global scrollbar track setting.
+    ///
+    /// Default: track
+    pub track: ScrollbarTrack,
     /// Whether to allow horizontal scrolling in the project panel.
     /// When false, the view is locked to the leftmost position and long file names are clipped.
     ///
@@ -126,6 +131,10 @@ impl Settings for ProjectPanelSettings {
                 let scrollbar = project_panel.scrollbar.unwrap();
                 ScrollbarSettings {
                     show: scrollbar.show.map(ui_scrollbar_settings_from_raw),
+                    track: scrollbar
+                        .track
+                        .map(ui_scrollbar_track_from_raw)
+                        .unwrap_or_default(),
                     horizontal_scroll: scrollbar.horizontal_scroll.unwrap(),
                 }
             },

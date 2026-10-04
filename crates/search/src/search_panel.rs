@@ -67,7 +67,11 @@ struct SearchPanelScrollbarProxy;
 
 impl ScrollbarVisibility for SearchPanelScrollbarProxy {
     fn visibility(&self, cx: &App) -> ShowScrollbar {
-        EditorSettings::get_global(cx).scrollbar.show
+        EditorSettings::get_global(cx)
+            .search
+            .scrollbar
+            .show
+            .unwrap_or_else(|| EditorSettings::get_global(cx).scrollbar.show)
     }
 }
 
@@ -1101,7 +1105,7 @@ impl SearchPanel {
                     .tracked_scroll_handle(&self.scroll_handle.clone())
                     .with_track_along_for(
                         ScrollAxes::Vertical,
-                        EditorSettings::get_global(cx).scrollbar.track,
+                        EditorSettings::get_global(cx).search.scrollbar.track,
                         cx.theme().colors().panel_background,
                     )
                     .with_track_along(ScrollAxes::Horizontal, cx.theme().colors().panel_background)
@@ -1340,7 +1344,11 @@ impl Panel for SearchPanel {
     ) {
         let fs = <dyn fs::Fs>::global(cx);
         update_settings_file(fs, cx, move |settings, _| {
-            settings.editor.search.get_or_insert_default().dock = Some(position.into());
+            let dock = match position {
+                DockPosition::Left | DockPosition::Bottom => settings::DockSide::Left,
+                DockPosition::Right => settings::DockSide::Right,
+            };
+            settings.editor.search.get_or_insert_default().dock = Some(dock);
         });
     }
 

@@ -3971,7 +3971,8 @@ mod tests {
         update_search_settings(
             SearchSettings {
                 button: true,
-                dock: settings::DockPosition::Left,
+                dock: settings::DockSide::Left,
+                scrollbar: Default::default(),
                 whole_word: false,
                 case_sensitive: false,
                 include_ignored: false,
@@ -4036,7 +4037,8 @@ mod tests {
         update_search_settings(
             SearchSettings {
                 button: true,
-                dock: settings::DockPosition::Left,
+                dock: settings::DockSide::Left,
+                scrollbar: Default::default(),
                 whole_word: false,
                 case_sensitive: true,
                 include_ignored: false,
@@ -4076,7 +4078,8 @@ mod tests {
         update_search_settings(
             SearchSettings {
                 button: true,
-                dock: settings::DockPosition::Left,
+                dock: settings::DockSide::Left,
+                scrollbar: Default::default(),
                 whole_word: true,
                 case_sensitive: true,
                 include_ignored: false,
@@ -4307,6 +4310,7 @@ mod tests {
                     settings.editor.search = Some(SearchSettingsContent {
                         button: Some(search_settings.button),
                         dock: Some(search_settings.dock),
+                        scrollbar: None,
                         whole_word: Some(search_settings.whole_word),
                         case_sensitive: Some(search_settings.case_sensitive),
                         include_ignored: Some(search_settings.include_ignored),

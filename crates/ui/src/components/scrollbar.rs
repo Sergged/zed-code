@@ -1721,6 +1721,63 @@ impl<T: ScrollableHandle> IntoElement for ScrollbarElement<T> {
 mod tests {
     use super::*;
     use gpui::point;
+    use gpui::rgb;
+
+    /// The `track` setting is only meaningful if it changes layout. These tests
+    /// pin the single switch that decides whether space is reserved, so a
+    /// regression that makes `track` inert fails here rather than only showing
+    /// up visually.
+    #[test]
+    fn track_and_thumb_differ_in_reserved_space() {
+        let overflow = px(100.);
+
+        let track = Scrollbars::for_settings::<AlwaysVisibleScrollbar>()
+            .with_track_along_for(
+                ScrollAxes::Vertical,
+                ScrollbarTrack::Track,
+                rgb(0x000000).into(),
+            )
+            .visibility
+            .y;
+        let thumb = Scrollbars::for_settings::<AlwaysVisibleScrollbar>()
+            .with_track_along_for(
+                ScrollAxes::Vertical,
+                ScrollbarTrack::Thumb,
+                rgb(0x000000).into(),
+            )
+            .visibility
+            .y;
+
+        assert_eq!(track, ReservedSpace::Track);
+        assert_eq!(thumb, ReservedSpace::Thumb);
+
+        assert!(
+            track.needs_space_reserved(overflow),
+            "`track` must reserve space when content overflows"
+        );
+        assert!(
+            !thumb.needs_space_reserved(overflow),
+            "`thumb` must not reserve space when content overflows"
+        );
+    }
+
+    #[test]
+    fn track_reserves_nothing_without_overflow() {
+        assert!(
+            !ReservedSpace::Track.needs_space_reserved(px(0.)),
+            "`track` only reserves space once the content actually overflows"
+        );
+        assert!(ReservedSpace::StableTrack.needs_space_reserved(px(0.)));
+    }
+
+    #[derive(Default)]
+    struct AlwaysVisibleScrollbar;
+
+    impl ScrollbarVisibility for AlwaysVisibleScrollbar {
+        fn visibility(&self, _: &App) -> ShowScrollbar {
+            ShowScrollbar::Always
+        }
+    }
 
     #[test]
     fn default_reveal_policy_reveals_for_content_changes() {
