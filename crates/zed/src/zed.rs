@@ -25,7 +25,10 @@ use breadcrumbs::Breadcrumbs;
 use client::zed_urls;
 use collections::VecDeque;
 use debugger_ui::debugger_panel::DebugPanel;
-use editor::{Editor, EditorSettings, MultiBuffer};
+use editor::{
+    Editor, EditorSettings, MultiBuffer, ui_scrollbar_settings_from_raw,
+    ui_scrollbar_track_from_raw,
+};
 use extension_host::ExtensionStore;
 use feature_flags::{FeatureFlagAppExt as _, PanicFeatureFlag};
 use fs::Fs;
@@ -196,12 +199,48 @@ actions!(
     ]
 );
 
+/// Context menu scrollbar settings.
+///
+/// `show` is `None` when unset, which means "inherit the editor's
+/// `scrollbar.show`". `track` is never inherited: there is no global scrollbar
+/// track setting, so an unset value falls back to the type default.
+#[derive(Copy, Clone, Debug, settings::RegisterSetting)]
+struct ContextMenuScrollbarSetting {
+    show: Option<settings::ShowScrollbar>,
+    track: Option<settings::ScrollbarTrack>,
+}
+
+impl Settings for ContextMenuScrollbarSetting {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        let scrollbar = content
+            .context_menu
+            .as_ref()
+            .and_then(|context_menu| context_menu.scrollbar.as_ref());
+
+        Self {
+            show: scrollbar.and_then(|scrollbar| scrollbar.show),
+            track: scrollbar.and_then(|scrollbar| scrollbar.track),
+        }
+    }
+}
+
 pub fn init(cx: &mut App) {
-    // Context menus render their scrollbar according to the global `scrollbar`
-    // settings, just like panels do.
+    // Context menus render their scrollbar according to the `context_menu`
+    // scrollbar settings: `show` falls back to the editor's global setting the
+    // same way panels do, `track` carries its own default.
     cx.set_global(ContextMenuScrollbars {
-        show: |cx| EditorSettings::get_global(cx).scrollbar.show,
-        track: |cx| EditorSettings::get_global(cx).scrollbar.track,
+        show: |cx| {
+            ContextMenuScrollbarSetting::get_global(cx)
+                .show
+                .map(ui_scrollbar_settings_from_raw)
+                .unwrap_or_else(|| EditorSettings::get_global(cx).scrollbar.show)
+        },
+        track: |cx| {
+            ContextMenuScrollbarSetting::get_global(cx)
+                .track
+                .map(ui_scrollbar_track_from_raw)
+                .unwrap_or_default()
+        },
     });
 
     #[cfg(target_os = "macos")]
@@ -2979,6 +3018,30 @@ mod tests {
     use super::*;
     use assets::Assets;
     use collections::HashSet;
+    use settings::RootUserSettings as _;
+
+    #[test]
+    fn context_menu_scrollbar_settings_are_read_from_user_settings() {
+        let empty = settings::SettingsContent::default();
+        let unset = ContextMenuScrollbarSetting::from_settings(&empty);
+        assert_eq!(
+            unset.show, None,
+            "an unset `show` must stay unset so the caller inherits the editor's"
+        );
+        assert_eq!(
+            unset.track, None,
+            "an unset `track` must stay unset so the caller uses the type default"
+        );
+
+        let content = settings::UserSettingsContent::parse_json(
+            r#"{"context_menu":{"scrollbar":{"show":"never","track":"thumb"}}}"#,
+        )
+        .0
+        .expect("the context_menu settings should parse");
+        let configured = ContextMenuScrollbarSetting::from_settings(&content.content);
+        assert_eq!(configured.show, Some(settings::ShowScrollbar::Never));
+        assert_eq!(configured.track, Some(settings::ScrollbarTrack::Thumb));
+    }
     use editor::{
         DisplayPoint, Editor, MultiBufferOffset, SelectionEffects, display_map::DisplayRow,
     };
