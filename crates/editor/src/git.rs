@@ -256,7 +256,11 @@ impl Editor {
         })
     }
 
-    fn resolve_diff_hunks(
+    /// Resolves hunks collected from either side of a split diff into hunks of
+    /// the working buffer, so callers that mutate the buffer (agent review, or
+    /// restore) work from the same coordinates no matter where the click
+    /// originated.
+    pub fn resolve_diff_hunks(
         &self,
         hunks: Vec<MultiBufferDiffHunk>,
         cx: &App,

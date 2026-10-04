@@ -104,8 +104,8 @@ pub use edit_prediction_types::EditPredictionRequestTrigger;
 pub use editor_settings::{
     CompletionDetailAlignment, CompletionMenuItemKind, CurrentLineHighlight, DiffViewStyle,
     DocumentColorsRenderMode, EditorSettings, EditorSettingsScrollbarProxy, OpenResultsIn,
-    ScrollBeyondLastLine, ScrollbarAxes, SearchSettings, ShowMinimap,
-    ui_scrollbar_settings_from_raw,
+    ScrollBeyondLastLine, ScrollbarAxes, SearchScrollbarSettings, SearchSettings, ShowMinimap,
+    ui_scrollbar_settings_from_raw, ui_scrollbar_track_from_raw,
 };
 pub use element::{
     CursorLayout, EditorElement, HighlightedRange, HighlightedRangeLine, PointForPosition,
@@ -114,7 +114,8 @@ pub use element::{
 pub use git::blame::{BlameRenderer, GitBlame};
 pub use git::{
     DefaultDiffHunkRenderer, DiffHunkRenderer, HiddenDiffHunkRenderer,
-    HiddenUnstagedDiffHunkRenderer, render_diff_hunk_controls, set_blame_renderer,
+    HiddenUnstagedDiffHunkRenderer, ResolvedDiffHunk, ResolvedDiffHunks, diff_hunk_controls_pill,
+    render_diff_hunk_controls, set_blame_renderer,
 };
 pub(crate) use git::{DiffHunkKey, StoredReviewComment};
 use git::{DiffReviewDragState, DiffReviewOverlay, InlineBlamePopover};
