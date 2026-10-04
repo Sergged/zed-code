@@ -1,4 +1,5 @@
 use crate::{
+    PreviewMode,
     diff_multibuffer::DiffMultibuffer,
     git_panel::{GitPanel, GitPanelAddon, GitStatusEntry},
 };
@@ -102,6 +103,16 @@ impl StagedDiff {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
+        Self::deploy_at_with_mode(workspace, entry, PreviewMode::Persistent, window, cx);
+    }
+
+    pub(crate) fn deploy_at_with_mode(
+        workspace: &mut Workspace,
+        entry: Option<GitStatusEntry>,
+        mode: PreviewMode,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
         telemetry::event!(
             "Git Staged Diff Opened",
             source = if entry.is_some() {
@@ -114,18 +125,43 @@ impl StagedDiff {
         let existing = workspace.items_of_type::<Self>(cx).next();
         let staged_diff = if let Some(existing) = existing {
             workspace.activate_item(&existing, true, true, window, cx);
+            if mode == PreviewMode::Persistent {
+                let pane = workspace.active_pane().clone();
+                pane.update(cx, |pane, _| {
+                    pane.unpreview_item_if_preview(existing.item_id());
+                });
+            }
             existing
         } else {
             let workspace_handle = cx.entity();
             let staged_diff =
                 cx.new(|cx| Self::new(workspace.project().clone(), workspace_handle, window, cx));
-            workspace.add_item_to_active_pane(
-                Box::new(staged_diff.clone()),
-                None,
-                true,
-                window,
-                cx,
-            );
+            match mode {
+                PreviewMode::Preview => {
+                    let pane = workspace.active_pane().clone();
+                    pane.update(cx, |pane, cx| {
+                        let destination_index =
+                            pane.replace_preview_item_id(staged_diff.item_id(), window, cx);
+                        pane.add_item(
+                            Box::new(staged_diff.clone()),
+                            false,
+                            true,
+                            destination_index,
+                            window,
+                            cx,
+                        );
+                    });
+                }
+                PreviewMode::Persistent => {
+                    workspace.add_item_to_active_pane(
+                        Box::new(staged_diff.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                }
+            }
             staged_diff
         };
 

@@ -18,10 +18,12 @@ use gpui::{
 use menu::{Cancel, Confirm};
 use project::git_store::Repository;
 use project_diff::ProjectDiff;
+use settings::Settings as _;
 use time::OffsetDateTime;
 use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
 use workspace::{
     ModalView, OpenMode, Workspace,
+    item::PreviewTabsSettings,
     notifications::{DetachAndPromptErr, NotifyTaskExt},
 };
 use zed_actions;
@@ -59,6 +61,29 @@ pub mod unstaged_diff;
 
 pub use blame_ui::GitBlameStatus;
 pub use conflict_view::MergeConflictIndicator;
+
+/// Whether an item lands in the pane's preview tab or in a persistent one.
+///
+/// Follows Zed's convention that a preview tab is reused by the next preview
+/// open, so browsing the git panel doesn't accumulate tabs. The git panel maps
+/// a single click to `Preview` and a double click to `Persistent`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum PreviewMode {
+    Preview,
+    Persistent,
+}
+
+impl PreviewMode {
+    /// Preview tabs only exist while the global `preview_tabs.enabled` setting
+    /// is on; with it off every open lands in a persistent tab.
+    pub(crate) fn from_settings(cx: &App) -> Self {
+        if PreviewTabsSettings::get_global(cx).enabled {
+            Self::Preview
+        } else {
+            Self::Persistent
+        }
+    }
+}
 
 pub fn init(cx: &mut App) {
     editor::set_blame_renderer(blame_ui::GitBlameRenderer, cx);
@@ -375,7 +400,8 @@ fn open_file_diff(
 ) {
     window.defer(cx, move |window, cx| {
         let base = SoloDiffBase::for_entry(&entry);
-        SoloDiffView::open_or_focus(entry, base, repository, workspace.clone(), window, cx)
+        let mode = PreviewMode::from_settings(cx);
+        SoloDiffView::open_or_focus(entry, base, repository, workspace.clone(), mode, window, cx)
             .detach_and_notify_err(workspace, window, cx);
     });
 }
@@ -1360,7 +1386,7 @@ mod view_commit_tests {
     use project::project_settings::ProjectSettings;
     use project::{FakeFs, Project, WorktreeSettings};
     use serde_json::json;
-    use settings::{Settings as _, SettingsStore};
+    use settings::SettingsStore;
     use std::path::Path;
     use std::sync::Arc;
     use theme::LoadThemes;

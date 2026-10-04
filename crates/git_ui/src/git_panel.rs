@@ -13,7 +13,7 @@ use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::{SoloDiffBase, SoloDiffView};
 use crate::staged_diff::StagedDiff;
 use crate::unstaged_diff::UnstagedDiff;
-use crate::{branch_picker, picker_prompt, render_remote_button};
+use crate::{PreviewMode, branch_picker, picker_prompt, render_remote_button};
 use crate::{
     git_panel_settings::GitPanelSettings, git_status_icon, repository_selector::RepositorySelector,
 };
@@ -99,6 +99,7 @@ use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
     DraggedSelection, Event as WorkspaceEvent, Item, ModalView, SelectedEntry, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
+    item::PreviewTabsSettings,
     notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
 };
 use zed_actions::{
@@ -2603,6 +2604,37 @@ impl GitPanel {
     }
 
     fn open_diff(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_diff_with_mode(PreviewMode::Persistent, window, cx);
+    }
+
+    /// Promotes the pane's preview tab when a click asks for a persistent tab.
+    ///
+    /// The fast paths in `open_diff_with_mode` reactivate the diff that is
+    /// already showing the entry, which bypasses the deploy methods that
+    /// normally apply the mode.
+    fn promote_active_item_from_preview(
+        workspace: &Entity<Workspace>,
+        mode: PreviewMode,
+        cx: &mut Context<Self>,
+    ) {
+        if mode != PreviewMode::Persistent {
+            return;
+        }
+        let pane = workspace.read(cx).active_pane().clone();
+        let preview_item_id = pane.read(cx).preview_item_id();
+        if let Some(preview_item_id) = preview_item_id {
+            pane.update(cx, |pane, _| {
+                pane.unpreview_item_if_preview(preview_item_id);
+            });
+        }
+    }
+
+    fn open_diff_with_mode(
+        &mut self,
+        mode: PreviewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_tab == GitPanelTab::History {
             self.open_selected_history_commit(window, cx);
             return;
@@ -2636,6 +2668,7 @@ impl GitPanel {
             {
                 project_diff.focus_handle(cx).focus(window, cx);
                 project_diff.update(cx, |project_diff, cx| project_diff.autoscroll(cx));
+                Self::promote_active_item_from_preview(&workspace, mode, cx);
                 return None;
             };
 
@@ -2650,19 +2683,38 @@ impl GitPanel {
             {
                 unstaged_diff.focus_handle(cx).focus(window, cx);
                 unstaged_diff.update(cx, |unstaged_diff, cx| unstaged_diff.autoscroll(cx));
+                Self::promote_active_item_from_preview(&workspace, mode, cx);
                 return None;
             };
 
             self.workspace
                 .update(cx, |workspace, cx| match target {
                     DiffTarget::Uncommitted => {
-                        ProjectDiff::deploy_at(workspace, Some(entry.clone()), window, cx);
+                        ProjectDiff::deploy_at_with_mode(
+                            workspace,
+                            Some(entry.clone()),
+                            mode,
+                            window,
+                            cx,
+                        );
                     }
                     DiffTarget::Staged => {
-                        StagedDiff::deploy_at(workspace, Some(entry.clone()), window, cx);
+                        StagedDiff::deploy_at_with_mode(
+                            workspace,
+                            Some(entry.clone()),
+                            mode,
+                            window,
+                            cx,
+                        );
                     }
                     DiffTarget::Unstaged => {
-                        UnstagedDiff::deploy_at(workspace, Some(entry.clone()), window, cx);
+                        UnstagedDiff::deploy_at_with_mode(
+                            workspace,
+                            Some(entry.clone()),
+                            mode,
+                            window,
+                            cx,
+                        );
                     }
                 })
                 .ok();
@@ -2675,6 +2727,15 @@ impl GitPanel {
     fn open_solo_diff(
         &mut self,
         _: &menu::SecondaryConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_selected_solo_diff(PreviewMode::from_settings(cx), window, cx);
+    }
+
+    fn open_selected_solo_diff(
+        &mut self,
+        mode: PreviewMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2693,6 +2754,7 @@ impl GitPanel {
                 base,
                 repository,
                 self.workspace.clone(),
+                mode,
                 window,
                 cx,
             )
@@ -2703,9 +2765,10 @@ impl GitPanel {
     }
 
     fn view_file(&mut self, _: &ViewFile, window: &mut Window, cx: &mut Context<Self>) {
-        // Do not take focus or close a preview tab: this is the "peek" action
-        // used by the visible-on-hover button and the ViewFile action.
-        self.open_selected_file(false, false, window, cx);
+        // Do not take focus: this is the "peek" action used by the visible-on-hover
+        // button and the ViewFile action, so it neither promotes the preview tab nor
+        // closes one.
+        self.open_selected_file(false, PreviewMode::Persistent, window, cx);
     }
 
     fn reveal_in_file_manager(
@@ -2757,24 +2820,29 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if double_click {
-            // A double click opens the file in a regular editor tab, like the
-            // project panel. It also closes any preview tab (e.g. the diff
-            // opened by the first click of the double click), so that only the
-            // file stays open.
-            self.open_selected_file(true, true, window, cx);
+        let preview_tabs_enabled = PreviewTabsSettings::get_global(cx).enabled;
+        if double_click && !preview_tabs_enabled {
+            // Without preview tabs a single click already opens a persistent tab, so a
+            // double click has nothing left to promote.
             return;
         }
+
+        let mode = if preview_tabs_enabled && !double_click {
+            PreviewMode::Preview
+        } else {
+            PreviewMode::Persistent
+        };
+
         match GitPanelSettings::get_global(cx).entry_primary_click_action {
             GitPanelClickBehavior::ProjectDiff => {
-                self.open_diff(&Default::default(), window, cx);
+                self.open_diff_with_mode(mode, window, cx);
                 self.focus_handle.focus(window, cx);
             }
             GitPanelClickBehavior::FileDiff => {
-                self.open_solo_diff(&Default::default(), window, cx);
+                self.open_selected_solo_diff(mode, window, cx);
             }
             GitPanelClickBehavior::ViewFile => {
-                self.view_file(&Default::default(), window, cx);
+                self.open_selected_file(double_click, mode, window, cx);
             }
         }
     }
@@ -2782,22 +2850,25 @@ impl GitPanel {
     fn open_selected_file(
         &mut self,
         focus_item: bool,
-        close_preview: bool,
+        mode: PreviewMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         maybe!({
             let project_path = self.selected_entry_project_path(cx)?;
+            let allow_preview = mode == PreviewMode::Preview;
             self.workspace
                 .update(cx, |workspace, cx| {
-                    if close_preview {
-                        let pane = workspace.active_pane().clone();
-                        pane.update(cx, |pane, cx| {
-                            pane.close_current_preview_item(window, cx);
-                        });
-                    }
                     workspace
-                        .open_path_preview(project_path, None, focus_item, false, true, window, cx)
+                        .open_path_preview(
+                            project_path,
+                            None,
+                            focus_item,
+                            allow_preview,
+                            true,
+                            window,
+                            cx,
+                        )
                         .detach_and_log_err(cx);
                 })
                 .ok()?;
@@ -12973,7 +13044,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_double_click_opens_file_as_regular_editor(cx: &mut TestAppContext) {
+    async fn test_double_click_opens_click_action_as_persistent_tab(cx: &mut TestAppContext) {
         init_test(cx);
         cx.update(search::buffer_search::init);
         let fs = FakeFs::new(cx.background_executor.clone());
@@ -13012,6 +13083,7 @@ mod tests {
                     let git_panel = settings.git_panel.get_or_insert_default();
                     git_panel.group_by = Some(GitPanelGroupBy::Staging);
                     git_panel.entry_primary_click_action = Some(GitPanelClickBehavior::FileDiff);
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(true);
                 })
             });
         });
@@ -13049,42 +13121,316 @@ mod tests {
                 panel.entry_by_path_in_section(&repo_path("one.rs"), Section::Unstaged);
         });
 
-        // The first click of a double click runs the single-click action: with
-        // `FileDiff` as the primary action, it opens the solo diff as a preview.
+        // A single click runs the configured action as a preview tab.
         click_selected_entry(&panel, cx, false);
-        workspace.read_with(cx, |workspace, cx| {
-            let diffs = &workspace
-                .items_of_type::<SoloDiffView>(cx)
-                .collect::<Vec<_>>();
+        let diff_id = workspace.read_with(cx, |workspace, cx| {
+            let diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("Single click should open a solo diff");
             assert_eq!(
-                diffs.len(),
-                1,
-                "Single click should open a solo diff preview"
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(diff.entity_id()),
+                "Single click should open the solo diff as a preview tab"
+            );
+            diff.entity_id()
+        });
+
+        // The second click runs the same action, but as a persistent tab.
+        click_selected_entry(&panel, cx, true);
+        workspace.read_with(cx, |workspace, cx| {
+            let diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("Double click should keep the solo diff open");
+            assert_eq!(
+                diff.entity_id(),
+                diff_id,
+                "Double click should reopen the same solo diff rather than a new one"
             );
             assert_eq!(
                 workspace.active_pane().read(cx).preview_item_id(),
-                Some(diffs[0].entity_id()),
+                None,
+                "Double click should open the click action as a persistent tab"
+            );
+            assert_eq!(
+                workspace.items_of_type::<SoloDiffView>(cx).count(),
+                1,
+                "Double click should not leave a second diff tab behind"
             );
         });
+    }
 
-        // The second click opens the file in a regular editor tab, closing the
-        // preview diff, like a double click in the project panel.
-        click_selected_entry(&panel, cx, true);
+    #[gpui::test]
+    async fn test_double_click_does_nothing_without_preview_tabs(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(search::buffer_search::init);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "one.rs": "one content",
+            }),
+        )
+        .await;
+
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[(
+                "one.rs",
+                TrackedStatus {
+                    index_status: StatusCode::Modified,
+                    worktree_status: StatusCode::Modified,
+                }
+                .into(),
+            )],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    let git_panel = settings.git_panel.get_or_insert_default();
+                    git_panel.group_by = Some(GitPanelGroupBy::Staging);
+                    git_panel.entry_primary_click_action = Some(GitPanelClickBehavior::FileDiff);
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(false);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        await_git_panel_entries(&panel, cx).await;
+
+        panel.update_in(cx, |panel, _, _| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("one.rs"), Section::Unstaged);
+        });
+
+        // Without preview tabs a single click already opens a persistent tab, so
+        // a double click has nothing left to promote.
+        panel.update_in(cx, |panel, window, cx| {
+            panel.open_selected_entry_on_click(true, window, cx);
+        });
+        cx.executor().run_until_parked();
+
         workspace.read_with(cx, |workspace, cx| {
             assert_eq!(
                 workspace.items_of_type::<SoloDiffView>(cx).count(),
                 0,
-                "The diff opened by the first click of the double click should be closed"
+                "A double click should not open anything without preview tabs"
             );
-            let editor = workspace
-                .active_item_as::<Editor>(cx)
-                .expect("Double click should open the file in a plain editor");
-            let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
-            assert_eq!(buffer.read(cx).text(), "one content");
+            assert_eq!(workspace.active_pane().read(cx).preview_item_id(), None,);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_single_click_opens_persistent_tab_without_preview_tabs(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(search::buffer_search::init);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "one.rs": "one content",
+            }),
+        )
+        .await;
+
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[(
+                "one.rs",
+                TrackedStatus {
+                    index_status: StatusCode::Modified,
+                    worktree_status: StatusCode::Modified,
+                }
+                .into(),
+            )],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    let git_panel = settings.git_panel.get_or_insert_default();
+                    git_panel.group_by = Some(GitPanelGroupBy::Staging);
+                    git_panel.entry_primary_click_action = Some(GitPanelClickBehavior::FileDiff);
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(false);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        await_git_panel_entries(&panel, cx).await;
+
+        panel.update_in(cx, |panel, _, _| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("one.rs"), Section::Unstaged);
+        });
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.open_selected_entry_on_click(false, window, cx);
+        });
+        cx.executor().run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace.active_item_as::<SoloDiffView>(cx).is_some(),
+                "A single click should still open the click action"
+            );
             assert_eq!(
                 workspace.active_pane().read(cx).preview_item_id(),
                 None,
-                "Double click should open the file as a regular tab, not a preview"
+                "Without preview tabs the click action opens as a persistent tab"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_project_diff_click_preview_and_persistent(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(search::buffer_search::init);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "one.rs": "one content",
+            }),
+        )
+        .await;
+
+        // Unstaged-only, so the tracked section routes to the combined project
+        // diff rather than the unstaged one.
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[(
+                "one.rs",
+                TrackedStatus {
+                    index_status: StatusCode::Unmodified,
+                    worktree_status: StatusCode::Modified,
+                }
+                .into(),
+            )],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    let git_panel = settings.git_panel.get_or_insert_default();
+                    git_panel.group_by = Some(GitPanelGroupBy::None);
+                    git_panel.entry_primary_click_action = Some(GitPanelClickBehavior::ProjectDiff);
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(true);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        await_git_panel_entries(&panel, cx).await;
+
+        fn click_selected_entry(
+            panel: &Entity<GitPanel>,
+            cx: &mut VisualTestContext,
+            double_click: bool,
+        ) {
+            panel.update_in(cx, |panel, window, cx| {
+                panel.open_selected_entry_on_click(double_click, window, cx);
+            });
+            cx.executor().run_until_parked();
+        }
+
+        // `Section::Tracked` routes to the combined project diff.
+        panel.update_in(cx, |panel, _, _| {
+            panel.selected_entry =
+                panel.entry_by_path_in_section(&repo_path("one.rs"), Section::Tracked);
+        });
+
+        click_selected_entry(&panel, cx, false);
+        workspace.read_with(cx, |workspace, cx| {
+            let project_diff = workspace
+                .active_item_as::<ProjectDiff>(cx)
+                .expect("Single click should open the project diff");
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(project_diff.entity_id()),
+                "Single click should open the project diff as a preview tab"
+            );
+        });
+
+        click_selected_entry(&panel, cx, true);
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace.active_item_as::<ProjectDiff>(cx).is_some(),
+                "Double click should keep the project diff open"
+            );
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                None,
+                "Double click should open the project diff as a persistent tab"
             );
         });
     }

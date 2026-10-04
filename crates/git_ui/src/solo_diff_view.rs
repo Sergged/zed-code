@@ -1,5 +1,5 @@
 use crate::{
-    git_panel::GitStatusEntry, git_panel_settings::GitPanelSettings, git_status_icon,
+    PreviewMode, git_panel::GitStatusEntry, git_panel_settings::GitPanelSettings, git_status_icon,
     staged_diff::StagedDiffHunkRenderer, unstaged_diff::UnstagedDiffHunkRenderer,
 };
 use anyhow::Result;
@@ -34,7 +34,7 @@ use util::paths::PathStyle;
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ItemSettings, ToolbarItemEvent, ToolbarItemLocation,
     ToolbarItemView, Workspace,
-    item::{ItemEvent, PreviewTabsSettings, SaveOptions, TabContentParams},
+    item::{ItemEvent, SaveOptions, TabContentParams},
     searchable::SearchableItemHandle,
 };
 
@@ -81,6 +81,7 @@ impl SoloDiffView {
         base: SoloDiffBase,
         repository: Entity<Repository>,
         workspace: WeakEntity<Workspace>,
+        mode: PreviewMode,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<Entity<Self>>> {
@@ -98,6 +99,12 @@ impl SoloDiffView {
         if let Some(existing) = existing {
             workspace_entity.update(cx, |workspace, cx| {
                 workspace.activate_item(&existing, true, true, window, cx);
+                if mode == PreviewMode::Persistent {
+                    let pane = workspace.active_pane().clone();
+                    pane.update(cx, |pane, _| {
+                        pane.unpreview_item_if_preview(existing.item_id());
+                    });
+                }
             });
             existing.focus_handle(cx).focus(window, cx);
             return Task::ready(Ok(existing));
@@ -164,27 +171,28 @@ impl SoloDiffView {
                     )
                 });
 
-                Self::open_view_in_pane(view.clone(), workspace, window, cx);
+                Self::open_view_in_pane(view.clone(), workspace, mode, window, cx);
                 view
             })
         })
     }
 
-    /// Opens the view in the active pane as a preview tab when preview tabs are
-    /// enabled, so browsing files in the git panel reuses the tab instead of
-    /// accumulating diff tabs.
+    /// Opens the view in the active pane. In `Preview` mode it takes over the
+    /// pane's preview tab, so browsing files in the git panel reuses that tab
+    /// instead of accumulating diff tabs. In `Persistent` mode it opens a
+    /// regular tab instead.
     fn open_view_in_pane(
         view: Entity<Self>,
         workspace: &mut Workspace,
+        mode: PreviewMode,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
         let pane = workspace.active_pane().clone();
         pane.update(cx, |pane, cx| {
-            let destination_index = if PreviewTabsSettings::get_global(cx).enabled {
-                pane.replace_preview_item_id(view.item_id(), window, cx)
-            } else {
-                None
+            let destination_index = match mode {
+                PreviewMode::Preview => pane.replace_preview_item_id(view.item_id(), window, cx),
+                PreviewMode::Persistent => None,
             };
             pane.add_item(
                 Box::new(view.clone()),
