@@ -4558,86 +4558,98 @@ impl ThreadView {
                             ),
                     )
                     .child(
-                        h_flex()
+                        div()
+                            .grid()
+                            .grid_cols_max_content(2)
+                            .grid_rows_max_content(2)
                             .when(!is_next, |this| this.visible_on_hover("queue_entry"))
                             .gap_1()
                             .min_w(min_width)
                             .justify_end()
-                            .child(
-                                IconButton::new(("delete", index), IconName::Trash)
-                                    .icon_size(IconSize::Small)
-                                    .tooltip({
-                                        let focus_handle = focus_handle.clone();
-                                        move |_window, cx| {
-                                            if is_next {
-                                                Tooltip::for_action_in(
-                                                    "Remove Message from Queue",
-                                                    &RemoveFirstQueuedMessage,
-                                                    &focus_handle,
-                                                    cx,
-                                                )
-                                            } else {
-                                                Tooltip::simple("Remove Message from Queue", cx)
-                                            }
-                                        }
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.remove_from_queue(entry_id, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                IconButton::new(("edit", index), IconName::Pencil)
-                                    .icon_size(IconSize::Small)
-                                    .tooltip({
-                                        let focus_handle = focus_handle.clone();
-                                        move |_window, cx| {
-                                            if is_next {
-                                                Tooltip::for_action_in(
-                                                    "Edit",
-                                                    &EditFirstQueuedMessage,
-                                                    &focus_handle,
-                                                    cx,
-                                                )
-                                            } else {
-                                                Tooltip::simple("Edit", cx)
-                                            }
-                                        }
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.move_queued_message_to_main_editor(
-                                            entry_id, None, None, window, cx,
-                                        );
-                                    })),
-                            )
-                            .when(is_native, |row| {
-                                row.child(self.render_queue_steer_button(
-                                    entry_id, index, is_next, steer_on, cx,
+                            .items_center()
+                            .when(is_native, |grid| {
+                                grid.child(h_flex().col_start(1).row_start(1).child(
+                                    self.render_queue_steer_button(
+                                        entry_id, index, is_next, steer_on, cx,
+                                    ),
                                 ))
                             })
                             .child(
-                                Button::new(("send_now", index), "Send Now")
-                                    .label_size(LabelSize::Small)
-                                    .when(is_next, |this| this.style(ButtonStyle::Outlined))
-                                    .when(is_next && message_editor.is_empty(cx), |this| {
-                                        let action: Box<dyn gpui::Action> = if can_fast_track {
-                                            Box::new(Chat)
-                                        } else {
-                                            Box::new(SendNextQueuedMessage)
-                                        };
+                                h_flex().col_start(2).row_start(1).child(
+                                    IconButton::new(("delete", index), IconName::Trash)
+                                        .icon_size(IconSize::Small)
+                                        .tooltip({
+                                            let focus_handle = focus_handle.clone();
+                                            move |_window, cx| {
+                                                if is_next {
+                                                    Tooltip::for_action_in(
+                                                        "Remove Message from Queue",
+                                                        &RemoveFirstQueuedMessage,
+                                                        &focus_handle,
+                                                        cx,
+                                                    )
+                                                } else {
+                                                    Tooltip::simple("Remove Message from Queue", cx)
+                                                }
+                                            }
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.remove_from_queue(entry_id, cx);
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                            .child(
+                                h_flex().col_start(1).row_start(2).child(
+                                    Button::new(("send_now", index), "Send Now")
+                                        .label_size(LabelSize::Small)
+                                        .when(is_next, |this| this.style(ButtonStyle::Outlined))
+                                        .when(is_next && message_editor.is_empty(cx), |this| {
+                                            let action: Box<dyn gpui::Action> = if can_fast_track {
+                                                Box::new(Chat)
+                                            } else {
+                                                Box::new(SendNextQueuedMessage)
+                                            };
 
-                                        this.key_binding(
-                                            KeyBinding::for_action_in(
-                                                action.as_ref(),
-                                                &focus_handle.clone(),
-                                                cx,
+                                            this.key_binding(
+                                                KeyBinding::for_action_in(
+                                                    action.as_ref(),
+                                                    &focus_handle.clone(),
+                                                    cx,
+                                                )
+                                                .map(|kb| kb.size(keybinding_size)),
                                             )
-                                            .map(|kb| kb.size(keybinding_size)),
-                                        )
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.send_queued_message_now(entry_id, window, cx);
-                                    })),
+                                        })
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.send_queued_message_now(entry_id, window, cx);
+                                        })),
+                                ),
+                            )
+                            .child(
+                                h_flex().col_start(2).row_start(2).child(
+                                    IconButton::new(("edit", index), IconName::Pencil)
+                                        .icon_size(IconSize::Small)
+                                        .tooltip({
+                                            let focus_handle = focus_handle.clone();
+                                            move |_window, cx| {
+                                                if is_next {
+                                                    Tooltip::for_action_in(
+                                                        "Edit",
+                                                        &EditFirstQueuedMessage,
+                                                        &focus_handle,
+                                                        cx,
+                                                    )
+                                                } else {
+                                                    Tooltip::simple("Edit", cx)
+                                                }
+                                            }
+                                        })
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.move_queued_message_to_main_editor(
+                                                entry_id, None, None, window, cx,
+                                            );
+                                        })),
+                                ),
                             ),
                     )
             }))
