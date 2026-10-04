@@ -1548,17 +1548,21 @@ impl GitPanel {
                 remote_action_menu_handle: PopoverMenuHandle::default(),
             };
 
-            // Track the file focused in the editor so the changes list can
-            // highlight it. Listening to the workspace rather than only to the
-            // project's active entry also covers closing the focused tab, which
-            // changes the active item without touching the project's active
-            // entry.
+            // Follow the file focused in the editor with the selection, so the changes
+            // list always highlights exactly one row. Listening to the workspace
+            // rather than only to the project's active entry also covers closing
+            // the focused tab, which changes the active item without touching the
+            // project's active entry.
             if let Some(workspace) = this.workspace.upgrade() {
-                cx.subscribe(&workspace, |_, _, event: &WorkspaceEvent, cx| {
-                    if matches!(event, WorkspaceEvent::ActiveItemChanged) {
-                        cx.notify();
-                    }
-                })
+                cx.subscribe_in(
+                    &workspace,
+                    window,
+                    |this, _, event: &WorkspaceEvent, window, cx| {
+                        if matches!(event, WorkspaceEvent::ActiveItemChanged) {
+                            this.sync_selection_to_focused_file(window, cx);
+                        }
+                    },
+                )
                 .detach();
             }
 
@@ -1892,14 +1896,24 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_entry_by_path_inner(path, window, cx);
+    }
+
+    /// Selects the row showing `path`, returning whether such a row exists.
+    fn select_entry_by_path_inner(
+        &mut self,
+        path: ProjectPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(git_repo) = self.active_repository.as_ref() else {
-            return;
+            return false;
         };
 
         let (repo_path, default_section) = {
             let repo = git_repo.read(cx);
             let Some(repo_path) = repo.project_path_to_repo_path(&path, cx) else {
-                return;
+                return false;
             };
 
             let section = repo
@@ -1961,11 +1975,12 @@ impl GitPanel {
             .and_then(|section| self.entry_by_path_in_section(&repo_path, section))
             .or_else(|| self.entry_by_path(&repo_path))
         else {
-            return;
+            return false;
         };
 
         self.selected_entry = Some(ix);
         self.scroll_to_selected_entry(cx);
+        true
     }
 
     fn serialization_key(workspace: &Workspace) -> Option<String> {
@@ -8183,11 +8198,6 @@ impl GitPanel {
                                 };
                                 let repo = repo.read(cx);
 
-                                let active_repo_path =
-                                    this.focused_project_path(cx).and_then(|project_path| {
-                                        repo.project_path_to_repo_path(&project_path, cx)
-                                    });
-
                                 let mut items = Vec::with_capacity(range.end - range.start);
 
                                 let visible_flat_entry_indices =
@@ -8210,7 +8220,6 @@ impl GitPanel {
                                                 0,
                                                 has_write_access,
                                                 repo,
-                                                active_repo_path.as_ref(),
                                                 window,
                                                 cx,
                                             ));
@@ -8222,7 +8231,6 @@ impl GitPanel {
                                                 entry.depth,
                                                 has_write_access,
                                                 repo,
-                                                active_repo_path.as_ref(),
                                                 window,
                                                 cx,
                                             ));
@@ -8712,6 +8720,22 @@ impl GitPanel {
         item.project_path(cx)
     }
 
+    /// Moves the selection onto the file currently focused in the editor.
+    ///
+    /// The changes list highlights a single row, so the selection has to track
+    /// the editor rather than keep whatever the user clicked earlier. Focus that
+    /// lands outside the list — a closed tab, a buffer without a file, another
+    /// repository — clears the selection instead of leaving a stale row lit.
+    fn sync_selection_to_focused_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused_in_list = self
+            .focused_project_path(cx)
+            .is_some_and(|path| self.select_entry_by_path_inner(path, window, cx));
+
+        if !focused_in_list && self.selected_entry.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn render_status_entry(
         &self,
         ix: usize,
@@ -8719,8 +8743,7 @@ impl GitPanel {
         depth: usize,
         has_write_access: bool,
         repo: &Repository,
-        active_repo_path: Option<&RepoPath>,
-        window: &Window,
+        window: &mut Window,
         cx: &Context<Self>,
     ) -> AnyElement {
         let settings = GitPanelSettings::get_global(cx);
@@ -8827,22 +8850,11 @@ impl GitPanel {
             )
         };
 
-        // Give the file currently focused in the editor the row's active
-        // (pressed) treatment, so the open file stands out in the changes list.
-        // Hover keeps its own, lighter treatment, and selection and marks keep
-        // their stronger backgrounds.
-        let is_focused_file =
-            !selected && !marked && active_repo_path.is_some_and(|path| path == &entry.repo_path);
-
-        let base_bg = if is_focused_file {
-            active_bg
-        } else {
-            match (selected, marked) {
-                (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
-                (true, false) => info_color.alpha(selected_bg_alpha),
-                (false, true) => info_color.alpha(marked_bg_alpha),
-                _ => cx.theme().colors().ghost_element_background,
-            }
+        let base_bg = match (selected, marked) {
+            (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
+            (true, false) => info_color.alpha(selected_bg_alpha),
+            (false, true) => info_color.alpha(marked_bg_alpha),
+            _ => cx.theme().colors().ghost_element_background,
         };
 
         let folder_indicator = settings.folder_indicator;
@@ -10491,6 +10503,33 @@ mod tests {
         });
     }
 
+    /// Opens `path` in the active pane directly through the workspace, so the
+    /// git panel is never told about the change and has to notice it on its own.
+    fn open_file_in_active_pane(
+        workspace: &Entity<Workspace>,
+        repository: &Entity<Repository>,
+        path: &RepoPath,
+        cx: &mut VisualTestContext,
+    ) {
+        workspace.update_in(cx, |workspace, window, cx| {
+            let project_path = repository
+                .read(cx)
+                .repo_path_to_project_path(path, cx)
+                .expect("test file should resolve to a project path");
+            workspace
+                .open_path_preview(
+                    project_path,
+                    None,
+                    /* focus_item */ true,
+                    /* allow_preview */ false,
+                    /* activate */ true,
+                    window,
+                    cx,
+                )
+                .detach_and_log_err(cx);
+        });
+    }
+
     /// Whether the active hunk of the solo diff's editor is classified as
     /// staged by its hunk renderer, which drives hollow/filled rendering.
     fn solo_diff_hunk_renders_as_staged(
@@ -11319,7 +11358,8 @@ mod tests {
         )
         .await;
 
-        // Nothing is open in the editor yet, so there is no focused file.
+        // Nothing is open in the editor yet, so there is no focused file and
+        // nothing to highlight.
         assert_eq!(panel.read_with(&cx, focused_repo_path), None);
 
         panel.update_in(&mut cx, |panel, window, cx| {
@@ -11332,17 +11372,34 @@ mod tests {
             panel.read_with(&cx, focused_repo_path),
             Some(repo_path("file.rs"))
         );
+        assert_eq!(
+            panel.read_with(&cx, |panel, _| panel.selected_entry),
+            panel.read_with(&cx, |panel, _| entry_index_for_repo_path(
+                panel,
+                &repo_path("file.rs")
+            ))
+        );
 
-        // Focusing a different file updates the panel's notion of the active file.
-        panel.update_in(&mut cx, |panel, window, cx| {
-            panel.selected_entry =
-                panel.entry_by_path_in_section(&repo_path("other.rs"), Section::Tracked);
-            panel.view_file(&ViewFile, window, cx);
-        });
+        // Focus a different file straight from the workspace, without touching
+        // the panel. The list highlights a single row, so the selection has to
+        // follow the editor on its own instead of leaving "file.rs" lit
+        // alongside the newly focused file.
+        let repository = panel
+            .read_with(&cx, |panel, _| panel.active_repository.clone())
+            .expect("the fixture has an active repository");
+        open_file_in_active_pane(&workspace, &repository, &repo_path("other.rs"), &mut cx);
         cx.run_until_parked();
+
         assert_eq!(
             panel.read_with(&cx, focused_repo_path),
             Some(repo_path("other.rs"))
+        );
+        assert_eq!(
+            panel.read_with(&cx, |panel, _| panel.selected_entry),
+            panel.read_with(&cx, |panel, _| entry_index_for_repo_path(
+                panel,
+                &repo_path("other.rs")
+            ))
         );
 
         // Closing the focused tab must clear the focused file, otherwise the
@@ -11357,6 +11414,7 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(panel.read_with(&cx, focused_repo_path), None);
+        assert_eq!(panel.read_with(&cx, |panel, _| panel.selected_entry), None);
     }
 
     #[gpui::test]
