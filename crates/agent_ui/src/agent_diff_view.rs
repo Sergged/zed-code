@@ -53,6 +53,7 @@ pub struct AgentDiffView {
     workspace: WeakEntity<Workspace>,
     showing_full_file: bool,
     _settings_subscription: Subscription,
+    _action_log_subscription: Subscription,
 }
 
 impl AgentDiffView {
@@ -71,6 +72,13 @@ impl AgentDiffView {
                     .items_of_type::<Self>(cx)
                     .find(|item| item.read(cx).buffer.entity_id() == buffer.entity_id());
                 if let Some(existing) = existing {
+                    // The diff entity can be replaced between openings (a buffer
+                    // re-tracked after a reject, for instance), so rebind before
+                    // refreshing the excerpts.
+                    existing.update(cx, |view, cx| {
+                        view.diff = diff.clone();
+                        view.update_excerpts(cx);
+                    });
                     workspace.activate_item(&existing, true, true, window, cx);
                     return existing;
                 }
@@ -100,6 +108,7 @@ impl AgentDiffView {
         cx: &mut Context<Self>,
     ) -> Self {
         let project = thread.read(cx).project().clone();
+        let action_log = thread.read(cx).action_log().clone();
         let focus_handle = cx.focus_handle();
         let showing_full_file = EditorSettings::get_global(cx).file_diff.show_full_file;
 
@@ -148,6 +157,11 @@ impl AgentDiffView {
                 }
             });
 
+        let action_log_subscription =
+            cx.observe_in(&action_log, window, |this, _action_log, _window, cx| {
+                this.update_excerpts(cx)
+            });
+
         Self {
             thread,
             buffer,
@@ -157,7 +171,34 @@ impl AgentDiffView {
             workspace,
             showing_full_file,
             _settings_subscription: settings_subscription,
+            _action_log_subscription: action_log_subscription,
         }
+    }
+
+    /// Re-derives the excerpts from the diff and hands them to the editor.
+    ///
+    /// The view is a snapshot when it is first built, so without this the hunks,
+    /// the split left side and the toolbar stats all keep showing the state the
+    /// diff had at open time. `toggle_showing_full_file` stays the only place that
+    /// changes the user's `showing_full_file` preference.
+    fn update_excerpts(&mut self, cx: &mut Context<Self>) {
+        let (ranges, context_line_count) =
+            Self::excerpt_ranges(&self.buffer, &self.diff, self.showing_full_file, cx);
+
+        self.editor.update(cx, |editor, cx| {
+            let path = PathKey::for_buffer(&self.buffer, cx);
+            editor.remove_excerpts_for_path(path.clone(), cx);
+            editor.update_excerpts_for_path(
+                path,
+                self.buffer.clone(),
+                ranges,
+                context_line_count,
+                self.diff.clone(),
+                cx,
+            );
+        });
+
+        cx.notify();
     }
 
     fn build_multibuffer(
