@@ -381,6 +381,10 @@ pub enum ShowScrollbar {
 /// Whether a scrollbar reserves space for a track next to the content
 /// (`track`) or floats over it (`thumb`).
 ///
+/// Used by the project, search, git and references panels, and by context
+/// menus. There is no global editor-level counterpart: the editor draws its
+/// own scrollbar, which always reserves a track.
+///
 /// Default: track
 #[derive(
     Copy,

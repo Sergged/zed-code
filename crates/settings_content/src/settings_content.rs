@@ -228,7 +228,10 @@ pub struct SettingsContent {
     pub collaboration_panel: Option<PanelSettingsContent>,
 
     /// Configuration for the references panel visual settings.
-    pub references_panel: Option<PanelSettingsContent>,
+    pub references_panel: Option<ReferencesPanelSettingsContent>,
+
+    /// Configuration for the context menu visual settings.
+    pub context_menu: Option<ContextMenuSettingsContent>,
 
     pub debugger: Option<DebuggerSettingsContent>,
 
@@ -406,7 +409,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, preview_tabs, agent,
-        agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
+        agent_servers, audio, auto_update, base_keymap, collaboration_panel, context_menu, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, outline_panel, project_panel,
@@ -818,6 +821,11 @@ pub struct GitPanelSettingsContent {
 
     /// Default action when clicking a changed file in the Git panel.
     ///
+    /// With preview tabs enabled a single click opens this action as a preview tab,
+    /// and a double click opens it in a persistent tab instead. With preview tabs
+    /// disabled a single click always opens a persistent tab and a double click
+    /// does nothing.
+    ///
     /// Default: project_diff
     pub entry_primary_click_action: Option<GitPanelClickBehavior>,
 }
@@ -916,7 +924,18 @@ pub enum StatusStyle {
     Copy, Clone, Default, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq,
 )]
 pub struct ScrollbarSettings {
+    /// When to show the scrollbar.
+    ///
+    /// Default: inherits the editor scrollbar settings
     pub show: Option<ShowScrollbar>,
+    /// Whether the scrollbar reserves space for a track next to the content
+    /// ("track") or floats over it ("thumb").
+    ///
+    /// Unlike [`show`], this is never inherited: there is no global scrollbar
+    /// track setting to inherit from, so the default is a plain value.
+    ///
+    /// Default: track
+    pub track: Option<ScrollbarTrack>,
 }
 
 #[with_fallible_options]
@@ -934,6 +953,36 @@ pub struct PanelSettingsContent {
     ///
     /// Default: 240
     pub default_width: Option<PixelSetting>,
+}
+
+/// Same shape as [`PanelSettingsContent`], but with a two-valued [`DockSide`]
+/// because the references panel can only dock left or right. Kept separate so
+/// `collaboration_panel` keeps its upstream `DockPosition`.
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
+pub struct ReferencesPanelSettingsContent {
+    /// Whether to show the panel button in the status bar.
+    ///
+    /// Default: true
+    pub button: Option<bool>,
+    /// Where to dock the panel.
+    ///
+    /// Default: left
+    pub dock: Option<DockSide>,
+    /// Default width of the panel in pixels.
+    ///
+    /// Default: 320
+    pub default_width: Option<PixelSetting>,
+    /// Scrollbar-related settings.
+    pub scrollbar: Option<ScrollbarSettings>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
+pub struct ContextMenuSettingsContent {
+    /// Scrollbar-related settings for context menus. They follow the global
+    /// `scrollbar.show` when unset, and carry their own `track` default.
+    pub scrollbar: Option<ScrollbarSettings>,
 }
 
 #[with_fallible_options]
@@ -1244,6 +1293,7 @@ pub struct OutlinePanelSettingsContent {
     Clone,
     Copy,
     Debug,
+    Default,
     PartialEq,
     Eq,
     Serialize,
@@ -1255,6 +1305,7 @@ pub struct OutlinePanelSettingsContent {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum DockSide {
+    #[default]
     Left,
     Right,
 }

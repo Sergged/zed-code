@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
 
 use crate::{
-    DelayMs, DiagnosticSeverityContent, DockPosition, ScrollbarTrack, ShowScrollbar,
+    DelayMs, DiagnosticSeverityContent, DockSide, ScrollbarSettings, ShowScrollbar,
     serialize_f32_with_two_decimal_places,
 };
 
@@ -414,11 +414,6 @@ pub struct ScrollbarContent {
     ///
     /// Default: auto
     pub show: Option<ShowScrollbar>,
-    /// Whether the scrollbar reserves space for a track next to the content
-    /// ("track") or floats over it ("thumb").
-    ///
-    /// Default: track
-    pub track: Option<ScrollbarTrack>,
     /// Whether to show git diff indicators in the scrollbar.
     ///
     /// Default: true
@@ -1020,7 +1015,9 @@ pub struct SearchSettingsContent {
     /// Where to dock the search panel.
     ///
     /// Default: left
-    pub dock: Option<DockPosition>,
+    pub dock: Option<DockSide>,
+    /// Scrollbar-related settings for the search panel.
+    pub scrollbar: Option<ScrollbarSettings>,
     /// Whether to only match on whole words.
     pub whole_word: Option<bool>,
     /// Whether to match case sensitively.

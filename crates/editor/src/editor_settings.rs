@@ -111,7 +111,6 @@ pub struct Toolbar {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Scrollbar {
     pub show: ShowScrollbar,
-    pub track: ScrollbarTrack,
     pub git_diff: bool,
     pub selected_text: bool,
     pub selected_symbol: bool,
@@ -194,7 +193,9 @@ pub struct SearchSettings {
     /// Whether to show the project search button in the status bar.
     pub button: bool,
     /// Where to dock the search panel.
-    pub dock: settings::DockPosition,
+    pub dock: settings::DockSide,
+    /// Scrollbar settings for the search panel.
+    pub scrollbar: SearchScrollbarSettings,
     /// Whether to only match on whole words.
     pub whole_word: bool,
     /// Whether to match case sensitively.
@@ -207,6 +208,17 @@ pub struct SearchSettings {
     pub center_on_match: bool,
     /// Start searching as you type in project search, without pressing Enter.
     pub search_on_type: bool,
+}
+
+/// Scrollbar settings for the search panel.
+///
+/// [`Self::show`] is `None` when unset, which means "inherit the editor's
+/// `scrollbar.show`". [`Self::track`] is never inherited: there is no global
+/// scrollbar track setting, so an unset value falls back to the type default.
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct SearchScrollbarSettings {
+    pub show: Option<ShowScrollbar>,
+    pub track: ScrollbarTrack,
 }
 
 impl EditorSettings {
@@ -251,7 +263,7 @@ impl Settings for EditorSettings {
             },
             scrollbar: Scrollbar {
                 show: scrollbar.show.map(ui_scrollbar_settings_from_raw).unwrap(),
-                track: scrollbar.track.map(ui_scrollbar_track_from_raw).unwrap(),
+
                 git_diff: scrollbar.git_diff.unwrap()
                     && content
                         .git
@@ -310,6 +322,19 @@ impl Settings for EditorSettings {
             search: SearchSettings {
                 button: search.button.unwrap(),
                 dock: search.dock.unwrap(),
+                scrollbar: SearchScrollbarSettings {
+                    show: search
+                        .scrollbar
+                        .as_ref()
+                        .and_then(|scrollbar| scrollbar.show)
+                        .map(ui_scrollbar_settings_from_raw),
+                    track: search
+                        .scrollbar
+                        .as_ref()
+                        .and_then(|scrollbar| scrollbar.track)
+                        .map(ui_scrollbar_track_from_raw)
+                        .unwrap_or_default(),
+                },
                 whole_word: search.whole_word.unwrap(),
                 case_sensitive: search.case_sensitive.unwrap(),
                 include_ignored: search.include_ignored.unwrap(),

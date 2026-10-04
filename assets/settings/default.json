@@ -656,9 +656,6 @@
     // 4. Never show the scrollbar:
     //    "never"
     "show": "auto",
-    // Whether the scrollbar in panels reserves space for a track next to the
-    // content ("track", default) or floats over it ("thumb").
-    "track": "track",
     // Whether to show cursor positions in the scrollbar.
     "cursors": true,
     // Whether to show git diff indicators in the scrollbar.
@@ -812,6 +809,20 @@
     "button": true,
     // Where to dock the search panel. Can be 'left' or 'right'.
     "dock": "left",
+    // Scrollbar-related settings for the search panel.
+    "scrollbar": {
+      // When to show the scrollbar in the search panel.
+      //
+      // Choices: always, auto, never, system
+      // Default: inherits editor scrollbar settings
+      // "show": null
+      //
+      // Whether the scrollbar reserves space for a track next to the content
+      // ("track") or floats over it ("thumb").
+      // Not inherited: there is no global scrollbar track setting, so this
+      // carries its own default.
+      "track": "track",
+    },
     // Whether to only match on whole words.
     "whole_word": false,
     // Whether to match case sensitively.
@@ -929,6 +940,11 @@
       // 5. Never show the scrollbar:
       //    "never"
       "show": null,
+      // Whether the scrollbar reserves space for a track next to the content
+      // ("track") or floats over it ("thumb").
+      // Not inherited: there is no global scrollbar track setting, so this
+      // carries its own default.
+      "track": "track",
       // Whether to allow horizontal scrolling in the project panel.
       // When false, the view is locked to the leftmost position and long file names are clipped.
       "horizontal_scroll": true,
@@ -1083,6 +1099,36 @@
     "dock": "left",
     // Default width of the references panel.
     "default_width": 320,
+    // Scrollbar-related settings for the references panel.
+    "scrollbar": {
+      // When to show the scrollbar in the references panel.
+      //
+      // Choices: always, auto, never, system
+      // Default: inherits editor scrollbar settings
+      // "show": null
+      //
+      // Whether the scrollbar reserves space for a track next to the content
+      // ("track") or floats over it ("thumb").
+      // Not inherited: there is no global scrollbar track setting, so this
+      // carries its own default.
+      "track": "track",
+    },
+  },
+  "context_menu": {
+    // Scrollbar-related settings for context menus and dropdowns.
+    "scrollbar": {
+      // When to show the scrollbar in a context menu that overflows.
+      //
+      // Choices: always, auto, never, system
+      // Default: inherits editor scrollbar settings
+      // "show": null
+      //
+      // Whether the scrollbar reserves space for a track next to the content
+      // ("track") or floats over it ("thumb").
+      // Not inherited: there is no global scrollbar track setting, so this
+      // carries its own default.
+      "track": "track",
+    },
   },
   "git_panel": {
     // Whether to show the git panel button in the status bar.
@@ -1145,6 +1191,12 @@
       // Choices: always, auto, never, system
       // Default: inherits editor scrollbar settings
       // "show": null
+      //
+      // Whether the scrollbar reserves space for a track next to the content
+      // ("track") or floats over it ("thumb").
+      // Not inherited: there is no global scrollbar track setting, so this
+      // carries its own default.
+      "track": "track",
     },
     // Whether to show the addition/deletion change count next to each file in the Git panel.
     //

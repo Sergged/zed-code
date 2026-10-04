@@ -7,7 +7,8 @@ use settings_macros::{MergeFrom, with_fallible_options};
 
 use crate::{
     CenteredPaddingSettings, CommandAliasTarget, DelayMs, DockPosition, DockSide, InactiveOpacity,
-    ShowIndentGuides, ShowScrollbar, serialize_optional_f32_with_two_decimal_places,
+    ScrollbarTrack, ShowIndentGuides, ShowScrollbar,
+    serialize_optional_f32_with_two_decimal_places,
 };
 
 #[with_fallible_options]
@@ -1113,6 +1114,12 @@ pub struct ProjectPanelScrollbarSettingsContent {
     ///
     /// Default: inherits editor scrollbar settings
     pub show: Option<ShowScrollbar>,
+    /// Whether the scrollbar reserves space for a track next to the content
+    /// ("track") or floats over it ("thumb"). Not inherited: there is no
+    /// global scrollbar track setting.
+    ///
+    /// Default: track
+    pub track: Option<ScrollbarTrack>,
     /// Whether to allow horizontal scrolling in the project panel.
     /// When false, the view is locked to the leftmost position and
     /// long file names are clipped.

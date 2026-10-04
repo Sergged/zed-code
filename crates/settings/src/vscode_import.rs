@@ -188,6 +188,7 @@ impl VsCodeSettings {
             base_keymap: Some(BaseKeymapContent::VSCode),
             calls: None,
             collaboration_panel: None,
+            context_menu: None,
             command_palette: self
                 .read_u64("workbench.commandPalette.history")
                 .map(|history| CommandPaletteSettingsContent {
@@ -863,6 +864,7 @@ impl VsCodeSettings {
             scrollbar: self.read_bool("workbench.list.horizontalScrolling").map(
                 |horizontal_scrolling| ProjectPanelScrollbarSettingsContent {
                     show: None,
+                    track: None,
                     horizontal_scroll: Some(horizontal_scrolling),
                 },
             ),
