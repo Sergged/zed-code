@@ -694,6 +694,18 @@ impl FixedWidth for ButtonLike {
     }
 }
 
+impl FixedHeight for ButtonLike {
+    fn height(mut self, height: impl Into<DefiniteLength>) -> Self {
+        self.height = Some(height.into());
+        self
+    }
+
+    fn full_height(mut self) -> Self {
+        self.height = Some(relative(1.));
+        self
+    }
+}
+
 impl ButtonCommon for ButtonLike {
     fn id(&self) -> &ElementId {
         &self.id

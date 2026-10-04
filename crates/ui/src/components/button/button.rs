@@ -3,7 +3,7 @@ use gpui::{AnyElement, AnyView, DefiniteLength};
 use ui_macros::RegisterComponent;
 
 use crate::traits::animation_ext::CommonAnimationExt;
-use crate::{ButtonCommon, ButtonLike, ButtonSize, ButtonStyle, Icon, Label};
+use crate::{ButtonCommon, ButtonLike, ButtonSize, ButtonStyle, Icon, Label, LineHeightStyle};
 use crate::{
     Color, DynamicSpacing, ElevationIndex, KeyBinding, KeybindingPosition, TintColor, prelude::*,
 };
@@ -81,6 +81,7 @@ pub struct Button {
     label: SharedString,
     label_color: Option<Color>,
     label_size: Option<LabelSize>,
+    label_line_height_style: LineHeightStyle,
     selected_label: Option<SharedString>,
     selected_label_color: Option<Color>,
     start_icon: Option<Icon>,
@@ -105,6 +106,7 @@ impl Button {
             label: label.into(),
             label_color: None,
             label_size: None,
+            label_line_height_style: LineHeightStyle::default(),
             selected_label: None,
             selected_label_color: None,
             start_icon: None,
@@ -173,6 +175,17 @@ impl Button {
     /// Defines the size of the button's label.
     pub fn label_size(mut self, label_size: impl Into<Option<LabelSize>>) -> Self {
         self.label_size = label_size.into();
+        self
+    }
+
+    /// Defines how the button's label derives its line height.
+    ///
+    /// [`LineHeightStyle::UiLabel`] makes the label's line height equal to its
+    /// font size. Use it for buttons whose height is constrained by a tight
+    /// container, where the default line height (font size times the golden
+    /// ratio) would be taller than the space available.
+    pub fn label_line_height_style(mut self, style: LineHeightStyle) -> Self {
+        self.label_line_height_style = style;
         self
     }
 
@@ -365,6 +378,32 @@ impl FixedWidth for Button {
     }
 }
 
+impl FixedHeight for Button {
+    /// Sets a fixed height for the button.
+    ///
+    /// # Examples
+    ///
+    /// Create a button that fills the height left over by its container's padding:
+    ///
+    /// ```
+    /// use ui::prelude::*;
+    ///
+    /// Button::new("full_height_button", "Tall")
+    ///     .full_height();
+    /// ```
+    fn height(mut self, height: impl Into<DefiniteLength>) -> Self {
+        self.base = self.base.height(height.into());
+        self
+    }
+
+    /// Makes the button take up the full height of its container, i.e. the
+    /// space left over after the container's padding and borders.
+    fn full_height(mut self) -> Self {
+        self.base = self.base.full_height();
+        self
+    }
+}
+
 impl ButtonCommon for Button {
     fn id(&self) -> &ElementId {
         self.base.id()
@@ -498,6 +537,7 @@ impl RenderOnce for Button {
                             Label::new(label)
                                 .color(label_color)
                                 .size(self.label_size.unwrap_or_default())
+                                .line_height_style(self.label_line_height_style)
                                 .when_some(self.alpha, |this, alpha| this.alpha(alpha))
                                 .when(self.truncate, |this| this.truncate()),
                         )

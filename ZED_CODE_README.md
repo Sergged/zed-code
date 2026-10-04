@@ -231,6 +231,7 @@ No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiff
 
 Like `SoloDiffView`, the view returns `None` from `Item::act_as_type` for `SplittableEditor`. That keeps the buffer search bar in its own toolbar row below the buttons — both toolbars stay visible at once instead of the search displacing the review actions — and stops the search bar from re-rendering the split/unified and fold controls the toolbar already owns. Returning `Some` there is what puts the search in `PrimaryLeft` and produces the duplicate controls.
 
+The pill is exactly one code line tall, which is why the buttons inside it use `full_height()` instead of a fixed `ButtonSize`: with a 14px buffer font a line is `round(14 × 1.618) = 23px`, and `box_sizing` is `border-box`, so the 1px borders and the 4px padding leave less room than a 22px default button needs — it overflowed the pill instead of fitting. Because the pill's height tracks the font size, so does its label: the buttons set `label_line_height_style(LineHeightStyle::UiLabel)` to make the label's line height equal its font size, as the default (font size × golden ratio) is taller than the pill at every font size and would never fit. Both effects come from `rem_size`, which the editor already scales with `buffer_font_size`.
 
 ### Selections and diagnostics as thread context
 
