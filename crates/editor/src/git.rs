@@ -8,18 +8,23 @@ use ::git::{
 use buffer_diff::{BufferDiff, DiffHunkStatus, DiffHunkStatusKind};
 use project::git_store::Repository;
 
+/// A diff hunk resolved to the *working* buffer, regardless of which side of a
+/// split diff it was collected from. In the LHS the multibuffer holds an
+/// inverted diff whose "buffer" is the base text, so a `MultiBufferDiffHunk`
+/// read from there addresses base-text offsets; these hunks always address the
+/// buffer the user actually edits.
 #[derive(Clone)]
-struct ResolvedDiffHunk {
-    buffer_range: Range<text::Anchor>,
-    diff_base_byte_range: Range<usize>,
-    status: DiffHunkStatus,
+pub struct ResolvedDiffHunk {
+    pub buffer_range: Range<text::Anchor>,
+    pub diff_base_byte_range: Range<usize>,
+    pub status: DiffHunkStatus,
 }
 
 #[derive(Clone)]
-struct ResolvedDiffHunks {
-    diff: Entity<BufferDiff>,
-    buffer: Option<Entity<Buffer>>,
-    hunks: Vec<ResolvedDiffHunk>,
+pub struct ResolvedDiffHunks {
+    pub diff: Entity<BufferDiff>,
+    pub buffer: Option<Entity<Buffer>>,
+    pub hunks: Vec<ResolvedDiffHunk>,
 }
 
 pub trait DiffHunkRenderer {
@@ -3032,6 +3037,35 @@ pub fn set_blame_renderer(renderer: impl BlameRenderer + 'static, cx: &mut App) 
     cx.set_global(GlobalBlameRenderer(Arc::new(renderer)));
 }
 
+/// The shared container that every diff hunk's action pill is rendered into.
+///
+/// The pill is exactly one code line tall and sits one line above the hunk it
+/// belongs to, so the vertical room inside it is scarce: a fixed `ButtonSize`
+/// does not fit once the padding and borders are accounted for, which is why
+/// the buttons in here are expected to use `full_height()`. The label's
+/// `line_height` has to shrink with them for the same reason.
+pub fn diff_hunk_controls_pill(line_height: Pixels, cx: &mut App) -> Div {
+    // Drop shadows render as a dark halo on transparent windows.
+    let opaque_window =
+        cx.theme().window_background_appearance() == gpui::WindowBackgroundAppearance::Opaque;
+
+    h_flex()
+        .h(line_height)
+        .mr_1()
+        .gap_1()
+        .px_1()
+        .py_1()
+        .border_x_1()
+        .border_t_1()
+        .border_b_1()
+        .border_color(cx.theme().colors().border)
+        .rounded_t_md()
+        .rounded_b_md()
+        .bg(cx.theme().colors().editor_background)
+        .block_mouse_except_scroll()
+        .when(opaque_window, |this| this.shadow_md())
+}
+
 pub fn render_diff_hunk_controls(
     row: u32,
     status: &DiffHunkStatus,
@@ -3060,20 +3094,8 @@ pub fn render_diff_hunk_controls(
         .as_ref()
         .is_some_and(|operations| operations.supports_restore());
 
-    h_flex()
-        .h(line_height)
-        .mr_1()
+    diff_hunk_controls_pill(line_height, cx)
         .gap_1()
-        .px_0p5()
-        .pb_1()
-        .border_x_1()
-        .border_b_1()
-        .border_color(cx.theme().colors().border_variant)
-        .rounded_b_lg()
-        .bg(cx.theme().colors().editor_background)
-        .gap_1()
-        .block_mouse_except_scroll()
-        .shadow_md()
         .when(
             show_stage_restore
                 && ((status.has_secondary_hunk() && supports_staging)
@@ -3081,6 +3103,8 @@ pub fn render_diff_hunk_controls(
             |el| {
                 el.child(if status.has_secondary_hunk() {
                     Button::new(("stage", row as u64), "Stage")
+                        .full_height()
+                        .label_line_height_style(LineHeightStyle::UiLabel)
                         .alpha(if status.is_pending() { 0.66 } else { 1.0 })
                         .tooltip({
                             let focus_handle = editor.focus_handle(cx);
@@ -3108,6 +3132,8 @@ pub fn render_diff_hunk_controls(
                         })
                 } else {
                     Button::new(("unstage", row as u64), "Unstage")
+                        .full_height()
+                        .label_line_height_style(LineHeightStyle::UiLabel)
                         .alpha(if status.is_pending() { 0.66 } else { 1.0 })
                         .tooltip({
                             let focus_handle = editor.focus_handle(cx);
@@ -3139,6 +3165,8 @@ pub fn render_diff_hunk_controls(
         .when(show_stage_restore && supports_restore, |el| {
             el.child(
                 Button::new(("restore", row as u64), "Restore")
+                    .full_height()
+                    .label_line_height_style(LineHeightStyle::UiLabel)
                     .tooltip({
                         let focus_handle = editor.focus_handle(cx);
                         move |_window, cx| {
