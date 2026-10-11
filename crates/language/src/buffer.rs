@@ -2040,6 +2040,16 @@ impl Buffer {
         }
     }
 
+    /// Returns whether any language server has ever reported diagnostics for this buffer,
+    /// including a report that came back empty.
+    ///
+    /// This is what separates a file a server checked and found clean from a file no server has
+    /// looked at yet. The diagnostics map cannot: an empty report removes that server's entry
+    /// from it (see [`Self::apply_diagnostic_update`]), so both cases read as "no diagnostics".
+    pub fn has_diagnostic_reports(&self) -> bool {
+        self.diagnostics_timestamp > Lamport::MIN
+    }
+
     /// Assign to the buffer a set of diagnostics created by a given language server.
     pub fn update_diagnostics(
         &mut self,

@@ -176,6 +176,10 @@ Which agent tools scan, and how much — **all of this is branch-local** (upstre
 
 Cancelling a permission prompt used to leave the conversation in a state where every **Allow** / **Deny** button and its keyboard shortcut stopped working, for the rest of the session, until Zed was restarted. Three separate defects combined:
 
+- `Conversation::pending_tool_call` returned `None` on the first registered request whose tool call was no longer waiting, without trying the next one. Every confirmation button routes through that function (`authorize_pending_tool_call`, the `allow_always` / `allow_once` shortcuts, `authorize_pending_with_granularity`), so one stale entry at the head of the registry muted all of them. Stale entries are now skipped, in `pending_tool_call` and in `pending_tool_call_for_session`.
+- That registry is only pruned by a `ToolAuthorizationReceived` event, which a dropped thread never delivers.
+- `handle_thread_events` propagated errors out of its event loop with `??`. A single rejected `ToolCallUpdate` — the shape a title-less insert takes — ended event delivery for the whole thread permanently, so nothing could ever prune the registry again. Each tool-call event is now logged and skipped instead of ending the loop.
+
 The global FIFO ordering across sessions is unchanged and still deliberate: `is_first_tool_call` uses it to decide which single card carries the buttons, so only one prompt is actionable at a time.
 
 ### Errors that name the actual cause
@@ -249,12 +253,22 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 - The `terminal` description now states a priority rather than a prohibition: prefer the built-in file tools because they honor `file_scan_exclusions` / `private_files` (a shell command bypasses them) and their output is structured and visible, and reach for the shell when a file tool cannot express what is needed. The earlier blanket "do not use this tool to read or list files" took away the fallback the model needs when a built-in genuinely cannot do the job.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
 - The `## Multi-agent delegation` section was rewritten with concrete delegation triggers, cost framing (a sub-agent costs one tool call), parallel spawning in the same turn, self-contained briefs with disjoint write scopes, and optional sub-agent model selection via `list_agents_and_models` — pass the exact `models[].id` from the native entry (`is_native: true`); omitting `model` falls back to the configured subagent model, or the parent model when none is set. For long-output commands it asks the sub-agent to report the failing lines or diagnostics.
+- The tool-selection bullet and the `## Validation` / `## Fixing Diagnostics` sections (rendered when `diagnostics` is available) now draw the line between the `diagnostics` tool and the terminal: diagnostics for errors, warnings, type errors and the project's configured linter; the terminal for builds, tests, code generation and running things. They also forbid the "the diagnostics were wrong / the cache was stale" explanation — the tool cannot see stale cache, only whether a file was checked, and "this file was not checked" is the statement that names a next action.
+
+### `diagnostics` reports what it checked, not just what it found
+
+`diagnostics` opened the file's buffer but never registered it with any language server — `didOpen` is sent only from `register_buffer_with_language_servers`, which the editor calls for visible tabs and the action log calls for files the agent reads or edits. For any file the agent had not touched yet, the pull therefore returned nothing, and the tool printed "File doesn't have errors or warnings!" for a file nobody had looked at. The tool now takes the `ActionLog` (as `read_file` and `edit_file` already do) and calls `buffer_read`, which is what pulls in the registration.
+
+That fix alone is not enough, because "checked and clean" and "never checked" both produce an empty diagnostic list. `has_diagnostics` cannot tell them apart: an empty report _removes_ the server's entry from the buffer's diagnostics map (`Buffer::apply_diagnostic_update`). The tool therefore distinguishes four outcomes instead of two:
+
 | Outcome                          | Meaning                                                                                    |
 | -------------------------------- | ------------------------------------------------------------------------------------------ |
 | `No errors or warnings.`         | A server checked the file and it is clean                                                  |
 | `has not been checked`           | Servers are attached, none has reported yet — expected right after a move, rename, or edit |
 | `No language server is attached` | This tool cannot check the file; use the terminal                                          |
 | `Diagnostics may be stale.`      | The refresh failed, so the output may predate the edits                                    |
+
+The new `Buffer::has_diagnostic_reports()` is what separates the first two: it tracks the diagnostics lamport timestamp, which advances on every report including an empty one, unlike the map that an empty report empties.
 
 The input changed from `path` to `paths`, so all the files the agent edited can be checked in one call. The project-wide summary (no paths) is explicitly labelled as covering only files the servers have already reported on, and when nothing has been reported at all it says so rather than reporting a clean project.
 
