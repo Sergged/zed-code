@@ -147,12 +147,29 @@ Gitignored directories stay unscanned until something asks for them. A bare rela
 
 Who calls them:
 
+| Trigger                                                                            | Primitive                                                             | Reach                            |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------- |
+| agent file tools: a bare relative path that doesn't resolve                        | `add_path_prefix_to_scan` of the ignored ancestor, then resolve again | that subtree                     |
+| agent `find_path` — glob's literal prefix enters one                               | `add_path_prefix_to_scan` for that ignored, unloaded directory        | that subtree                     |
+| agent `grep` — `include_pattern`'s literal prefix enters one                       | `add_path_prefix_to_scan` for that ignored, unloaded directory        | that subtree                     |
+| agent `list_directory` on an ignored directory                                     | `add_path_prefix_to_scan` of that directory                           | that subtree                     |
+| agent `list_directory` on a path _inside_ an ignored one                           | `add_path_prefix_to_scan` of that directory (from the resolved path)  | that subtree                     |
+| agent `read_file` (via the rooted or absolute form)                                | `open_buffer`                                                         | the one file — no directory scan |
+| agent symbol tools (`go_to_definition`, `find_references`, `rename`, code actions) | `add_path_prefix_to_scan` of the ignored ancestor, then `open_buffer` | that subtree                     |
+| project panel: expanding an ignored directory                                      | `add_path_prefix_to_scan`                                             | that subtree                     |
+| opening/loading a file in the editor                                               | buffer load / `refresh_entries_for_paths`                             | that path                        |
+| a language server registering a file watcher                                       | `add_path_prefix_to_scan` of the watched prefix                       | that subtree                     |
+| rename / copy / drag in the panel, edit prediction                                 | `refresh_entry` / `refresh_entries_for_paths`                         | the named path                   |
+| filesystem watcher events                                                          | rescans under the affected subtree                                    | —                                |
 
 Which agent tools scan, and how much — **all of this is branch-local** (upstream never pre-scans for these tools):
 
 - The two search tools share one rule, implemented once in `glob_literal_prefix` / `glob_reaches_dir` (`crates/agent/src/tools/ignored_scan.rs`): an ignored directory is scanned and matched **only when the glob's literal prefix names into it**. A leading `**` names no directory, so it reaches nothing ignored — that is what keeps an ordinary search from exploding into `node_modules`.
 - `find_path` scans the ignored, unloaded directory the glob enters — `root/node_modules/**` scans `node_modules`, while `root/src/**` and `**/index.js` leave it alone — and matches ignored entries only inside those same directories, so an ordinary glob never surfaces ignored content even after another tool loaded it (the result does not depend on scan history).
+- `grep` applies the same rule to `include_pattern` — and `find_path` to its glob — **only when no `path` is given** (through `prescan_ignored_dirs_for_prefix`, because upstream's `PathInclusionMatcher` compares prefixes against worktree-relative paths and would not understand a root-prefixed pattern). With no pattern, or with one that stays in ordinary paths or starts with a wildcard, ignored directories are neither scanned nor matched. When `path` names a root, the tool instead walks that root directly (`agent_grep.rs`, `agent_find_path.rs`) — no worktree scan is involved, and no gitignore rule applies.
+- `list_directory` scans only the directory it was asked to list — or, when the request names something _inside_ a gitignored directory, that ignored ancestor. The scan is driven by the resolved `ProjectPath` (`prescan_ignored_ancestor_for_project_path`), because the rooted and absolute forms resolve through `find_project_path` without a snapshot entry and so leave no trace of the ignored ancestor for the string-based helper to find. Keying off the path string alone is what made `root/node_modules/pkg` report `Path not found`.
 - `read_file` does not scan a whole directory: it opens the one file. It runs the shared on-demand scan only when a **bare relative path** would otherwise fail to resolve, so the bare form resolves like the rooted/absolute one.
+- The symbol tools resolve their `file_path` through `SymbolLocator::resolve`, which runs both scans: the string-based one _before_ asking for a project path (a bare relative path into a gitignored directory does not resolve at all, so there is nothing to key off afterwards) and the `ProjectPath`-based one after (which is what covers the rooted and absolute forms).
 - `edit_file`, `write_file`, `delete_path`, `copy_path`, `move_path`, `create_directory` run the same on-demand scan before resolving a bare relative path (for `create_directory` that path is the new directory's parent).
 
 Cancelling a permission prompt used to leave the conversation in a state where every **Allow** / **Deny** button and its keyboard shortcut stopped working, for the rest of the session, until Zed was restarted. Three separate defects combined:
@@ -169,6 +186,7 @@ The global FIFO ordering across sessions is unchanged and still deliberate: `is_
 
 Reachability — which tool accepts which form:
 
+The symbol tools (`go_to_definition`, `find_references`, `rename`, and the code-action tools behind them) take a `SymbolLocator` — a file path plus a line and a symbol name — rather than a path the model is asking to read. They resolve that path through `SymbolLocator::resolve` (`crates/agent/src/tools/symbol_locator.rs`), which asks for the gitignored directory scan on demand before resolving. Without it a bare relative path into a gitignored directory reported a file that exists as missing, and the model fell back to the terminal.
 
 Gates — what each tool enforces:
 
@@ -411,6 +429,7 @@ Seeded as the global `AGENTS.md` on first run — the always-on instructions the
 - **Stack skills (`strict-*`)** — identify the project stack and load the matching built-in skill before writing or reviewing code: `strict-typescript` (TS/JS/web), `strict-angular` (plus `strict-typescript`), `strict-react` (plus `strict-typescript`). Planning is skills too: `/strict-compose-plan`, `/strict-implement-plan`.
 - **Behavior** — do not leave plan mode without an explicit confirmation; apply global rules only to the code the task touches (no drive-by refactors).
 - **Quality** — read the source or type definitions of third-party APIs instead of relying on memory; no `disable`/`ignore` suppressions, refactor instead; run diagnostics after changes and fix every error and warning.
+- **Tooling** — prefer file tools over the terminal, and the diagnostics tool over long compiler/linter runs; a gitignored file (such as one under `node_modules`) is not an exception, since the file tools scan it on demand, so never fall back to `cat`/`ls` for it; keep mermaid simple (it often fails to render).
 - **Subagents and images** — `spawn_agent` accepts an optional `model`; images can be inspected inside a subagent (e.g. `go/deepseek-v4-flash-vision-exp`) so they stay out of the main thread context.
 - **Documentation integrity** — never delete comments unrelated to the change.
 

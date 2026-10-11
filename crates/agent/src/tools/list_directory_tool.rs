@@ -1,4 +1,4 @@
-use super::ignored_scan::prescan_ignored_ancestor;
+use super::ignored_scan::{prescan_ignored_ancestor, prescan_ignored_ancestor_for_project_path};
 use super::tool_permissions::{
     ResolvedProjectPath, authorize_symlink_access, canonicalize_worktree_roots,
     explain_unresolved_relative_path, external_path_excluded_by_settings,
@@ -306,6 +306,13 @@ impl AgentTool for ListDirectoryTool {
                 }
             };
 
+            // A path below a gitignored directory the worktree never scanned has
+            // no snapshot entry, so the `entry_for_path` check below would report
+            // it as missing. Scan that directory first: the rooted and absolute
+            // forms resolve through `find_project_path` without an entry, so this
+            // is the first point where the ignored ancestor is visible.
+            prescan_ignored_ancestor_for_project_path(&project, &project_path, cx).await;
+
             // Check settings exclusions synchronously
             project.read_with(cx, |project, cx| {
                 let worktree = project
@@ -368,29 +375,12 @@ impl AgentTool for ListDirectoryTool {
                 authorize.await.map_err(|e| e.to_string())?;
             }
 
-            // Gitignored directories aren't scanned by default; pre-scan the
-            // requested directory so `node_modules`-style folders list their
-            // real contents. Only the user's explicit `file_scan_exclusions` /
-            // `private_files` settings block access (checked above) — gitignore
-            // alone must not hide files from the agent's tools.
-            let is_ignored_dir = project.read_with(cx, |project, cx| {
-                let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
-                let snapshot = worktree.read(cx).snapshot();
-                snapshot
-                    .entry_for_path(&project_path.path)
-                    .filter(|entry| entry.is_ignored && entry.is_dir())
-                    .map(|_| ())
-            });
-            if is_ignored_dir.is_some() {
-                let scan = project.read_with(cx, |project, cx| {
-                    let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
-                    let local = worktree.read(cx).as_local()?;
-                    Some(local.add_path_prefix_to_scan(project_path.path.clone()))
-                });
-                if let Some(scan) = scan {
-                    scan.into_future().await;
-                }
-            }
+            // Gitignored directories aren't scanned by default; the prescan above
+            // covers both a requested ignored directory and a path inside one, so
+            // `node_modules`-style folders list their real contents. Only the
+            // user's explicit `file_scan_exclusions` / `private_files` settings
+            // block access (checked above) — gitignore alone must not hide files
+            // from the agent's tools.
 
             let list_path = input.path;
             cx.update(|cx| {
@@ -524,6 +514,127 @@ mod tests {
             !error.contains("gitignored directory") && error.contains("node_modules/missing.js"),
             "expected a plain not-found, got: {error}"
         );
+    }
+
+    /// A path *below* an unscanned gitignored directory used to fail for the
+    /// rooted and absolute forms with a misleading "Path not found": those forms
+    /// resolve through `find_project_path` without a snapshot entry, so the
+    /// ignored ancestor was never scanned and the existence check below it ran
+    /// against an empty subtree. All three forms must behave alike.
+    #[gpui::test]
+    async fn test_list_directory_path_inside_gitignored_directory_all_path_forms(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+
+        // Each form gets its own project: the first form to run scans the
+        // ignored directory into the snapshot, after which the remaining forms
+        // would pass without the fix and prove nothing.
+        for path in [
+            "node_modules/pkg",
+            "root/node_modules/pkg",
+            path!("/root/node_modules/pkg").to_string().as_str(),
+        ] {
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(
+                path!("/root"),
+                json!({
+                    // A git repository is required for `.gitignore` to apply.
+                    ".git": {},
+                    ".gitignore": "node_modules/\n",
+                    "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+                }),
+            )
+            .await;
+
+            let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+            cx.executor().run_until_parked();
+            let tool = Arc::new(ListDirectoryTool::new(project));
+
+            let output = cx
+                .update(|cx| {
+                    tool.run(
+                        ToolInput::resolved(ListDirectoryToolInput {
+                            path: path.to_string(),
+                        }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| panic!("listing {path} should succeed: {error:?}"));
+            assert!(
+                output.contains("node_modules/pkg/index.js"),
+                "expected the directory contents for {path}, got: {output:?}"
+            );
+        }
+    }
+
+    /// The on-demand scan must not turn a genuinely missing path into a
+    /// gitignore-flavoured error: the model reads such a message as "try another
+    /// path form" and retries forever.
+    #[gpui::test]
+    async fn test_list_directory_missing_path_inside_gitignored_directory_is_plain_not_found(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+
+        for path in ["node_modules/missing", "root/node_modules/missing"] {
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(
+                path!("/root"),
+                json!({
+                    ".git": {},
+                    ".gitignore": "node_modules/\n",
+                    "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+                }),
+            )
+            .await;
+
+            let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+            cx.executor().run_until_parked();
+            let tool = Arc::new(ListDirectoryTool::new(project));
+
+            let error = cx
+                .update(|cx| {
+                    tool.run(
+                        ToolInput::resolved(ListDirectoryToolInput {
+                            path: path.to_string(),
+                        }),
+                        ToolCallEventStream::test().0,
+                        cx,
+                    )
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                !error.contains("gitignored directory") && error.contains(path),
+                "expected a plain not-found for {path}, got: {error}"
+            );
+        }
     }
 
     #[gpui::test]

@@ -158,7 +158,7 @@ use crate::{AgentTool, ToolCallEventStream, ToolInput, outline};
 /// - This tool supports reading image files. Supported formats: PNG, JPEG, WebP, GIF, BMP, TIFF.
 ///   Image files are returned as visual content that you can analyze directly.
 ///
-/// A project-relative path that starts with a project root directory always resolves; a bare project-relative path also works when it is unambiguous. Absolute and `~`-prefixed paths are accepted too, and every form is subject to the user's agent tool permission rules.
+/// Gitignored files are readable like any other: a path below a gitignored directory such as `node_modules` is scanned on demand, so a gitignored file is never a reason to reach for the terminal's `cat`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadFileToolInput {
     /// The path of the file to read: a project-relative path starting with a project root directory (which reaches any file inside the project, including gitignored content such as `node_modules`), or an absolute (or `~`-prefixed) path for anything outside the project. Every form is subject to the user's agent tool permission rules.

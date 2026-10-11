@@ -19,7 +19,7 @@ use util::rel_path::RelPath;
 /// - Returns matching file paths sorted alphabetically
 /// - Prefer the `grep` tool to this tool when searching for symbols unless you have specific information about paths.
 /// - Use this tool when you need to find files by name patterns
-/// - Gitignored files are searched only when the glob names into a gitignored directory (e.g. `myproject/node_modules/**`). Ordinary project globs neither scan nor match them; only the user's explicit `file_scan_exclusions` / `private_files` settings can block paths outright.
+/// - Gitignored directories (e.g. `node_modules`) are skipped by default, which is what keeps an ordinary search from scanning tens of thousands of files. Name one from the project root in the glob (e.g. `myproject/node_modules/**`) to include it; a leading `**` names no directory and so reaches none. Their contents stay reachable regardless, via `read_file` and `list_directory`. Only the user's explicit `file_scan_exclusions` / `private_files` settings can block paths outright.
 /// - Results are paginated with 50 matches per page. Use the optional 'offset' parameter to request subsequent pages.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FindPathToolInput {

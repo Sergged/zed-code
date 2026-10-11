@@ -8,14 +8,17 @@
 
 use futures::StreamExt as _;
 use gpui::{App, AsyncApp, Entity};
-use project::{Project, WorktreeId};
+use project::{Project, ProjectPath, WorktreeId};
 use std::path::Path;
 use std::sync::Arc;
 use util::rel_path::{RelPath, RelPathBuf};
 
 /// The gitignored directory that keeps a bare relative `path` from resolving:
-/// the deepest snapshot entry above the path, when that entry is a gitignored
-/// directory the scanner left unloaded.
+/// the deepest snapshot entry at or above the path, when that entry is a
+/// gitignored directory the scanner left unloaded.
+///
+/// `rel_path` itself counts as its own ancestor, so naming an ignored directory
+/// directly is covered as well as naming something inside it.
 ///
 /// Only bare relative paths qualify. A rooted or absolute path resolves without
 /// needing an entry (see `Project::find_project_path`), and a path that already
@@ -68,6 +71,52 @@ pub async fn prescan_ignored_ancestor(
         return false;
     };
 
+    scan_ignored_prefix(project, worktree_id, prefix, cx).await
+}
+
+/// Scans the gitignored directory that keeps an already-resolved `project_path`
+/// from having snapshot entries, and waits for the scan. Returns whether a scan
+/// ran.
+///
+/// Callers that already hold a `ProjectPath` use this instead of
+/// [`prescan_ignored_ancestor`]. The rooted and absolute forms reach a
+/// gitignored directory through `Project::find_project_path`, which resolves
+/// them *without* an entry — so by the time such a path is resolved there is
+/// nothing left that tells the string-based helper it is the one that needs a
+/// scan. Working from the resolved path removes that dependency, so a path of
+/// any form below an unloaded gitignored directory scans the same way.
+///
+/// A no-op when the path already has an entry, or when the deepest entry above
+/// it is an ordinary (scanned) directory.
+pub async fn prescan_ignored_ancestor_for_project_path(
+    project: &Entity<Project>,
+    project_path: &ProjectPath,
+    cx: &mut AsyncApp,
+) -> bool {
+    let Some((worktree_id, prefix)) = project.read_with(cx, |project, cx| {
+        let worktree = project.worktree_for_id(project_path.worktree_id, cx)?;
+        let snapshot = worktree.read(cx).snapshot();
+        // `RelPath::ancestors` yields the path itself first, so this covers both
+        // a requested ignored directory and a path below one.
+        let entry = project_path
+            .path
+            .ancestors()
+            .find_map(|ancestor| snapshot.entry_for_path(ancestor))?;
+        (entry.is_ignored && entry.kind.is_unloaded()).then(|| (snapshot.id(), entry.path.clone()))
+    }) else {
+        return false;
+    };
+
+    scan_ignored_prefix(project, worktree_id, prefix, cx).await
+}
+
+/// Registers `prefix` as a path prefix to scan on its worktree and waits for it.
+async fn scan_ignored_prefix(
+    project: &Entity<Project>,
+    worktree_id: WorktreeId,
+    prefix: Arc<RelPath>,
+    cx: &mut AsyncApp,
+) -> bool {
     let scan = project.read_with(cx, |project, cx| {
         let worktree = project.worktree_for_id(worktree_id, cx)?;
         let local = worktree.read(cx).as_local()?;

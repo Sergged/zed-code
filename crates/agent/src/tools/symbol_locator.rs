@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::fmt;
+use std::path::Path;
 
+use super::ignored_scan::{prescan_ignored_ancestor, prescan_ignored_ancestor_for_project_path};
 use gpui::{App, AsyncApp, Entity};
 use language::{Buffer, Location};
 use project::{CodeAction, Project};
@@ -154,12 +156,26 @@ impl SymbolLocator {
             symbol_name,
         } = self;
 
-        let open_buffer_task = project.update(cx, |project, cx| {
-            let Some(project_path) = project.find_project_path(file_path, cx) else {
-                return Err(format!("Could not find path '{file_path}' in project",));
-            };
-            Ok(project.open_buffer(project_path, cx))
-        })?;
+        // A bare relative path into a gitignored directory the worktree never scanned
+        // can't resolve through the snapshot at all, so scan that directory
+        // before asking for a project path. Without this the symbol tools
+        // report a file that exists as missing, and the model falls back to the
+        // terminal even though `read_file` opens the very same path.
+        prescan_ignored_ancestor(&project, Path::new(file_path), cx).await;
+
+        let project_path =
+            project.read_with(cx, |project, cx| project.find_project_path(file_path, cx));
+        let Some(project_path) = project_path else {
+            return Err(format!("Could not find path '{file_path}' in project",));
+        };
+
+        // A rooted or absolute path resolves without a snapshot entry, so the
+        // scan above is a no-op for it and the ignored ancestor is still
+        // unloaded; scan it now that the path is resolved.
+        prescan_ignored_ancestor_for_project_path(&project, &project_path, cx).await;
+
+        let open_buffer_task =
+            project.update(cx, |project, cx| project.open_buffer(project_path, cx));
 
         let buffer = open_buffer_task
             .await
@@ -220,7 +236,11 @@ impl SymbolLocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::TestAppContext;
     use gpui::proptest::prelude::*;
+    use project::{FakeFs, Project};
+    use serde_json::json;
+    use util::path;
 
     #[gpui::property_test]
     fn find_in_char_iter_test(
@@ -232,5 +252,94 @@ mod tests {
         let actual = find_in_char_iter(haystack.chars(), &needle);
         prop_assert_eq!(actual, expected);
         Ok::<_, TestCaseError>(())
+    }
+
+    /// A bare relative path into a gitignored directory the worktree never
+    /// scanned used to fail with `Could not find path ... in project`, which
+    /// reads as "this file doesn't exist" — the model then reaches for the
+    /// terminal even though `read_file` opens the very same path.
+    #[gpui::test]
+    async fn test_resolve_symbol_in_gitignored_directory(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                // A git repository is required for `.gitignore` to apply.
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "node_modules": {
+                    "pkg": { "index.js": "module.exports = 1;\n" },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let locator = SymbolLocator {
+            file_path: "node_modules/pkg/index.js".into(),
+            line: 1,
+            symbol_name: "module.exports".into(),
+        };
+
+        let resolved = cx
+            .update(|cx| {
+                let project = project.clone();
+                cx.spawn(async move |cx| locator.resolve(&project, cx).await)
+            })
+            .await
+            .unwrap_or_else(|error| panic!("resolving in a gitignored dir should work: {error}"));
+        assert_eq!(resolved.line_text, "module.exports = 1;");
+        assert!(!resolved.truncated);
+    }
+
+    /// The prescan must not invent a hit for a symbol that isn't there: a
+    /// genuinely missing file still reports the file as missing.
+    #[gpui::test]
+    async fn test_resolve_symbol_missing_file_in_gitignored_directory(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                ".gitignore": "node_modules/\n",
+                "node_modules": { "pkg": { "index.js": "module.exports = 1;\n" } },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+
+        let locator = SymbolLocator {
+            file_path: "node_modules/pkg/missing.js".into(),
+            line: 1,
+            symbol_name: "module.exports".into(),
+        };
+
+        let result = cx
+            .update(|cx| {
+                let project = project.clone();
+                cx.spawn(async move |cx| locator.resolve(&project, cx).await)
+            })
+            .await;
+        let Err(error) = result else {
+            panic!("a missing file must not resolve");
+        };
+        assert!(
+            error.contains("node_modules/pkg/missing.js"),
+            "expected an error naming the missing file, got: {error}"
+        );
     }
 }
