@@ -2380,7 +2380,7 @@ impl Editor {
             diagnostics_max_severity,
             hard_wrap: None,
             completion_provider: project.clone().map(|project| Rc::new(project) as _),
-            suggest_memory: Rc::new(SuggestMemory::new()),
+            suggest_memory: completions::suggest_memory(cx),
             semantics_provider: project
                 .as_ref()
                 .map(|project| Rc::new(project.downgrade()) as _),

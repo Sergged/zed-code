@@ -480,6 +480,64 @@ async fn test_suggest_memory_recently_used_by_prefix(_cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_suggest_memory_serialization_round_trip(_cx: &mut TestAppContext) {
+    let completions = vec![
+        CompletionBuilder::function("parse", None, "0"),
+        CompletionBuilder::function("persist", None, "0"),
+        CompletionBuilder::function("prepare", None, "0"),
+    ];
+    let matches = make_matches(&[("parse", 1.0), ("persist", 1.0), ("prepare", 1.0)]);
+
+    let memory = SuggestMemory::new();
+    memory.memorize(SuggestSelection::RecentlyUsed, None, "p", &completions[1]);
+    memory.memorize(
+        SuggestSelection::RecentlyUsedByPrefix,
+        None,
+        "pre",
+        &completions[2],
+    );
+
+    // Round-trip through the serialized form used for persistence.
+    let (recently_used, recently_used_by_prefix) = memory.serialize();
+    let restored =
+        SuggestMemory::deserialize(recently_used.as_deref(), recently_used_by_prefix.as_deref());
+
+    assert_eq!(
+        restored.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "p",
+            &matches,
+            &completions
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        restored.select(
+            SuggestSelection::RecentlyUsedByPrefix,
+            None,
+            "pre",
+            &matches,
+            &completions
+        ),
+        Some(2)
+    );
+
+    // A completion accepted after restoring is considered more recent than restored ones.
+    restored.memorize(SuggestSelection::RecentlyUsed, None, "p", &completions[0]);
+    assert_eq!(
+        restored.select(
+            SuggestSelection::RecentlyUsed,
+            None,
+            "p",
+            &matches,
+            &completions
+        ),
+        Some(0)
+    );
+}
+
+#[gpui::test]
 async fn test_fuzzy_over_sort_positions(cx: &mut TestAppContext) {
     let completions = vec![
         CompletionBuilder::variable("lsp_document_colors", None, "7fffffff"), // 0.29 fuzzy score

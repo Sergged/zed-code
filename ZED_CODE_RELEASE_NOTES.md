@@ -32,6 +32,7 @@ The agent's search tools can be pointed at any directory, the completion menu sh
 - Moved a completion's `detail` (or `label_details.description`) into the menu's own detail column, instead of appending it to the label. A server like TypeScript's only returns `detail` on resolve, so appending it used to rewrite the label on resolve; the label now stays the label.
 - Improved the completion shortcut to toggle the documentation when the menu is already open, instead of reopening it.
 - Added a `Loading…` placeholder to the completions menu, shown from the moment completions are requested until the results arrive.
+- Persisted the `completions.suggest_selection` memory to the database, so the preselected completion survives a restart.
 
 ## Bug Fixes
 

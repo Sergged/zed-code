@@ -2,6 +2,7 @@ use super::*;
 use collections::HashMap;
 use language::LanguageName;
 use lsp::CompletionItemKind;
+use serde::{Deserialize, Serialize};
 use settings::SuggestSelection;
 use std::cell::Cell;
 
@@ -963,6 +964,7 @@ impl Editor {
                 .unwrap_or_default(),
             &completion,
         );
+        self.suggest_memory.persist(cx);
 
         let CompletionEdit {
             new_text,
@@ -1683,7 +1685,7 @@ const RECENTLY_USED_BY_PREFIX_LIMIT: usize = 200;
 /// top-scoring group used by the `recently_used` mode.
 const SCORE_EPSILON: f64 = 1e-6;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MemItem {
     /// The completion's filter text, i.e. its label without the detail that language servers
     /// may only return when resolving, and without the insert text that resolving may rewrite.
@@ -1716,6 +1718,29 @@ impl MemItem {
     }
 }
 
+/// Namespace under which the completion selection memory is persisted.
+const SUGGEST_MEMORY_NAMESPACE: &str = "suggest_memory";
+/// Storage key for the `recently_used` mode memories.
+const RECENTLY_USED_KEY: &str = "recently_used";
+/// Storage key for the `recently_used_by_prefix` mode memories.
+const RECENTLY_USED_BY_PREFIX_KEY: &str = "recently_used_by_prefix";
+
+/// App-wide handle to the persisted completion selection memory, so that all editors
+/// share the same memory and it survives restarts.
+pub(crate) struct GlobalSuggestMemory(pub(crate) Rc<SuggestMemory>);
+
+impl Global for GlobalSuggestMemory {}
+
+/// Returns the app-wide completion selection memory, loading it from the database on first use.
+pub(crate) fn suggest_memory(cx: &mut App) -> Rc<SuggestMemory> {
+    if let Some(global) = cx.try_global::<GlobalSuggestMemory>() {
+        return global.0.clone();
+    }
+    let memory = Rc::new(SuggestMemory::load(cx));
+    cx.set_global(GlobalSuggestMemory(memory.clone()));
+    memory
+}
+
 /// Remembers which completions were accepted, mirroring VS Code's `editor.suggestSelection`.
 ///
 /// The memory never reorders the completion list: it only picks which completion is
@@ -1740,6 +1765,62 @@ impl SuggestMemory {
             recently_used: RefCell::new(HashMap::default()),
             recently_used_by_prefix: RefCell::new(HashMap::default()),
             touch: Cell::new(0),
+        }
+    }
+
+    /// Loads the persisted memory from the database.
+    pub fn load(cx: &App) -> Self {
+        let store = db::kvp::KeyValueStore::global(cx);
+        let kvp = store.scoped(SUGGEST_MEMORY_NAMESPACE);
+        let recently_used = kvp.read(RECENTLY_USED_KEY).log_err().flatten();
+        let recently_used_by_prefix = kvp.read(RECENTLY_USED_BY_PREFIX_KEY).log_err().flatten();
+        Self::deserialize(recently_used.as_deref(), recently_used_by_prefix.as_deref())
+    }
+
+    /// Persists the memory to the database asynchronously.
+    pub fn persist(&self, cx: &App) {
+        let store = db::kvp::KeyValueStore::global(cx);
+        let (recently_used, recently_used_by_prefix) = self.serialize();
+        cx.background_spawn(async move {
+            let kvp = store.scoped(SUGGEST_MEMORY_NAMESPACE);
+            if let Some(json) = recently_used {
+                kvp.write(RECENTLY_USED_KEY.to_string(), json)
+                    .await
+                    .log_err();
+            }
+            if let Some(json) = recently_used_by_prefix {
+                kvp.write(RECENTLY_USED_BY_PREFIX_KEY.to_string(), json)
+                    .await
+                    .log_err();
+            }
+        })
+        .detach();
+    }
+
+    /// Serializes the memories into the two strings stored in the database.
+    pub fn serialize(&self) -> (Option<String>, Option<String>) {
+        (
+            serialize_entries(&self.recently_used.borrow()),
+            serialize_entries(&self.recently_used_by_prefix.borrow()),
+        )
+    }
+
+    /// Reconstructs memories from the stored strings.
+    pub fn deserialize(recently_used: Option<&str>, recently_used_by_prefix: Option<&str>) -> Self {
+        let recently_used = deserialize_entries(recently_used);
+        let recently_used_by_prefix = deserialize_entries(recently_used_by_prefix);
+        // Resume counting past the highest touch seen, so newly accepted completions
+        // are always considered more recent than the restored ones.
+        let touch = recently_used
+            .values()
+            .chain(recently_used_by_prefix.values())
+            .map(|item| item.touch)
+            .max()
+            .unwrap_or(0);
+        Self {
+            recently_used: RefCell::new(recently_used),
+            recently_used_by_prefix: RefCell::new(recently_used_by_prefix),
+            touch: Cell::new(touch),
         }
     }
 
@@ -1838,6 +1919,17 @@ impl SuggestMemory {
         self.touch.set(touch);
         touch
     }
+}
+
+fn deserialize_entries(json: Option<&str>) -> HashMap<String, MemItem> {
+    json.and_then(|json| serde_json::from_str::<Vec<(String, MemItem)>>(json).log_err())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn serialize_entries(entries: &HashMap<String, MemItem>) -> Option<String> {
+    serde_json::to_string(&entries.iter().collect::<Vec<_>>()).log_err()
 }
 
 fn memory_key(language: Option<&LanguageName>, text: &str) -> String {
