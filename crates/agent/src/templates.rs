@@ -199,6 +199,52 @@ mod tests {
     }
 
     #[test]
+    fn test_system_prompt_renders_diagnostics_guidance_when_tool_available() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into(), "diagnostics".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+
+        // The tool is named as the way to check a change, not just as one option among many.
+        assert!(rendered.contains(
+            "the `diagnostics` tool for errors, warnings, type errors, and linter findings"
+        ));
+        assert!(rendered.contains("passing every file you changed in one call"));
+        // The guide must stop the model from silently falling back to the terminal.
+        assert!(rendered.contains("Never explain an unexpected diagnostic result"));
+    }
+
+    #[test]
+    fn test_system_prompt_omits_diagnostics_guidance_when_tool_unavailable() {
+        let project = prompt_store::ProjectContext::default();
+        let template = SystemPromptTemplate {
+            project: &project,
+            available_tools: vec!["echo".into()],
+            model_name: None,
+            date: "2026-01-01".to_string(),
+            user_agents_md: None,
+            sandboxing: false,
+            is_linux: false,
+            is_windows: false,
+        };
+        let templates = Templates::new();
+        let rendered = template.render(&templates).unwrap();
+
+        // A profile can disable the tool; the guide must not then instruct the model to use it.
+        assert!(!rendered.contains("passing every file you changed in one call"));
+        assert!(!rendered.contains("Never explain an unexpected diagnostic result"));
+    }
+
+    #[test]
     fn test_system_prompt_renders_delegation_section_when_tool_available() {
         let project = prompt_store::ProjectContext::default();
         let template = SystemPromptTemplate {

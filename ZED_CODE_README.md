@@ -261,6 +261,8 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 
 ### `diagnostics` reports what it checked, not just what it found
 
+The agent kept reaching for the terminal to find out whether its changes compiled, because the guide only ever mentioned terminal commands and the tool's own description never said what it covered. Both are fixed, but the substantive change is in the tool, and it came out of a bug rather than a wording problem: the agent reported «сборка зелёная, диагностика врала», which is not what had happened.
+
 `diagnostics` opened the file's buffer but never registered it with any language server — `didOpen` is sent only from `register_buffer_with_language_servers`, which the editor calls for visible tabs and the action log calls for files the agent reads or edits. For any file the agent had not touched yet, the pull therefore returned nothing, and the tool printed "File doesn't have errors or warnings!" for a file nobody had looked at. The tool now takes the `ActionLog` (as `read_file` and `edit_file` already do) and calls `buffer_read`, which is what pulls in the registration.
 
 That fix alone is not enough, because "checked and clean" and "never checked" both produce an empty diagnostic list. `has_diagnostics` cannot tell them apart: an empty report _removes_ the server's entry from the buffer's diagnostics map (`Buffer::apply_diagnostic_update`). The tool therefore distinguishes four outcomes instead of two:

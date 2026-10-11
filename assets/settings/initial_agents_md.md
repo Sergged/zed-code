@@ -29,7 +29,7 @@
 
 ## Tooling
 
-- **Prefer file tools**: when a file tool fits, prefer it over the terminal for reading, searching, editing, moving, copying or deleting files — it is faster and more visible. Reach for the terminal for what no file tool covers (builds, tests, package managers, git, and so on).
+- **Prefer file tools**: when a file tool fits, prefer it over the terminal for reading, searching, editing, moving, copying or deleting files — it is faster and more visible. Reach for the terminal for what no file tool covers (builds, tests, package managers, git, and so on). A file listed in `.gitignore` is not an exception: file tools reach gitignored content (including `node_modules` and build output) by scanning it on demand, so never fall back to `cat`/`ls` to read such a file.
 - **Prefer diagnostics**: if the diagnostics tool can give you what you need (errors, warnings, type or lint information), take it from there instead of running a long compiler, linter, or build command in the terminal.
 - **Mermaid**: be careful with mermaid — it often fails to render as a preview in chat (the code block is there but does not convert). Prefer a plain list or table; if you do use mermaid, keep it simple and valid.
 

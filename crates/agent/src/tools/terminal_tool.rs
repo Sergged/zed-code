@@ -29,6 +29,8 @@ const COMMAND_OUTPUT_LIMIT: u64 = 16 * 1024;
 ///
 /// The output results will be shown to the user already, only list it again if necessary, avoid being redundant.
 ///
+/// Prefer the built-in file tools for reading, searching and listing — `read_file`, `list_directory`, `grep`, `find_path`. They cover the whole filesystem (absolute and `~`-prefixed paths, and gitignored content such as `node_modules`), and they honor the user's `file_scan_exclusions` and `private_files` settings, which a shell command bypasses; their output is also structured and shown to the user. Reach for this tool when a file tool cannot express what you need — builds, tests, package managers, `git`, running programs — and for the cases it does not cover. `cat`, `ls`, `find` and the rest stay available as a fallback when a file tool genuinely cannot do the job.
+///
 /// Always set the working directory with the `cd` parameter, never with `cd` inside `command`; otherwise it will error.
 ///
 /// Do not generate terminal commands that use shell substitutions or interpolations such as `$VAR`, `${VAR}`, `$(...)`, backticks, `$((...))`, `<(...)`, or `>(...)`. Resolve those values yourself before calling this tool, or ask the user for the literal value to use.
@@ -70,6 +72,8 @@ pub struct TerminalToolInput {
 /// This tool spawns a process using the user's shell, reads from stdout and stderr (preserving the order of writes), and returns a string with the combined output result.
 ///
 /// The output results will be shown to the user already, only list it again if necessary, avoid being redundant.
+///
+/// Prefer the built-in file tools for reading, searching and listing — `read_file`, `list_directory`, `grep`, `find_path`. They cover the whole filesystem (absolute and `~`-prefixed paths, and gitignored content such as `node_modules`), and they honor the user's `file_scan_exclusions` and `private_files` settings, which a shell command bypasses; their output is also structured and shown to the user. Reach for this tool when a file tool cannot express what you need — builds, tests, package managers, `git`, running programs — and for the cases it does not cover. `cat`, `ls`, `find` and the rest stay available as a fallback when a file tool genuinely cannot do the job.
 ///
 /// Always set the working directory with the `cd` parameter, never with `cd` inside `command`; otherwise it will error.
 ///
