@@ -1511,18 +1511,10 @@ impl CodeLabelExt for CodeLabel {
         let runs = highlight_id
             .map(|highlight_id| vec![(0..label_length, highlight_id)])
             .unwrap_or_default();
-        let text = if let Some(detail) = item.detail.as_deref().filter(|detail| detail != label) {
-            format!("{label} {detail}")
-        } else if let Some(description) = item
-            .label_details
-            .as_ref()
-            .and_then(|label_details| label_details.description.as_deref())
-            .filter(|description| description != label)
-        {
-            format!("{label} {description}")
-        } else {
-            label.clone()
-        };
+        // The completion's `detail` and `label_details.description` are rendered in the
+        // separate right-hand column of the completions menu, so they are deliberately not
+        // merged into the label text here.
+        let text = label.clone();
         let filter_range = item
             .filter_text
             .as_deref()
@@ -2055,7 +2047,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_completion_label_omits_duplicate_data() {
+    async fn test_completion_label_contains_only_the_label() {
         let regular_completion_item_1 = lsp::CompletionItem {
             label: "regular1".to_string(),
             detail: Some("detail1".to_string()),
@@ -2094,29 +2086,17 @@ mod tests {
             ..regular_completion_item_2.clone()
         };
 
+        // `detail` and `label_details.description` are rendered in the separate right-hand
+        // column of the completions menu, so the label text is just the completion's label.
         assert_eq!(
             CodeLabel::fallback_for_completion(&regular_completion_item_1, None).text,
-            format!(
-                "{} {}",
-                regular_completion_item_1.label,
-                regular_completion_item_1.detail.unwrap()
-            ),
-            "LSP completion items with both detail and label_details.description should prefer detail"
+            regular_completion_item_1.label,
+            "the completion detail should not be merged into the label"
         );
         assert_eq!(
             CodeLabel::fallback_for_completion(&regular_completion_item_2, None).text,
-            format!(
-                "{} {}",
-                regular_completion_item_2.label,
-                regular_completion_item_2
-                    .label_details
-                    .as_ref()
-                    .unwrap()
-                    .description
-                    .as_ref()
-                    .unwrap()
-            ),
-            "LSP completion items without detail but with label_details.description should use that"
+            regular_completion_item_2.label,
+            "label_details.description should not be merged into the label"
         );
         assert_eq!(
             CodeLabel::fallback_for_completion(
@@ -2124,29 +2104,19 @@ mod tests {
                 None
             )
             .text,
-            format!(
-                "{} {}",
-                regular_completion_item_1.label,
-                regular_completion_item_1
-                    .label_details
-                    .as_ref()
-                    .unwrap()
-                    .description
-                    .as_ref()
-                    .unwrap()
-            ),
-            "LSP completion items with both detail and label_details.description should prefer description only if the detail duplicates the completion label"
+            regular_completion_item_1.label,
+            "the label must not gain a duplicate of itself"
         );
         assert_eq!(
             CodeLabel::fallback_for_completion(&completion_item_with_duplicate_detail, None).text,
             regular_completion_item_1.label,
-            "LSP completion items with duplicate label and detail, should omit the detail"
+            "a duplicate detail must not be merged into the label"
         );
         assert_eq!(
             CodeLabel::fallback_for_completion(&completion_item_with_duplicate_description, None)
                 .text,
             regular_completion_item_2.label,
-            "LSP completion items with duplicate label and detail, should omit the detail"
+            "a duplicate description must not be merged into the label"
         );
     }
 

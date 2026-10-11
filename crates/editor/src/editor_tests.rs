@@ -25879,8 +25879,8 @@ async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppCont
             },
         ])))
     });
-    // Language servers like TypeScript's only return `detail` via resolve, which makes Zed
-    // regenerate the completion's label with the detail appended.
+    // Language servers like TypeScript's only return `detail` via resolve. Zed shows it in
+    // the menu's detail column and must not append it to the completion's label.
     let mut resolve_requests = cx.set_request_handler::<lsp::request::ResolveCompletionItem, _, _>(
         |_, mut item, _| async move {
             item.detail = Some(format!("detail for {}", item.label));
@@ -25903,13 +25903,14 @@ async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppCont
     }
     cx.run_until_parked();
 
-    // Accept the second completion, whose label now contains the resolved detail.
+    // Accept the second completion now that it has been resolved.
     cx.update_editor(|editor, window, cx| {
         if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow().as_ref() {
             assert_eq!(completion_menu_entries(menu), &["console", "const"]);
-            assert!(
-                menu.completions.borrow()[1].label.text.contains("detail"),
-                "the accepted completion's label should have been regenerated on resolve"
+            assert_eq!(
+                menu.completions.borrow()[1].label.text,
+                "const",
+                "resolving the detail must not change the completion's label"
             );
         } else {
             panic!("expected completion menu to be open");
@@ -25923,7 +25924,7 @@ async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppCont
     cx.executor().run_until_parked();
 
     // Reopening the menu with the same prefix preselects the accepted completion, even though
-    // its label no longer contains the detail that resolution had added.
+    // resolution re-derived its label.
     cx.set_state("conˇ");
     cx.update_editor(|editor, window, cx| {
         editor.show_completions(&ShowCompletions, window, cx);
@@ -25936,7 +25937,7 @@ async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppCont
             assert_eq!(completion_menu_entries(menu), &["console", "const"]);
             assert_eq!(
                 menu.selected_item, 1,
-                "the accepted completion should be preselected despite its label changing on resolve"
+                "the accepted completion should be preselected despite resolution re-deriving its label"
             );
         } else {
             panic!("expected completion menu to be open");
@@ -29645,7 +29646,7 @@ async fn test_completions_with_additional_edits_and_multiple_cursors(cx: &mut Te
 }
 
 #[gpui::test]
-async fn test_completions_resolve_updates_labels_if_filter_text_matches(cx: &mut TestAppContext) {
+async fn test_completions_resolve_does_not_merge_detail_into_label(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
     let mut cx = EditorLspTestContext::new_rust(
@@ -29771,8 +29772,8 @@ async fn test_completions_resolve_updates_labels_if_filter_text_matches(cx: &mut
                         .iter()
                         .map(|completion| &completion.label.text)
                         .collect::<Vec<_>>(),
-                    vec!["method id() Now resolved!", "other"],
-                    "Should update first completion label, but not second as the filter text did not match."
+                    vec!["method id()", "other"],
+                    "Resolving a completion must not merge its detail into the label."
                 );
             }
             CodeContextMenu::CodeActions(_) => panic!("Should show the completions menu"),

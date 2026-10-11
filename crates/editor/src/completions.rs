@@ -48,7 +48,24 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_or_update_completions_menu(None, None, false, window, cx);
+        // When the completions menu is already open, this same action toggles the
+        // inline and alongside documentation instead of reopening the menu.
+        if self.has_visible_completions_menu() {
+            let provider = self.completion_provider.clone();
+            if let Some(CodeContextMenu::Completions(menu)) =
+                self.context_menu.borrow_mut().as_mut()
+            {
+                let showing_documentation = menu.toggle_completion_documentation();
+                self.show_completion_documentation_override = Some(showing_documentation);
+                if showing_documentation {
+                    menu.resolve_visible_completions(provider.as_deref(), cx);
+                }
+            }
+            cx.notify();
+            return;
+        }
+
+        self.open_or_update_completions_menu(None, None, false, true, window, cx);
     }
 
     pub fn confirm_completion(
@@ -486,9 +503,11 @@ impl Editor {
             (buffer_position..buffer_position, None)
         };
 
-        let show_completion_documentation = buffer_snapshot
-            .settings_at(buffer_position, cx)
-            .show_completion_documentation;
+        let show_completion_documentation = self.show_completion_documentation_override.unwrap_or(
+            buffer_snapshot
+                .settings_at(buffer_position, cx)
+                .show_completion_documentation,
+        );
 
         // The document can be large, so stay in reasonable bounds when searching for words,
         // otherwise completion pop-up might be slow to appear.

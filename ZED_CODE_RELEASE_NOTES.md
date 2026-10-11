@@ -10,6 +10,7 @@ Releases are listed newest first. Each one corresponds to a working session, so 
 
 Oct 11, 2026 · based on Zed v1.22.x
 
+The agent's search tools can be pointed at any directory, the completion menu shows a completion's detail in its own column, the diagnostics tool stops calling a file it never checked clean, and a cancelled permission prompt no longer wedges the conversation.
 
 ## Features
 
@@ -25,6 +26,11 @@ Oct 11, 2026 · based on Zed v1.22.x
 ### Agent guide
 
 - Improved the guide to send error, warning and lint checks to the `diagnostics` tool instead of the terminal, and to describe the `grep` / `find_path` search root.
+
+### Editor
+
+- Moved a completion's `detail` (or `label_details.description`) into the menu's own detail column, instead of appending it to the label. A server like TypeScript's only returns `detail` on resolve, so appending it used to rewrite the label on resolve; the label now stays the label.
+- Improved the completion shortcut to toggle the documentation when the menu is already open, instead of reopening it.
 
 ## Bug Fixes
 

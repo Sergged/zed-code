@@ -776,6 +776,12 @@ impl CompletionsMenu {
         .detach();
     }
 
+    /// Toggles whether completion documentation is displayed, returning the new state.
+    pub fn toggle_completion_documentation(&mut self) -> bool {
+        self.show_completion_documentation = !self.show_completion_documentation;
+        self.show_completion_documentation
+    }
+
     fn start_markdown_parse_for_nearby_entries(&self, cx: &mut Context<Editor>) {
         // Enqueue parse tasks of nearer items first.
         //
@@ -1003,11 +1009,6 @@ impl CompletionsMenu {
                         };
 
                         let completion = &completions_guard[mat.candidate_id];
-                        let documentation = if show_completion_documentation {
-                            &completion.documentation
-                        } else {
-                            &None
-                        };
 
                         let filter_start = completion.label.filter_range.start;
 
@@ -1099,25 +1100,36 @@ impl CompletionsMenu {
                             CompletionDetailAlignment::Right,
                         );
 
-                        let documentation_label = match documentation {
-                            Some(CompletionDocumentation::SingleLine(text))
-                            | Some(CompletionDocumentation::SingleLineAndMultiLinePlainText {
-                                single_line: text,
-                                ..
-                            }) => {
-                                if text.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(
-                                        Label::new(text.trim().to_string())
+                        let documentation_label =
+                            if show_completion_documentation {
+                                // Prefer the server-provided `detail`, which is available in the
+                                // initial completion response. Fall back to single-line
+                                // documentation, which may only arrive after resolving.
+                                let detail =
+                                    completion.detail().map(str::to_string).or_else(|| {
+                                        match &completion.documentation {
+                                    Some(CompletionDocumentation::SingleLine(text))
+                                    | Some(
+                                        CompletionDocumentation::SingleLineAndMultiLinePlainText {
+                                            single_line: text,
+                                            ..
+                                        },
+                                    ) => Some(text.to_string()),
+                                    _ => None,
+                                }
+                                    });
+                                detail
+                                    .map(|text| text.trim().to_string())
+                                    .filter(|text| !text.is_empty())
+                                    .map(|text| {
+                                        Label::new(text)
                                             .ml_4()
                                             .size(LabelSize::Small)
-                                            .color(Color::Muted),
-                                    )
-                                }
-                            }
-                            _ => None,
-                        };
+                                            .color(Color::Muted)
+                                    })
+                            } else {
+                                None
+                            };
 
                         let icon_or_color_slot = completion
                             .color()

@@ -6964,6 +6964,27 @@ impl Completion {
             .map(|lsp_completion| lsp_completion.label.clone())
     }
 
+    /// The completion's `detail` (or `label_details.description`) when the language server
+    /// provided one. Unlike `documentation`, this is available in the initial completion
+    /// response, without a `completionItem/resolve` round-trip.
+    pub fn detail(&self) -> Option<&str> {
+        let CompletionSource::Lsp { lsp_completion, .. } = &self.source else {
+            return None;
+        };
+        let label = lsp_completion.label.as_str();
+        lsp_completion
+            .detail
+            .as_deref()
+            .filter(|detail| !detail.is_empty() && *detail != label)
+            .or_else(|| {
+                lsp_completion
+                    .label_details
+                    .as_ref()
+                    .and_then(|label_details| label_details.description.as_deref())
+                    .filter(|description| !description.is_empty() && *description != label)
+            })
+    }
+
     pub fn filter_text(&self) -> &str {
         self.source
             .filter_text()
