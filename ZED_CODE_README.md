@@ -377,6 +377,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - The completions menu opens immediately with a `Loading…` placeholder while the request is in flight, instead of showing nothing until the results arrive.
 - The recent-use completion memory (`completions.suggest_selection`) is persisted to the database and shared app-wide, so the preselection survives a restart instead of being rebuilt empty.
 - A physical mouse wheel scrolls horizontally (`shift` + wheel) by the same distance as vertically: line-based wheel deltas are converted with the line height on both axes, instead of the glyph width for the horizontal axis.
+- A trackpad gesture is no longer locked to its dominant axis when the editor cannot scroll horizontally (a soft-wrapped editor has no horizontal scroll). The axis lock used to be applied unconditionally, so a mostly-vertical two-finger gesture whose first event was horizontal-dominant had its vertical delta zeroed and the surviving horizontal delta clamped away, leaving the editor dead to the wheel until the gesture restarted. **Provenance:** the axis filter reaches the editor from upstream (`ScrollManager::filter_scroll_delta`); unlike GPUI's own scroll containers, which gate it behind the opt-in `restrict_scroll_to_axis`, this branch applies it to the editor only when the editor can scroll horizontally.
 
 ### Context menus
 

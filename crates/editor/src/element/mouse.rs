@@ -485,7 +485,6 @@ impl EditorElement {
             let position_map = layout.position_map.clone();
             let editor = self.editor.clone();
             let hitbox = layout.hitbox.clone();
-            let mut delta = ScrollDelta::default();
 
             // Set a minimum scroll_sensitivity of 0.01 to make sure the user doesn't
             // accidentally turn off their scrolling.
@@ -499,8 +498,6 @@ impl EditorElement {
 
             move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                    delta = delta.coalesce(event.delta);
-
                     if event.modifiers.secondary()
                         && editor.read(cx).enable_mouse_wheel_zoom
                         && EditorSettings::get_global(cx).mouse_wheel_zoom
@@ -529,12 +526,22 @@ impl EditorElement {
                         editor.update(cx, |editor, cx| {
                             let line_height = position_map.line_height;
                             let glyph_width = position_map.em_layout_width;
-                            let delta = match delta {
+                            let delta = match event.delta {
                                 gpui::ScrollDelta::Pixels(mut pixels) => {
                                     //Trackpad
-                                    editor
-                                        .scroll_manager
-                                        .filter_scroll_delta(&mut pixels, event.touch_phase);
+                                    // Lock the gesture to its dominant axis only when the
+                                    // editor can actually scroll horizontally. For a
+                                    // soft-wrapped editor `scroll_max.x` is zero, so the
+                                    // horizontal component is clamped away regardless, and
+                                    // locking to it would drop the vertical scroll the user
+                                    // asked for. On a slow gesture the axis is re-derived
+                                    // from each event, so a horizontal jitter on the first
+                                    // event could otherwise swallow the whole gesture.
+                                    if position_map.scroll_max.x > 0. {
+                                        editor
+                                            .scroll_manager
+                                            .filter_scroll_delta(&mut pixels, event.touch_phase);
+                                    }
                                     pixels
                                 }
 
@@ -548,7 +555,7 @@ impl EditorElement {
                                 }
                             };
 
-                            let current_scroll_position = position_map.snapshot.scroll_position();
+                            let current_scroll_position = editor.scroll_position(cx);
                             let x = (current_scroll_position.x
                                 * ScrollPixelOffset::from(glyph_width)
                                 - ScrollPixelOffset::from(delta.x * scroll_sensitivity))
@@ -1447,6 +1454,69 @@ mod tests {
             (vertical_pixels - horizontal_pixels).abs() < 2.0,
             "a wheel notch should move the same number of pixels on both axes, \
              but vertical moved {vertical_pixels}px and horizontal moved {horizontal_pixels}px",
+        );
+    }
+
+    /// A trackpad emits precise, pixel-based deltas, and a two-finger vertical
+    /// gesture almost always carries some horizontal jitter. The editor used to
+    /// lock such a gesture to its dominant axis unconditionally, so when the
+    /// first event of the gesture happened to be horizontal-dominant the whole
+    /// vertical scroll was dropped — and for an editor that cannot scroll
+    /// horizontally (`scroll_max.x` is zero) the surviving horizontal delta is
+    /// clamped away too, leaving the wheel dead. The axis lock is now skipped
+    /// when the editor cannot scroll horizontally.
+    #[gpui::test]
+    async fn test_vertical_scroll_survives_horizontal_jitter(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let mut cx = EditorTestContext::new(cx).await;
+
+        // Short lines: the editor never scrolls horizontally, so `scroll_max.x`
+        // is zero and the axis lock must not be applied.
+        let content = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.set_state(&format!("ˇ{content}"));
+        cx.run_until_parked();
+
+        let (wheel_position, scroll_max_x) = cx.update_editor(|editor, _, _| {
+            let position_map = editor
+                .last_position_map
+                .as_ref()
+                .expect("editor was laid out");
+            (
+                position_map.text_hitbox.bounds.center(),
+                position_map.scroll_max.x,
+            )
+        });
+        assert_eq!(
+            scroll_max_x, 0.,
+            "test assumes short lines, so the editor cannot scroll horizontally",
+        );
+
+        // A slow gesture whose first event is horizontal-dominant, followed by
+        // mostly-vertical events small enough that the axis never unlocks.
+        let events = [
+            (gpui::TouchPhase::Started, point(px(-3.), px(-2.))),
+            (gpui::TouchPhase::Moved, point(px(-2.), px(-5.))),
+            (gpui::TouchPhase::Moved, point(px(-1.5), px(-4.))),
+            (gpui::TouchPhase::Ended, point(px(0.), px(0.))),
+        ];
+        for (touch_phase, delta) in events {
+            cx.simulate_event(ScrollWheelEvent {
+                position: wheel_position,
+                delta: ScrollDelta::Pixels(delta),
+                modifiers: Modifiers::default(),
+                touch_phase,
+            });
+        }
+
+        let scroll_position =
+            cx.update_editor(|editor, window, cx| editor.snapshot(window, cx).scroll_position());
+        assert!(
+            scroll_position.y > 0.,
+            "a mostly-vertical trackpad gesture must scroll the editor even though its \
+             first event is horizontal-dominant, but the editor did not move",
         );
     }
 }
