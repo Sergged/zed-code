@@ -174,6 +174,8 @@ Which agent tools scan, and how much — **all of this is branch-local** (upstre
 - The symbol tools resolve their `file_path` through `SymbolLocator::resolve`, which runs both scans: the string-based one _before_ asking for a project path (a bare relative path into a gitignored directory does not resolve at all, so there is nothing to key off afterwards) and the `ProjectPath`-based one after (which is what covers the rooted and absolute forms).
 - `edit_file`, `write_file`, `delete_path`, `copy_path`, `move_path`, `create_directory` run the same on-demand scan before resolving a bare relative path (for `create_directory` that path is the new directory's parent).
 
+### A rejected permission request no longer wedges the conversation
+
 Cancelling a permission prompt used to leave the conversation in a state where every **Allow** / **Deny** button and its keyboard shortcut stopped working, for the rest of the session, until Zed was restarted. Three separate defects combined:
 
 - `Conversation::pending_tool_call` returned `None` on the first registered request whose tool call was no longer waiting, without trying the next one. Every confirmation button routes through that function (`authorize_pending_tool_call`, the `allow_always` / `allow_once` shortcuts, `authorize_pending_with_granularity`), so one stale entry at the head of the registry muted all of them. Stale entries are now skipped, in `pending_tool_call` and in `pending_tool_call_for_session`.
@@ -185,6 +187,8 @@ The global FIFO ordering across sessions is unchanged and still deliberate: `is_
 ### Errors that name the actual cause
 
 `explain_unresolved_relative_path` is the fallback for a bare relative path that still doesn't resolve inside a gitignored directory the worktree hasn't scanned; it lists every worktree-relative and absolute form the model can retry with, rather than guessing one root. `explain_unscanned_ignored_path` covers a resolved path that has no entry. The on-demand scan usually resolves such paths before either fires, so the two name the cause only when a scan can't help — a genuinely missing target, or a bare relative path whose parent also doesn't resolve — which is what keeps a model from reading "not found" as "this file doesn't exist" and giving up.
+
+The same rule applies to a denied permission. A prompt the user dismisses — with Esc, by cancelling the turn, or by a terminal tool-call update landing while the card is still up — is reported to the model as `Permission to run tool denied by user` (or `Tool canceled by user` for an outright cancellation), never as `authorization channel closed`. The ACP layer sends an explicit outcome when it cancels a pending request instead of dropping the responder, and the agent translates that outcome into a denial. A model can act on "the user said no"; it cannot act on an internal channel error, and used to read one as a broken tool.
 
 ### Every path form and every gate, tabulated
 

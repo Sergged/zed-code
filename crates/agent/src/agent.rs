@@ -2315,30 +2315,55 @@ impl NativeAgentConnection {
                                 context: _,
                                 kind,
                             }) => {
-                                let outcome_task = acp_thread.update(cx, |thread, cx| {
+                                // A rejected update must not end the loop: the events receiver is dropped
+                                // on return, which silently stops every later tool call
+                                // from being delivered, and the conversation's pending
+                                // permission registry is only pruned by events that
+                                // arrive on this stream.
+                                match acp_thread.update(cx, |thread, cx| {
                                     thread.request_tool_call_authorization(
                                         tool_call, options, kind, cx,
                                     )
-                                })??;
-                                cx.background_spawn(async move {
-                                    let outcome = match outcome_task.await {
-                                        acp_thread::RequestPermissionOutcome::Selected(outcome) => outcome,
-                                        acp_thread::RequestPermissionOutcome::InterruptedByFollowUp => {
-                                            acp_thread::SelectedPermissionOutcome::new(
-                                                acp::PermissionOptionId::new(
-                                                    FOLLOW_UP_PERMISSION_DENIED_OPTION_ID,
-                                                ),
-                                                acp::PermissionOptionKind::RejectOnce,
-                                            )
-                                        }
-                                        acp_thread::RequestPermissionOutcome::Cancelled => return,
-                                    };
-                                    response
-                                        .send(outcome)
-                                        .map_err(|_| anyhow!("authorization receiver was dropped"))
-                                        .log_err();
-                                })
-                                .detach();
+                                }) {
+                                    Ok(Ok(outcome_task)) => {
+                                        cx.background_spawn(async move {
+                                            let outcome = match outcome_task.await {
+                                                acp_thread::RequestPermissionOutcome::Selected(outcome) => outcome,
+                                                acp_thread::RequestPermissionOutcome::InterruptedByFollowUp => {
+                                                    acp_thread::SelectedPermissionOutcome::new(
+                                                        acp::PermissionOptionId::new(
+                                                            FOLLOW_UP_PERMISSION_DENIED_OPTION_ID,
+                                                        ),
+                                                        acp::PermissionOptionKind::RejectOnce,
+                                                    )
+                                                }
+                                                // A cancelled prompt means the responder was
+                                                // dropped without an outcome, not that the tool
+                                                // ran. Dropping `response` here too would reach
+                                                // the model as "authorization channel closed",
+                                                // which it cannot tell apart from a real
+                                                // failure — so report a denial instead.
+                                                acp_thread::RequestPermissionOutcome::Cancelled => {
+                                                    acp_thread::SelectedPermissionOutcome::new(
+                                                        acp::PermissionOptionId::new(CANCELLED_PERMISSION_DENIED_OPTION_ID),
+                                                        acp::PermissionOptionKind::RejectOnce,
+                                                    )
+                                                }
+                                            };
+                                            response
+                                                .send(outcome)
+                                                .map_err(|_| anyhow!("authorization receiver was dropped"))
+                                                .log_err();
+                                        })
+                                        .detach();
+                                    }
+                                    Ok(Err(error)) => {
+                                        log::error!("Failed to request tool call authorization: {error:?}");
+                                    }
+                                    Err(error) => {
+                                        log::error!("Failed to request tool call authorization: {error:?}");
+                                    }
+                                }
                             }
                             ThreadEvent::ToolCallAuthorizationResolved {
                                 tool_call_id,
@@ -2392,14 +2417,18 @@ impl NativeAgentConnection {
                                 }
                             }
                             ThreadEvent::ToolCall(tool_call) => {
-                                acp_thread.update(cx, |thread, cx| {
+                                if let Err(error) = acp_thread.update(cx, |thread, cx| {
                                     thread.upsert_tool_call(tool_call, cx)
-                                })??;
+                                }) {
+                                    log::error!("Failed to upsert tool call: {error:?}");
+                                }
                             }
                             ThreadEvent::ToolCallUpdate(update) => {
-                                acp_thread.update(cx, |thread, cx| {
+                                if let Err(error) = acp_thread.update(cx, |thread, cx| {
                                     thread.update_tool_call(update, cx)
-                                })??;
+                                }) {
+                                    log::error!("Failed to update tool call: {error:?}");
+                                }
                             }
                             ThreadEvent::SubagentSpawned(session_id) => {
                                 acp_thread.update(cx, |thread, cx| {

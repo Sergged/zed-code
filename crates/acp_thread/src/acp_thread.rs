@@ -1219,7 +1219,19 @@ impl ToolCall {
         {
             *current_status = status;
         } else {
-            self.status = status.into();
+            // A terminal status overwrites a pending confirmation. Extract the
+            // responder first and deliver an explicit outcome: dropping it here
+            // makes `request_tool_call_authorization` fall back to `Cancelled`
+            // with nothing to show for it, and the tool reports that as
+            // "authorization channel closed" instead of a denial.
+            let previous_status = mem::replace(&mut self.status, status.into());
+            if let ToolCallStatus::WaitingForConfirmation { respond_tx, .. } = previous_status
+                && respond_tx
+                    .send(RequestPermissionOutcome::Cancelled)
+                    .is_err()
+            {
+                log::debug!("Permission request closed before a terminal status was delivered");
+            }
         }
     }
 
@@ -3721,7 +3733,19 @@ impl AcpThread {
             return;
         }
 
-        call.status = ToolCallStatus::Canceled;
+        // Deliver an explicit outcome rather than letting the responder drop
+        // with the status: a dropped responder reaches the tool as
+        // "authorization channel closed", which it cannot tell apart from a real
+        // failure. `mark_pending_entries_as_canceled` already sends for the same
+        // reason.
+        let previous_status = mem::replace(&mut call.status, ToolCallStatus::Canceled);
+        if let ToolCallStatus::WaitingForConfirmation { respond_tx, .. } = previous_status
+            && respond_tx
+                .send(RequestPermissionOutcome::Cancelled)
+                .is_err()
+        {
+            log::debug!("Permission request closed before cancellation was delivered");
+        }
         cx.emit(AcpThreadEvent::EntryUpdated(ix));
         cx.emit(AcpThreadEvent::ToolAuthorizationReceived(id.clone()));
     }

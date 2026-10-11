@@ -388,6 +388,17 @@ impl Conversation {
         Some(options)
     }
 
+    /// The permission request whose card carries the answer buttons.
+    ///
+    /// A subagent thread view may only answer its own request, but a root
+    /// thread view is asked on behalf of the whole conversation, so the global
+    /// FIFO order decides which single card is actionable at a time.
+    ///
+    /// Stale entries are skipped rather than ending the search. A request whose
+    /// tool call is no longer waiting — cancelled, or already answered — used
+    /// to return `None` immediately, which left every permission button in the
+    /// app as a no-op until the conversation was rebuilt, because all of them
+    /// route through here.
     pub fn pending_tool_call<'a>(
         &'a self,
         session_id: &acp::SessionId,
@@ -395,21 +406,39 @@ impl Conversation {
     ) -> Option<(acp::SessionId, acp::ToolCallId, &'a PermissionOptions)> {
         let thread = self.threads.get(session_id)?;
         let is_subagent = thread.read(cx).parent_session_id().is_some();
-        let (result_session_id, thread, tool_id) = if is_subagent {
-            let id = self.permission_requests.get(session_id)?.iter().next()?;
-            (session_id.clone(), thread, id)
-        } else {
-            let (id, tool_calls) = self.permission_requests.first()?;
-            let thread = self.threads.get(id)?;
-            let tool_id = tool_calls.iter().next()?;
-            (id.clone(), thread, tool_id)
-        };
-        let (_, tool_call) = thread.read(cx).tool_call(tool_id)?;
 
-        let ToolCallStatus::WaitingForConfirmation { options, .. } = &tool_call.status else {
-            return None;
+        let candidates = if is_subagent {
+            self.permission_requests
+                .get(session_id)
+                .into_iter()
+                .flat_map(|tool_call_ids| {
+                    tool_call_ids
+                        .iter()
+                        .map(|tool_call_id| (session_id.clone(), tool_call_id.clone()))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.permission_requests
+                .iter()
+                .flat_map(|(id, tool_call_ids)| {
+                    tool_call_ids
+                        .iter()
+                        .map(|tool_call_id| (id.clone(), tool_call_id.clone()))
+                })
+                .collect::<Vec<_>>()
         };
-        Some((result_session_id, tool_id.clone(), options))
+
+        candidates
+            .into_iter()
+            .find_map(|(candidate_session_id, tool_call_id)| {
+                let thread = self.threads.get(&candidate_session_id)?;
+                let (_, tool_call) = thread.read(cx).tool_call(&tool_call_id)?;
+                let ToolCallStatus::WaitingForConfirmation { options, .. } = &tool_call.status
+                else {
+                    return None;
+                };
+                Some((candidate_session_id, tool_call_id, options))
+            })
     }
 
     pub fn subagents_awaiting_permission(&self, cx: &App) -> Vec<(acp::SessionId, usize)> {
@@ -428,22 +457,29 @@ impl Conversation {
 
     /// Returns the first pending tool call request for exactly `session_id`.
     /// Unlike `pending_tool_call`, this does not use the global FIFO pending
-    /// request for non-subagent sessions.
+    /// request for non-subagent sessions. Stale entries are skipped, matching
+    /// `pending_tool_call`.
     pub fn pending_tool_call_for_session(
         &self,
         session_id: &acp::SessionId,
         cx: &App,
     ) -> Option<acp::ToolCallId> {
         let thread = self.threads.get(session_id)?;
-        let tool_call_id = self.permission_requests.get(session_id)?.iter().next()?;
-        let (_, tool_call) = thread.read(cx).tool_call(tool_call_id)?;
-        if !matches!(
-            tool_call.status,
-            ToolCallStatus::WaitingForConfirmation { .. }
-        ) {
-            return None;
-        }
-        Some(tool_call_id.clone())
+        self.permission_requests
+            .get(session_id)?
+            .iter()
+            .find(|tool_call_id| {
+                thread
+                    .read(cx)
+                    .tool_call(tool_call_id)
+                    .is_some_and(|(_, tool_call)| {
+                        matches!(
+                            tool_call.status,
+                            ToolCallStatus::WaitingForConfirmation { .. }
+                        )
+                    })
+            })
+            .cloned()
     }
 
     pub fn pending_tool_call_count_for_session(&self, session_id: &acp::SessionId) -> usize {
@@ -11178,6 +11214,67 @@ pub(crate) mod tests {
                     .unwrap()
             })
         })
+    }
+
+    #[gpui::test]
+    async fn test_conversation_stale_pending_request_does_not_mute_next_request(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let connection: Rc<dyn AgentConnection> = Rc::new(StubAgentConnection::new());
+
+        let session_id = acp::SessionId::new("session-1");
+        let (thread, conversation) = cx.update(|cx| {
+            let thread =
+                create_test_acp_thread(None, "session-1", connection.clone(), project.clone(), cx);
+            let conversation = cx.new(|cx| {
+                let mut conversation = Conversation::default();
+                conversation.register_thread(thread.clone(), cx);
+                conversation
+            });
+            (thread, conversation)
+        });
+
+        let _task1 = request_test_tool_authorization(&thread, "tc-1", "allow-1", cx);
+        let _task2 = request_test_tool_authorization(&thread, "tc-2", "allow-2", cx);
+
+        // Simulate the stale state directly: a request id stays registered while its
+        // tool call is no longer waiting. This is what a missed
+        // `ToolAuthorizationReceived` leaves behind — for example when the
+        // thread that owned the request is dropped, since the registry is only
+        // pruned by that event. `pending_tool_call` used to stop at the first
+        // non-waiting entry, which muted every permission button app-wide
+        // until the conversation was rebuilt.
+        cx.update(|cx| {
+            conversation.update(cx, |conversation, _cx| {
+                conversation
+                    .permission_requests
+                    .entry(session_id.clone())
+                    .or_default()
+                    .insert(0, acp::ToolCallId::new("tc-gone"));
+            });
+        });
+
+        cx.read(|cx| {
+            let (_, tool_call_id, _) = conversation
+                .read(cx)
+                .pending_tool_call(&session_id, cx)
+                .expect("A stale entry must not hide the request behind it");
+            assert_eq!(tool_call_id, acp::ToolCallId::new("tc-1"));
+        });
+
+        // The same stale entry must not hide `tc-1` from the session-scoped
+        // lookup either, which is what the root-thread banner reads.
+        cx.read(|cx| {
+            let tool_call_id = conversation
+                .read(cx)
+                .pending_tool_call_for_session(&session_id, cx)
+                .expect("Session-scoped lookup must skip the stale entry");
+            assert_eq!(tool_call_id, acp::ToolCallId::new("tc-1"));
+        });
     }
 
     #[gpui::test]

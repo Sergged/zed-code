@@ -73,8 +73,25 @@ const TOOL_CANCELED_MESSAGE: &str = "Tool canceled by user";
 const TOOL_CALL_INTERRUPTED_BY_FOLLOW_UP_MESSAGE: &str =
     "Permission denied: user sent a follow-up message instead of approving the tool call.";
 pub(crate) const FOLLOW_UP_PERMISSION_DENIED_OPTION_ID: &str = "follow_up_permission_denied";
+pub(crate) const CANCELLED_PERMISSION_DENIED_OPTION_ID: &str = "cancelled_permission_denied";
 pub const MAX_TOOL_NAME_LENGTH: usize = 64;
 pub const MAX_SUBAGENT_DEPTH: u8 = 1;
+
+/// Translate the synthetic outcomes the ACP layer sends when it cancels a
+/// prompt without the user choosing anything into the message the tool
+/// reports. A cancelled prompt is a denial the user did not explicitly make,
+/// so it needs its own wording: routing it through the generic "denied by
+/// user" would blame a decision they never made, and dropping the response
+/// instead would reach the model as "authorization channel closed".
+pub(crate) fn ensure_tool_call_authorization_not_cancelled(
+    outcome: &acp_thread::SelectedPermissionOutcome,
+) -> Result<()> {
+    if outcome.option_id.0.as_ref() == CANCELLED_PERMISSION_DENIED_OPTION_ID {
+        Err(anyhow!(TOOL_CANCELED_MESSAGE))
+    } else {
+        Ok(())
+    }
+}
 
 pub(crate) fn provider_compatible_tool_name(tool_name: &str) -> String {
     let mut sanitized = String::new();
@@ -6010,6 +6027,7 @@ impl ToolCallEventStream {
                     outcome = (&mut response_rx).fuse() => {
                         let outcome = outcome.map_err(|_| anyhow!("authorization channel closed"))?;
                         ensure_tool_call_authorization_not_interrupted(&outcome)?;
+                        ensure_tool_call_authorization_not_cancelled(&outcome)?;
                         return Self::handle_sandbox_permission_outcome(
                             &outcome,
                             &request,
@@ -6116,6 +6134,7 @@ impl ToolCallEventStream {
                 .await
                 .map_err(|_| anyhow!("authorization channel closed"))?;
             ensure_tool_call_authorization_not_interrupted(&outcome)?;
+            ensure_tool_call_authorization_not_cancelled(&outcome)?;
             match acp_thread::SandboxPermission::from_id(outcome.option_id.0.as_ref()) {
                 Some(acp_thread::SandboxPermission::AllowOnce) => Ok(()),
                 _ => Err(anyhow!("Windows-drive write aborted by user")),
@@ -6393,6 +6412,7 @@ impl ToolCallEventStream {
                 .await
                 .map_err(|_| anyhow!("authorization channel closed"))?;
             ensure_tool_call_authorization_not_interrupted(&outcome)?;
+            ensure_tool_call_authorization_not_cancelled(&outcome)?;
 
             let option_id = outcome.option_id.0.as_ref();
             if option_id == acp_thread::SANDBOX_FALLBACK_RETRY_OPTION_ID {
@@ -6494,6 +6514,7 @@ impl ToolCallEventStream {
                 .await
                 .map_err(|_| anyhow!("authorization channel closed"))?;
             ensure_tool_call_authorization_not_interrupted(&outcome)?;
+            ensure_tool_call_authorization_not_cancelled(&outcome)?;
             Ok(outcome.option_id)
         })
     }
@@ -6607,6 +6628,7 @@ impl ToolCallEventStream {
                     .await
                     .map_err(|_| anyhow!("authorization channel closed"))?;
                 ensure_tool_call_authorization_not_interrupted(&outcome)?;
+                ensure_tool_call_authorization_not_cancelled(&outcome)?;
 
                 return Self::persist_permission_outcome(&outcome, fs, cx);
             };
@@ -6636,6 +6658,7 @@ impl ToolCallEventStream {
                     outcome = (&mut response_rx).fuse() => {
                         let outcome = outcome.map_err(|_| anyhow!("authorization channel closed"))?;
                         ensure_tool_call_authorization_not_interrupted(&outcome)?;
+                        ensure_tool_call_authorization_not_cancelled(&outcome)?;
                         return Self::persist_permission_outcome(&outcome, fs.clone(), cx);
                     }
                     _ = settings_changed.fuse() => {
