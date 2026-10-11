@@ -37,11 +37,11 @@ Fetches a URL and returns the content as Markdown. Useful for providing docs as 
 
 ### `find_path`
 
-Quickly finds files by matching glob patterns (like "\*_/_.js"), returning matching file paths alphabetically.
+Quickly finds files by matching glob patterns (like "\*_/_.js"), returning matching file paths alphabetically. By default it searches the whole project; set `path` to a directory — inside the project or any absolute or `~`-prefixed path outside it — to list that root instead, including gitignored directories such as `node_modules`.
 
 ### `grep`
 
-Searches file contents across the project using regular expressions, preferred for finding symbols in code without knowing exact file paths.
+Searches file contents using regular expressions, preferred for finding symbols in code without knowing exact file paths. By default it searches the whole project; set `path` to a directory — inside the project or any absolute or `~`-prefixed path outside it — to search that root instead, including gitignored directories such as `node_modules`.
 
 **Example:** To find every call site of a function before renaming it, search for `parse_config\(` — the regex matches the function name followed by an opening parenthesis, filtering out comments or variable names that happen to contain the string.
 

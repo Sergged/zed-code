@@ -1,3 +1,5 @@
+mod agent_find_path;
+mod agent_grep;
 mod apply_code_action_tool;
 mod ask_user_tool;
 mod context_server_registry;
@@ -71,6 +73,8 @@ where
     }
 }
 
+pub use agent_find_path::*;
+pub use agent_grep::*;
 pub use apply_code_action_tool::*;
 pub use ask_user_tool::*;
 pub use context_server_registry::*;
@@ -199,6 +203,8 @@ macro_rules! tools {
 //    are dropped unless it is active. The agent-profile UI uses the same gate so
 //    it never offers a tool the agent can't actually use.
 tools! {
+    AgentFindPathTool,
+    AgentGrepTool,
     ApplyCodeActionTool,
     AskUserTool,
     CopyPathTool,
@@ -208,11 +214,9 @@ tools! {
     DiagnosticsTool,
     EditFileTool,
     FetchTool,
-    FindPathTool,
     FindReferencesTool,
     GetCodeActionsTool,
     GoToDefinitionTool,
-    GrepTool,
     ListAgentsAndModelsTool,
     ListDirectoryTool,
     MovePathTool,

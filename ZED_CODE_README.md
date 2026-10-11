@@ -77,6 +77,7 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 ### File tools work across the whole filesystem
 
+`read_file`, `write_file`, `edit_file`, `delete_path`, `move_path`, `copy_path`, `create_directory` and `list_directory` accept any absolute path (or one with a `~` prefix), not only project paths and `~/.agents/skills`. Access is gated by the user's `tool_permissions` rules, and destructive operations refuse protected roots (the filesystem root, the home directory, and ancestors of a project worktree). `grep` and `find_path` accept one too, through their `path` parameter (see below).
 
 **Path forms.** A project-relative path normally starts with a worktree root directory name (`zed/crates/foo.rs`); that prefix always resolves. A bare relative path (`crates/foo.rs`) also resolves when it is unambiguous, and a bare path into a gitignored tree (`node_modules/...`) is made to resolve by scanning that directory on demand. Anything outside the project is addressed by an absolute path (or one with a `~` prefix).
 
@@ -94,6 +95,7 @@ The file tools are a mix of upstream behavior and `zed-code` changes. Provenance
 **Added or overridden by this branch (`zed-code`):**
 
 - File tools reach the whole filesystem: `resolve_external_path`, `resolve_creatable_external_path`, `resolve_direct_fs_path`, and the direct-filesystem route (arbitrary absolute / `~` paths, not just project paths and `~/.agents/skills`).
+- `grep` and `find_path` take a search root: `crates/agent/src/tools/agent_grep.rs` and `agent_find_path.rs` are registered in place of upstream's `GrepTool` and `FindPathTool`. With `path` each walks that root itself, so a root outside every worktree and a root inside a gitignored directory are both reachable; without `path` each hands the input to upstream's tool unchanged, keeping its project-wide search, symbol context and rendering in use. `grep_tool.rs` and `find_path_tool.rs` are left untouched so they keep merging with upstream.
 - Writing outside the project does not add project content: `canonicalize_worktree_roots` skips Zed's single-file worktrees, so a file the agent wrote outside the project stays on the external route. Upstream creates the same single-file worktree when it writes a global skill file, but its read gate is "is this under `~/.agents/skills`" rather than "is this inside a worktree", so it never trips over it.
 - The user's settings become hard blocks in _every_ tool (`ensure_path_not_hidden_by_settings`, `external_path_excluded_by_settings`), checked before any prompt.
 - Protected roots (`is_protected_external_path`): the hard refusal for the filesystem root, the home directory, and worktree ancestors.
@@ -186,10 +188,38 @@ The global FIFO ordering across sessions is unchanged and still deliberate: `is_
 
 Reachability — which tool accepts which form:
 
+| Tool               | Project R           | Project r   | Project A   | Ignored R / A                                                             | Ignored r                                   | Outside A / `~` |
+| ------------------ | ------------------- | ----------- | ----------- | ------------------------------------------------------------------------- | ------------------------------------------- | --------------- |
+| `read_file`        | yes                 | yes         | yes         | yes                                                                       | yes, scans the directory on demand          | yes             |
+| `list_directory`   | yes                 | yes         | yes         | yes                                                                       | same                                        | yes             |
+| `edit_file`        | yes                 | yes         | yes         | yes                                                                       | same                                        | yes             |
+| `write_file`       | yes                 | yes         | yes         | yes                                                                       | same                                        | yes             |
+| `delete_path`      | yes                 | yes         | yes         | yes                                                                       | same                                        | yes             |
+| `copy_path`        | yes                 | yes         | yes         | yes                                                                       | same                                        | yes             |
+| `move_path`        | yes                 | yes         | yes         | yes                                                                       | same                                        | yes             |
+| `create_directory` | yes                 | yes         | yes         | yes (no entry required)                                                   | yes, scans the parent's directory on demand | yes             |
+| `go_to_definition` | symbol only         | symbol only | symbol only | via the symbol                                                            | yes, scans the directory on demand          | no              |
+| `find_references`  | symbol only         | symbol only | symbol only | via the symbol                                                            | yes, scans the directory on demand          | no              |
+| `rename`           | symbol only         | symbol only | symbol only | via the symbol                                                            | yes, scans the directory on demand          | no              |
+| `grep`             | any form via `path` | —           | —           | with `path`: the named root is walked; without: `include_pattern` opts in | —                                           | yes (`path`)    |
+| `find_path`        | any form via `path` | —           | —           | with `path`: the named root is listed; without: glob opt-in               | —                                           | yes (`path`)    |
+
 The symbol tools (`go_to_definition`, `find_references`, `rename`, and the code-action tools behind them) take a `SymbolLocator` — a file path plus a line and a symbol name — rather than a path the model is asking to read. They resolve that path through `SymbolLocator::resolve` (`crates/agent/src/tools/symbol_locator.rs`), which asks for the gitignored directory scan on demand before resolving. Without it a bare relative path into a gitignored directory reported a file that exists as missing, and the model fell back to the terminal.
 
 Gates — what each tool enforces:
 
+| Tool               | Settings                                      | Protected roots                   | Sensitive paths | Symlink escape                 |
+| ------------------ | --------------------------------------------- | --------------------------------- | --------------- | ------------------------------ |
+| `read_file`        | refuse                                        | not checked                       | not checked     | prompt, naming the real target |
+| `list_directory`   | refuse + entries filtered                     | not checked                       | not checked     | prompt                         |
+| `edit_file`        | refuse                                        | not checked (edit, not overwrite) | prompt (always) | prompt                         |
+| `write_file`       | refuse                                        | refuse                            | prompt (always) | prompt                         |
+| `delete_path`      | refuse                                        | refuse                            | prompt (always) | prompt                         |
+| `copy_path`        | refuse                                        | refuse (both paths)               | prompt (always) | prompt (both paths)            |
+| `move_path`        | refuse                                        | refuse (both paths)               | prompt (always) | prompt (both paths)            |
+| `create_directory` | refuse                                        | refuse                            | prompt (always) | prompt                         |
+| `grep`             | results filtered; out-of-project root refused | not checked                       | not checked     | prompt (external root)         |
+| `find_path`        | results filtered; out-of-project root refused | not checked                       | not checked     | prompt (external root)         |
 
 Notes:
 
@@ -197,6 +227,7 @@ Notes:
 - **Protected roots** are the filesystem root, the user's home directory, and any ancestor of an open worktree. Only destructive operations on paths outside the project guard against them; reads and in-project edits are not affected. See the `tool_permissions` comment in `assets/settings/default.json`.
 - **Sensitive paths** are `.zed/`, the global config directory, and `~/.agents/skills`. Only the mutating tools gate them (an always-shown prompt, never remembered); the read tools are not restricted. This classification is upstream.
 - **Symlink escape** means the resolved path differs from the path as written. The gate fires for both path forms: the snapshot marks such entries when a directory was scanned, and `resolve_direct_fs_path` / `external_symlink_target` canonicalize and notice otherwise. It fires for a leaf symlink too, even for `delete_path` / `move_path`, which act on the link itself rather than its target. The prompt is never remembered, because the permission rules match path text while the OS acts on the resolved file.
+- **`grep` and `find_path`** take a root in `path` — a directory inside the project, or any absolute or `~`-prefixed path outside it. With `path` the named root is walked or listed directly (`agent_grep.rs`, `agent_find_path.rs`), gitignore included, so a named `node_modules` or build directory is reachable without a flag; without `path` the search is project-wide and gitignored content is **opt-in** through the pattern's literal prefix, exactly as before. They are the two tools that can reach outside every worktree.
 
 ### The agent guide is overridable at runtime
 
@@ -214,6 +245,8 @@ A `*.hbs` file dropped into the prompt-overrides directory (`paths::prompt_overr
 The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hbs`) was corrected and extended:
 
 - File tools are described as operating across the whole filesystem, stated as facts rather than preferences: a project-relative path that starts with a worktree root name, an absolute path, and a `~`-prefixed path all resolve — including into gitignored content such as `node_modules` — while a bare project-relative path works only when it is unambiguous (gitignored directories are scanned on demand). The wording is deliberately not a "prefer relative" style rule — that is an unverifiable preference, whereas the path forms are a property of the harness.
+- `grep` and `find_path` are described as taking the root to search in `path`, reaching gitignored content through that root rather than through a flag: a named `node_modules` or build directory is searched as-is, while the no-`path` case stays project-wide with the literal-prefix opt-in that was already there.
+- The `terminal` description now states a priority rather than a prohibition: prefer the built-in file tools because they honor `file_scan_exclusions` / `private_files` (a shell command bypasses them) and their output is structured and visible, and reach for the shell when a file tool cannot express what is needed. The earlier blanket "do not use this tool to read or list files" took away the fallback the model needs when a built-in genuinely cannot do the job.
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
 - The `## Multi-agent delegation` section was rewritten with concrete delegation triggers, cost framing (a sub-agent costs one tool call), parallel spawning in the same turn, self-contained briefs with disjoint write scopes, and optional sub-agent model selection via `list_agents_and_models` — pass the exact `models[].id` from the native entry (`is_native: true`); omitting `model` falls back to the configured subagent model, or the parent model when none is set. For long-output commands it asks the sub-agent to report the failing lines or diagnostics.
 | Outcome                          | Meaning                                                                                    |
