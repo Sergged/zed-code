@@ -4017,7 +4017,7 @@ impl EditorElement {
                 edit_prediction_popover_visible = true;
             }
 
-            if editor.context_menu_visible()
+            if editor.context_menu_renderable()
                 && let Some(crate::ContextMenuOrigin::Cursor) = editor.context_menu_origin()
             {
                 let (min_height_in_lines, max_height_in_lines) = editor

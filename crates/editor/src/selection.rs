@@ -1641,7 +1641,7 @@ impl Editor {
                 };
 
                 if continue_showing {
-                    self.open_or_update_completions_menu(None, None, false, window, cx);
+                    self.open_or_update_completions_menu(None, None, false, false, window, cx);
                 } else {
                     self.hide_context_menu(window, cx);
                 }

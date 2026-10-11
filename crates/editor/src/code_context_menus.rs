@@ -171,6 +171,16 @@ impl CodeContextMenu {
         }
     }
 
+    /// Like [`CodeContextMenu::visible`], but also counts a completions menu that is still
+    /// loading results. Used for rendering, so the loading placeholder is shown, while
+    /// `visible` keeps meaning "there are selectable entries".
+    pub fn renderable(&self) -> bool {
+        match self {
+            CodeContextMenu::Completions(menu) => menu.visible() || menu.is_loading(),
+            CodeContextMenu::CodeActions(menu) => menu.visible(),
+        }
+    }
+
     pub fn origin(&self) -> ContextMenuOrigin {
         match self {
             CodeContextMenu::Completions(menu) => menu.origin(),
@@ -276,6 +286,8 @@ pub struct CompletionsMenu {
     snippet_sort_order: SnippetSortOrder,
     pub(crate) suggest_selection: SuggestSelection,
     suggest_memory: Rc<SuggestMemory>,
+    /// Whether the menu is currently showing a loading placeholder rather than results.
+    loading: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -408,6 +420,7 @@ impl CompletionsMenu {
             snippet_sort_order,
             suggest_selection,
             suggest_memory,
+            loading: false,
         };
 
         completions_menu.start_markdown_parse_for_nearby_entries(cx);
@@ -491,7 +504,13 @@ impl CompletionsMenu {
             snippet_sort_order,
             suggest_selection: SuggestSelection::First,
             suggest_memory: Rc::new(SuggestMemory::new()),
+            loading: false,
         }
+    }
+
+    /// Toggles whether the menu shows a loading placeholder instead of results.
+    pub fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
     }
 
     fn select_first(
@@ -733,8 +752,9 @@ impl CompletionsMenu {
 
         // Current selection is always resolved even if it already has documentation, to handle
         // out-of-spec language servers that return more results later.
-        let Some(selected_candidate_id) = entries[self.selected_item]
-            .as_match()
+        let Some(selected_candidate_id) = entries
+            .get(self.selected_item)
+            .and_then(|entry| entry.as_match())
             .map(|m| m.candidate_id)
         else {
             drop(entries);
@@ -921,6 +941,11 @@ impl CompletionsMenu {
         self.entries.borrow().iter().any(|e| e.as_match().is_some())
     }
 
+    /// Whether the menu is showing a loading placeholder instead of results.
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
     fn origin(&self) -> ContextMenuOrigin {
         ContextMenuOrigin::Cursor
     }
@@ -932,6 +957,23 @@ impl CompletionsMenu {
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) -> AnyElement {
+        if self.loading {
+            return Popover::new()
+                .child(
+                    div()
+                        .min_w(COMPLETION_MENU_MIN_WIDTH)
+                        .max_w(COMPLETION_MENU_MAX_WIDTH)
+                        .px_2()
+                        .py_1()
+                        .child(
+                            Label::new("Loading…")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                )
+                .into_any_element();
+        }
+
         let show_completion_documentation = self.show_completion_documentation;
         let editor_settings = EditorSettings::get_global(cx);
         let completion_detail_alignment = editor_settings.completion_detail_alignment;
@@ -1268,7 +1310,10 @@ impl CompletionsMenu {
         }
 
         let entries = self.entries.borrow();
-        let Some(mat) = entries[self.selected_item].as_match() else {
+        let Some(mat) = entries
+            .get(self.selected_item)
+            .and_then(|entry| entry.as_match())
+        else {
             return None;
         };
         let completions = self.completions.borrow();

@@ -18247,7 +18247,7 @@ async fn test_snippet_choices_menu_survives_completion_refresh(cx: &mut TestAppC
             "Snippet choices menu should be visible after inserting the choice tabstop"
         );
 
-        editor.open_or_update_completions_menu(None, None, false, window, cx);
+        editor.open_or_update_completions_menu(None, None, false, false, window, cx);
 
         assert!(
             editor.context_menu_visible(),
@@ -25946,6 +25946,57 @@ async fn test_suggest_selection_survives_completion_resolve(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+async fn test_completions_show_loading_placeholder(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions::default()),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+
+    // Never respond, so the completions stay pending and the menu keeps its loading state.
+    cx.set_request_handler::<lsp::request::Completion, _, _>(|_, _, _| async move {
+        std::future::pending::<()>().await;
+        Ok(None)
+    });
+
+    cx.set_state("fn main() { let a = 2ˇ; }");
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.run_until_parked();
+
+    cx.update_editor(|editor, _window, _cx| {
+        assert!(
+            editor.context_menu_renderable(),
+            "the completions menu should be shown immediately while loading"
+        );
+        assert!(
+            !editor.context_menu_visible(),
+            "a loading menu has no selectable entries yet"
+        );
+    });
+}
+
+/// The index of the completion currently at the top of the menu's visible area, derived from the
+/// list's applied scroll offset. `UniformListScrollHandle::logical_scroll_top_index` is not usable
+/// here because it relies on child bounds that `uniform_list` does not track, so it always returns
+/// the first item.
+fn top_visible_completion(menu: &CodeContextMenu, item_count: usize) -> usize {
+    let handle = CodeContextMenu::primary_scroll_handle(menu);
+    let state = handle.0.borrow();
+    let layout = state
+        .last_item_size
+        .expect("the completion menu should have been laid out");
+    let item_height = layout.contents.height / item_count as f32;
+    (-state.base_handle.offset().y / item_height).round() as usize
+}
+
+#[gpui::test]
 async fn test_suggest_selection_scrolls_preselected_completion_into_view(cx: &mut TestAppContext) {
     init_test(cx, |language_settings| {
         language_settings.defaults.completions = Some(CompletionSettingsContent {
@@ -25963,22 +26014,28 @@ async fn test_suggest_selection_scrolls_preselected_completion_into_view(cx: &mu
         cx,
     )
     .await;
+    // Enough completions to overflow the menu, which shows at most 12 entries. They are returned
+    // in reverse so that the menu's own sorting, not the server's order, decides their positions.
+    const COMPLETION_COUNT: usize = 30;
+    const PRESELECTED_INDEX: usize = 15;
+    let labels_for_server: Vec<String> = (0..COMPLETION_COUNT)
+        .map(|index| format!("con{index:02}"))
+        .collect();
     cx.lsp
-        .set_request_handler::<lsp::request::Completion, _, _>(move |_, _| async move {
-            Ok(Some(lsp::CompletionResponse::Array(vec![
-                lsp::CompletionItem {
-                    label: "console".into(),
-                    ..lsp::CompletionItem::default()
-                },
-                lsp::CompletionItem {
-                    label: "const".into(),
-                    ..lsp::CompletionItem::default()
-                },
-                lsp::CompletionItem {
-                    label: "constant".into(),
-                    ..lsp::CompletionItem::default()
-                },
-            ])))
+        .set_request_handler::<lsp::request::Completion, _, _>(move |_, _| {
+            let labels = labels_for_server.clone();
+            async move {
+                Ok(Some(lsp::CompletionResponse::Array(
+                    labels
+                        .iter()
+                        .rev()
+                        .map(|label| lsp::CompletionItem {
+                            label: label.clone(),
+                            ..lsp::CompletionItem::default()
+                        })
+                        .collect(),
+                )))
+            }
         });
 
     // Nothing is remembered yet, so the first completion is selected and the list is only
@@ -25998,26 +26055,23 @@ async fn test_suggest_selection_scrolls_preselected_completion_into_view(cx: &mu
         let CodeContextMenu::Completions(completions_menu) = menu else {
             panic!("expected completion menu to be open");
         };
-        assert_eq!(
-            completion_menu_entries(completions_menu),
-            &["const", "constant", "console"]
-        );
+        let entries = completion_menu_entries(completions_menu);
+        assert_eq!(entries.len(), COMPLETION_COUNT);
+        assert_eq!(entries[PRESELECTED_INDEX], "con15");
         assert_eq!(completions_menu.selected_item, 0);
-        let deferred = CodeContextMenu::primary_scroll_handle(menu)
-            .0
-            .borrow()
-            .deferred_scroll_to_item;
         assert_eq!(
-            deferred.map(|deferred| deferred.strategy),
-            Some(gpui::ScrollStrategy::Nearest)
+            top_visible_completion(menu, COMPLETION_COUNT),
+            0,
+            "with nothing remembered the first entry is selected and the menu is not scrolled"
         );
     });
 
-    // Accept the last completion.
+    // Accept a completion that is far enough down the list to be off-screen when the menu first
+    // opens.
     cx.update_editor(|editor, window, cx| {
         if let Some(CodeContextMenu::Completions(menu)) = editor.context_menu.borrow_mut().as_mut()
         {
-            menu.selected_item = 2;
+            menu.selected_item = PRESELECTED_INDEX;
         }
         editor.confirm_completion(&ConfirmCompletion::default(), window, cx);
     });
@@ -26040,18 +26094,12 @@ async fn test_suggest_selection_scrolls_preselected_completion_into_view(cx: &mu
         let CodeContextMenu::Completions(completions_menu) = menu else {
             panic!("expected completion menu to be open");
         };
+        let entries = completion_menu_entries(completions_menu);
+        assert_eq!(entries[PRESELECTED_INDEX], "con15");
+        assert_eq!(completions_menu.selected_item, PRESELECTED_INDEX);
         assert_eq!(
-            completion_menu_entries(completions_menu),
-            &["const", "constant", "console"]
-        );
-        assert_eq!(completions_menu.selected_item, 2);
-        let deferred = CodeContextMenu::primary_scroll_handle(menu)
-            .0
-            .borrow()
-            .deferred_scroll_to_item;
-        assert_eq!(
-            deferred.map(|deferred| (deferred.item_index, deferred.strategy)),
-            Some((2, gpui::ScrollStrategy::Top)),
+            top_visible_completion(menu, COMPLETION_COUNT),
+            PRESELECTED_INDEX,
             "the preselected completion should be scrolled to the top of the menu when it opens"
         );
     });

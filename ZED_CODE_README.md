@@ -374,6 +374,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Go-to-definition inside a diff (including a solo diff) scrolls and moves the cursor in that view instead of opening a different editor.
 - The completion menu can show a syntax-colored symbol icon per entry (`completion_menu_item_kind: "icon"`) and preselect an entry based on recent use (`completions.suggest_selection`); the recent-use memory is keyed on the completion's filter text, so resolving a completion — which can rewrite its insert text — does not drop it from the memory.
 - The completion's `detail` (or its `label_details.description`) renders in the menu's own right-hand detail column instead of being appended to the label. A language server like TypeScript's only returns `detail` on resolve, so appending it used to rewrite the label text and widen the entry on resolve; the label now stays the label, and the detail is shown separately. Pressing the completion shortcut while the menu is open toggles that documentation, instead of reopening the menu.
+- The completions menu opens immediately with a `Loading…` placeholder while the request is in flight, instead of showing nothing until the results arrive.
 - A physical mouse wheel scrolls horizontally (`shift` + wheel) by the same distance as vertically: line-based wheel deltas are converted with the line height on both axes, instead of the glyph width for the horizontal axis.
 
 ### Context menus

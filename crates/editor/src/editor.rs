@@ -4894,6 +4894,18 @@ impl Editor {
                 .is_some_and(|menu| menu.visible())
     }
 
+    /// Like [`Editor::context_menu_visible`], but also counts a completions menu that is still
+    /// loading results. Used for rendering, so the loading placeholder is shown, while
+    /// `context_menu_visible` keeps meaning "there are selectable entries".
+    pub fn context_menu_renderable(&self) -> bool {
+        !self.edit_prediction_preview_is_active()
+            && self
+                .context_menu
+                .borrow()
+                .as_ref()
+                .is_some_and(|menu| menu.renderable())
+    }
+
     pub fn context_menu_origin(&self) -> Option<ContextMenuOrigin> {
         self.context_menu
             .borrow()
@@ -4921,7 +4933,7 @@ impl Editor {
     ) -> Option<AnyElement> {
         let menu = self.context_menu.borrow();
         let menu = menu.as_ref()?;
-        if !menu.visible() {
+        if !menu.renderable() {
             return None;
         };
         self.style

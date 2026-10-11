@@ -37,6 +37,7 @@ impl Editor {
             }),
             None,
             false,
+            true,
             window,
             cx,
         );
@@ -144,6 +145,7 @@ impl Editor {
                     }),
                     None,
                     trigger_in_words,
+                    false,
                     window,
                     cx,
                 );
@@ -152,6 +154,7 @@ impl Editor {
                 None,
                 Some(text.to_owned()).filter(|x| !x.is_empty()),
                 trigger_in_words,
+                false,
                 window,
                 cx,
             ),
@@ -345,6 +348,7 @@ impl Editor {
         requested_source: Option<CompletionsMenuSource>,
         trigger: Option<String>,
         trigger_in_words: bool,
+        show_loading: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -655,6 +659,39 @@ impl Editor {
         let snippet_sort_order = EditorSettings::get_global(cx).snippet_sort_order;
 
         let id = post_inc(&mut self.next_completion_id);
+
+        // Show the menu immediately with a loading placeholder, so the user gets feedback while
+        // completions are being fetched, mirroring VS Code's "Loading..." state.
+        if show_loading
+            && !matches!(
+                self.context_menu.borrow().as_ref(),
+                Some(CodeContextMenu::Completions(_))
+            )
+        {
+            let mut menu = CompletionsMenu::new(
+                id,
+                requested_source.unwrap_or(CompletionsMenuSource::Normal),
+                sort_completions,
+                show_completion_documentation,
+                position,
+                query.clone(),
+                true,
+                buffer.clone(),
+                Vec::<Completion>::new().into_boxed_slice(),
+                None,
+                CompletionDisplayOptions::default(),
+                snippet_sort_order,
+                suggest_selection,
+                self.suggest_memory.clone(),
+                None,
+                language.clone(),
+                cx,
+            );
+            menu.set_loading(true);
+            *self.context_menu.borrow_mut() = Some(CodeContextMenu::Completions(menu));
+            cx.notify();
+        }
+
         let task = cx.spawn_in(window, async move |editor, cx| {
             let Ok(()) = editor.update(cx, |this, _| {
                 this.completion_tasks.retain(|(task_id, _)| *task_id >= id);
@@ -1064,7 +1101,7 @@ impl Editor {
             .as_ref()
             .is_some_and(|confirm| confirm(intent, window, cx));
         if show_new_completions_on_confirm {
-            self.open_or_update_completions_menu(None, None, false, window, cx);
+            self.open_or_update_completions_menu(None, None, false, false, window, cx);
         }
 
         let provider = self.completion_provider.as_ref()?;
