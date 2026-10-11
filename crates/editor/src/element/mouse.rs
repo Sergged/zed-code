@@ -1519,4 +1519,55 @@ mod tests {
              first event is horizontal-dominant, but the editor did not move",
         );
     }
+
+    /// The git-gutter hunk markers sit in front of the editor. They used to be
+    /// `BlockMouse`, which dropped the editor's hitbox from the hit test and
+    /// swallowed the wheel over the marker. They are now
+    /// `BlockMouseExceptScroll`, so the wheel reaches the editor behind them.
+    #[gpui::test]
+    async fn test_scroll_over_git_gutter_still_scrolls_editor(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let mut cx = EditorTestContext::new(cx).await;
+
+        // A file long enough to scroll, with one modified line so a hunk marker
+        // is drawn in the gutter.
+        let mut lines: Vec<String> = (0..100).map(|n| format!("line {n}")).collect();
+        let base = lines.join("\n");
+        lines[1] = "changed".to_string();
+        cx.set_state(&format!("ˇ{}", lines.join("\n")));
+        cx.set_head_text(&base);
+        cx.update_editor(|editor, window, cx| {
+            editor.expand_all_diff_hunks(&Default::default(), window, cx);
+        });
+        cx.run_until_parked();
+
+        // A wheel event positioned over the hunk marker's gutter hitbox.
+        let wheel_position = cx.update_editor(|editor, _, _| {
+            let position_map = editor
+                .last_position_map
+                .as_ref()
+                .expect("editor was laid out");
+            let hunk_hitbox = position_map
+                .display_hunks
+                .iter()
+                .find_map(|(_, hitbox)| hitbox.as_ref())
+                .expect("a diff hunk marker should have a hitbox in the gutter");
+            hunk_hitbox.bounds.center()
+        });
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: wheel_position,
+            delta: ScrollDelta::Lines(point(0., -3.)),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+
+        let scroll_position =
+            cx.update_editor(|editor, window, cx| editor.snapshot(window, cx).scroll_position());
+        assert!(
+            scroll_position.y > 0.,
+            "the wheel must scroll the editor even when the cursor is over a \
+             git-gutter hunk marker",
+        );
+    }
 }

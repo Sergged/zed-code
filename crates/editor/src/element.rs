@@ -1876,7 +1876,21 @@ impl EditorElement {
                         snapshot,
                         cx,
                     );
-                    *hitbox = Some(window.insert_hitbox(hunk_bounds, HitboxBehavior::BlockMouse));
+                    // A custom `git_gutter_width` can be wider than the space
+                    // reserved for the gutter; clamp the marker so its hitbox
+                    // never spills into the text area, where it would swallow
+                    // hover and clicks. `BlockMouseExceptScroll` lets the wheel
+                    // pass through to the editor beneath the marker.
+                    let hunk_bounds = Bounds::new(
+                        hunk_bounds.origin,
+                        size(
+                            hunk_bounds.size.width.min(gutter_hitbox.bounds.size.width),
+                            hunk_bounds.size.height,
+                        ),
+                    );
+                    *hitbox = Some(
+                        window.insert_hitbox(hunk_bounds, HitboxBehavior::BlockMouseExceptScroll),
+                    );
                 }
             }
         }
@@ -4613,7 +4627,7 @@ impl EditorElement {
         ) {
             let mut occlusion = div()
                 .size_full()
-                .occlude()
+                .block_mouse_except_scroll()
                 .on_mouse_move(|_, _, cx| cx.stop_propagation())
                 .into_any_element();
             occlusion.layout_as_root(size(width, HOVER_POPOVER_GAP).into(), window, cx);

@@ -40,6 +40,7 @@ The agent's search tools can be pointed at any directory, the completion menu sh
 - Fixed `diagnostics` reporting a file that no language server had looked at as clean, and never registering a freshly opened file with the servers.
 - Fixed a cancelled permission prompt wedging the conversation: every Allow / Deny button and its keyboard shortcut stopped working until restart.
 - Fixed trackpad scrolling in the editor sometimes doing nothing until you clicked in the editor: the axis lock zeroed the vertical delta whenever the first event of a two-finger gesture was horizontal-dominant, and for an editor that cannot scroll horizontally the surviving horizontal delta was clamped away. The editor no longer applies the axis lock when it cannot scroll horizontally.
+- Fixed the wheel being swallowed over a git-gutter diff-hunk marker and over the gap between stacked hover popovers, which were hitboxes in front of the editor that blocked scroll.
 
 ## Breaking Changes and Notices
 
