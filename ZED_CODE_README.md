@@ -318,7 +318,7 @@ A thread accepts more than editor and terminal selections: a diagnostic can be a
 
 ### Queued messages render as text previews
 
-Messages queued while the agent is running render as a two-line clamped text preview with a full-text tooltip instead of a live editor; the row actions (steer, send now, delete) stay right-aligned.
+Messages queued while the agent is running render as a two-line clamped text preview with a full-text tooltip instead of a live editor; the row actions (steer, send now, delete) stay right-aligned. Every queued row keeps its actions visible (not only the front one), `Send Now` is always an outlined button, the preview reserves two lines' height, and `Steer` and `Send Now` fill their grid column so they share one width.
 
 ### Built-in agent skills
 

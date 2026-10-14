@@ -4470,6 +4470,7 @@ impl ThreadView {
 
         Button::new(("steer", index), "Steer")
             .label_size(LabelSize::Small)
+            .full_width()
             .toggle_state(steer_on)
             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
             .when(is_next, |this| {
@@ -4494,7 +4495,7 @@ impl ThreadView {
 
     fn render_message_queue_entries(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let message_editor = self.message_editor.read(cx);
@@ -4549,6 +4550,7 @@ impl ThreadView {
                             .flex_1()
                             .min_w_0()
                             .pr_0p5()
+                            .min_h(2. * window.line_height())
                             .cursor_default()
                             .tooltip(Tooltip::text(message_text.clone()))
                             .child(
@@ -4562,13 +4564,12 @@ impl ThreadView {
                             .grid()
                             .grid_cols_max_content(2)
                             .grid_rows_max_content(2)
-                            .when(!is_next, |this| this.visible_on_hover("queue_entry"))
                             .gap_1()
                             .min_w(min_width)
                             .justify_end()
                             .items_center()
                             .when(is_native, |grid| {
-                                grid.child(h_flex().col_start(1).row_start(1).child(
+                                grid.child(h_flex().w_full().col_start(1).row_start(1).child(
                                     self.render_queue_steer_button(
                                         entry_id, index, is_next, steer_on, cx,
                                     ),
@@ -4600,10 +4601,11 @@ impl ThreadView {
                                 ),
                             )
                             .child(
-                                h_flex().col_start(1).row_start(2).child(
+                                h_flex().w_full().col_start(1).row_start(2).child(
                                     Button::new(("send_now", index), "Send Now")
                                         .label_size(LabelSize::Small)
-                                        .when(is_next, |this| this.style(ButtonStyle::Outlined))
+                                        .style(ButtonStyle::Outlined)
+                                        .full_width()
                                         .when(is_next && message_editor.is_empty(cx), |this| {
                                             let action: Box<dyn gpui::Action> = if can_fast_track {
                                                 Box::new(Chat)

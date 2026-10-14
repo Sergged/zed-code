@@ -29,6 +29,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 ### Editor
 
 - Doubled the editor's vertical scrollbar width (`EDITOR_SCROLLBAR_WIDTH`, now 20px) while leaving the horizontal scrollbar its original height. `EditorStyle` separates `vertical_scrollbar_width` from `horizontal_scrollbar_height`, and `EditorScrollbars::from_scrollbar_axes` uses each for its own axis.
+- Kept every queued-message row's actions visible (formerly only the front row), made `Send Now` always outlined, reserved two lines for the message preview, and let `Steer` and `Send Now` fill their grid column so both share one width.
 
 ## Zed Code 2026.10.11
 
