@@ -50,6 +50,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 - Wrote the seed keymap's macOS-only editing bindings (add cursor above/below, duplicate line down, delete forward) with an explicit `cmd-*` instead of `secondary-*`, so they are inert on Windows and VS Code's `ctrl`-based defaults stay in place.
 - Added up/down buttons to each queued message so the queue can be reordered before sending.
+- Unified **View File** across the thread's edited-files list, `AgentDiffView`, `SoloDiffView` and the git panel to open the working file as a preview tab.
 
 ## Zed Code 2026.10.11
 

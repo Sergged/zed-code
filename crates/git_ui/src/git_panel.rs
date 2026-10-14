@@ -2781,9 +2781,9 @@ impl GitPanel {
 
     fn view_file(&mut self, _: &ViewFile, window: &mut Window, cx: &mut Context<Self>) {
         // Do not take focus: this is the "peek" action used by the visible-on-hover
-        // button and the ViewFile action, so it neither promotes the preview tab nor
-        // closes one.
-        self.open_selected_file(false, PreviewMode::Persistent, window, cx);
+        // button and the ViewFile action. It opens the working file as a preview tab
+        // (respecting `preview_tabs`), like every other View File entry point.
+        self.open_selected_file(false, PreviewMode::Preview, window, cx);
     }
 
     fn reveal_in_file_manager(
@@ -11339,6 +11339,13 @@ mod tests {
         cx.run_until_parked();
 
         assert_editor_opened_with_path(&workspace, Path::new("tracked"), &mut cx);
+
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(
+                workspace.active_pane().read(cx).preview_item_id().is_some(),
+                "View File should open the working file as a preview tab"
+            );
+        });
     }
 
     #[gpui::test]

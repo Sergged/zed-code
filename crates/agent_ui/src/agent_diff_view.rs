@@ -342,7 +342,7 @@ impl AgentDiffView {
         };
         workspace.update(cx, |workspace, cx| {
             workspace
-                .open_path_preview(project_path, None, false, false, true, window, cx)
+                .open_path_preview(project_path, None, false, true, true, window, cx)
                 .detach_and_log_err(cx);
         });
     }

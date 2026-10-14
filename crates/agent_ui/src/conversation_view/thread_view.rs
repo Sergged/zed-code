@@ -3372,6 +3372,39 @@ impl ThreadView {
                 cx.notify();
             }))
             .child(
+                Button::new(("view-file", index), "View File")
+                    .label_size(LabelSize::Small)
+                    .on_click(cx.listener({
+                        let buffer = buffer.clone();
+                        move |this, _, window, cx| {
+                            let Some(project_path) =
+                                buffer.read(cx).file().map(|file| project::ProjectPath {
+                                    worktree_id: file.worktree_id(cx),
+                                    path: file.path().clone(),
+                                })
+                            else {
+                                return;
+                            };
+                            let Some(workspace) = this.workspace.upgrade() else {
+                                return;
+                            };
+                            workspace.update(cx, |workspace, cx| {
+                                workspace
+                                    .open_path_preview(
+                                        project_path,
+                                        None,
+                                        false,
+                                        true,
+                                        true,
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                            });
+                        }
+                    })),
+            )
+            .child(
                 Button::new(("reject-file", index), "Reject")
                     .label_size(LabelSize::Small)
                     .disabled(pending_edits)

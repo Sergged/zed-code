@@ -343,7 +343,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Git panel and diffs
 
 - Tree directories and status entries can be dragged out of the panel (a marked selection moves together).
-- Status rows gain a hover **View File** action; directories get a context menu (stage / unstage / discard a folder, add the folder to `.gitignore`, reveal in the OS file manager).
+- Status rows gain a hover **View File** action; directories get a context menu (stage / unstage / discard a folder, add the folder to `.gitignore`, reveal in the OS file manager). Every **View File** entry point — the thread's edited-files list, `AgentDiffView`, `SoloDiffView`, the git panel (hover, primary click and context menu) and upstream's `git::ViewFile` — opens the working file as a **preview tab**, so `preview_tabs` governs it and cursor position is restored on reopen.
 - Diff hunks in a solo diff can be staged from the diff itself.
 - A solo diff is taken against the base its section implies — staged content against `HEAD`, unstaged against the index — and each base gets its own view, named after the base it shows.
 - Solo diffs open in **preview tabs** that replace one another, and report the active project path.
