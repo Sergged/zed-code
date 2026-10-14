@@ -137,7 +137,7 @@ impl RenderOnce for Tab {
         // or border), and the close button's box includes padding around its
         // icon. Compensate for both so the three visible insets — left edge to
         // file icon, label to close icon, close icon to right edge — are equal.
-        let inset = DynamicSpacing::Base12.px(cx);
+        let inset = DynamicSpacing::Base08.px(cx);
         let (pl, gap, pr) = match self.close_side {
             TabCloseSide::End => (
                 inset - px(1.),

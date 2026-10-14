@@ -391,7 +391,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Tabs and workspace chrome
 
 - The tab's trailing slot shows the unsaved-changes indicator in the place of the close button; hovering swaps in close (or unpin), VS Code-style, with no layout shift.
-- The tab's outer padding and label gap account for the padding around the close button's icon, so the icon keeps its intended distance to the tab edge.
+- The tab's outer padding and label gap account for the padding around the close button's icon, so the icon keeps its intended distance to the tab edge. The inset is `Base08` (8px), keeping the icon/text/close insets equal and tight.
 - Vertical status strips on the left and right edges host the panel toggles, and the workspace sidebar toggle moved into them (out of the sidebar). Their icons scale with `status_bar.icon_scale`, and a strip with nothing to show hides itself.
 - Scroll input is routed by its dominant axis, so a mostly-vertical gesture scrolls horizontally-overflowing elements such as the tab bar.
 

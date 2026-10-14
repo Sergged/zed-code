@@ -33,6 +33,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Enabled git-diff scrollbar markers on the single-file agent diff view (`AgentDiffView`) whenever the full file is shown, matching `SoloDiffView`.
 - Highlighted a diagnostic's **entire range** while hovering it (a box colored by severity), instead of only the word under the cursor; hovering text with no diagnostic keeps the symbol highlight. The highlight uses a dedicated `HighlightKey::HoverDiagnostic`, so it does not add scrollbar markers.
 
+### Panels and chrome
+
+- Tightened the tab inset to `Base8`, keeping the icon/text/close insets equal.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x
