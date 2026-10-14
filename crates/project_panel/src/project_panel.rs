@@ -1189,6 +1189,15 @@ impl ProjectPanel {
                     } else {
                         menu.action("New File", Box::new(NewFile))
                             .action("New Folder", Box::new(NewDirectory))
+                            .when(!should_hide_rename, |menu| {
+                                menu.action("Rename", Box::new(Rename))
+                            })
+                            .when(!is_root && !is_collab, |menu| {
+                                menu.action("Trash", Box::new(Trash { skip_prompt: false }))
+                            })
+                            .when(!is_root, |menu| {
+                                menu.action("Delete", Box::new(Delete { skip_prompt: false }))
+                            })
                             .separator()
                             .when(is_local, |menu| {
                                 menu.action(
@@ -1265,15 +1274,6 @@ impl ProjectPanel {
                                             git::CopyFilePermalink.boxed_clone(),
                                         )
                                     })
-                            })
-                            .when(!should_hide_rename, |menu| {
-                                menu.separator().action("Rename", Box::new(Rename))
-                            })
-                            .when(!is_root && !is_collab, |menu| {
-                                menu.action("Trash", Box::new(Trash { skip_prompt: false }))
-                            })
-                            .when(!is_root, |menu| {
-                                menu.action("Delete", Box::new(Delete { skip_prompt: false }))
                             })
                             .when(!is_collab && is_root, |menu| {
                                 menu.separator()

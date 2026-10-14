@@ -36,6 +36,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 ### Panels and chrome
 
 - Tightened the tab inset to `Base8`, keeping the icon/text/close insets equal.
+- Ordered the project-panel entry context menu as New File, New Folder, Rename, Trash, Delete, before the `Reveal in File Manager` group.
 
 ## Zed Code 2026.10.11
 

@@ -338,6 +338,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 ### Project panel
 
 - A **Project** header above the tree with an expand/collapse-all toggle.
+- The entry context menu orders **New File**, **New Folder**, **Rename**, **Trash**, **Delete** together at the top, before the `Reveal in File Manager` group.
 
 ### Git panel and diffs
 
