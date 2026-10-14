@@ -548,7 +548,8 @@ pub struct EditorStyle {
     pub border: Hsla,
     pub local_player: PlayerColor,
     pub text: TextStyle,
-    pub scrollbar_width: Pixels,
+    pub vertical_scrollbar_width: Pixels,
+    pub horizontal_scrollbar_height: Pixels,
     pub syntax: Arc<SyntaxTheme>,
     pub status: StatusColors,
     pub inlay_hints_style: HighlightStyle,
@@ -566,7 +567,8 @@ impl Default for EditorStyle {
             border: Hsla::default(),
             local_player: PlayerColor::default(),
             text: TextStyle::default(),
-            scrollbar_width: Pixels::default(),
+            vertical_scrollbar_width: Pixels::default(),
+            horizontal_scrollbar_height: Pixels::default(),
             syntax: NONE_SYNTAX.clone(),
             // HACK: Status colors don't have a real default.
             // We should look into removing the status colors from the editor
@@ -8278,7 +8280,12 @@ impl Editor {
                                                 background: cx.theme().system().transparent,
                                                 local_player: cx.editor_style.local_player,
                                                 text: text_style,
-                                                scrollbar_width: cx.editor_style.scrollbar_width,
+                                                vertical_scrollbar_width: cx
+                                                    .editor_style
+                                                    .vertical_scrollbar_width,
+                                                horizontal_scrollbar_height: cx
+                                                    .editor_style
+                                                    .horizontal_scrollbar_height,
                                                 syntax: cx.editor_style.syntax.clone(),
                                                 status: cx.editor_style.status.clone(),
                                                 inlay_hints_style: HighlightStyle {
@@ -11514,7 +11521,8 @@ impl Editor {
             border: cx.theme().colors().border,
             local_player: cx.theme().players().local(),
             text: text_style,
-            scrollbar_width: EditorElement::SCROLLBAR_WIDTH,
+            vertical_scrollbar_width: EditorElement::VERTICAL_SCROLLBAR_WIDTH,
+            horizontal_scrollbar_height: EditorElement::HORIZONTAL_SCROLLBAR_HEIGHT,
             syntax: cx.theme().syntax().clone(),
             status: cx.theme().status().clone(),
             inlay_hints_style: make_inlay_hints_style(cx),

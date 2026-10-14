@@ -469,7 +469,7 @@ impl SplitBufferHeadersElement {
         let horizontal_scrollbar_height =
             (self.lhs_editor.read(cx).last_horizontal_scrollbar_visible()
                 || self.rhs_editor.read(cx).last_horizontal_scrollbar_visible())
-            .then_some(self.style.scrollbar_width)
+            .then_some(self.style.horizontal_scrollbar_height)
             .unwrap_or(Pixels::ZERO);
 
         Bounds::new(

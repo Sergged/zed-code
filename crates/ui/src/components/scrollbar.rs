@@ -24,6 +24,7 @@ const SCROLLBAR_HIDE_DURATION: Duration = Duration::from_millis(400);
 const SCROLLBAR_SHOW_DURATION: Duration = Duration::from_millis(50);
 
 pub const EDITOR_SCROLLBAR_WIDTH: Pixels = ScrollbarStyle::Editor.to_pixels();
+pub const EDITOR_HORIZONTAL_SCROLLBAR_HEIGHT: Pixels = px(15.);
 const SCROLLBAR_PADDING: Pixels = px(4.);
 const BORDER_WIDTH: Pixels = px(1.);
 
@@ -409,7 +410,7 @@ impl ScrollbarStyle {
     pub const fn to_pixels(&self) -> Pixels {
         match self {
             ScrollbarStyle::Regular => px(6.),
-            ScrollbarStyle::Editor => px(15.),
+            ScrollbarStyle::Editor => px(20.),
         }
     }
 }

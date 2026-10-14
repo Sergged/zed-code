@@ -364,7 +364,8 @@ pub enum SplitSide {
 }
 
 impl EditorElement {
-    pub(crate) const SCROLLBAR_WIDTH: Pixels = ui::EDITOR_SCROLLBAR_WIDTH;
+    pub(crate) const VERTICAL_SCROLLBAR_WIDTH: Pixels = ui::EDITOR_SCROLLBAR_WIDTH;
+    pub(crate) const HORIZONTAL_SCROLLBAR_HEIGHT: Pixels = ui::EDITOR_HORIZONTAL_SCROLLBAR_HEIGHT;
 
     pub fn new(editor: &Entity<Editor>, style: EditorStyle) -> Self {
         Self {
@@ -1494,7 +1495,8 @@ impl EditorElement {
     ) -> Option<EditorScrollbars> {
         let show_scrollbars = self.editor.read(cx).show_scrollbars;
         if (!show_scrollbars.horizontal && !show_scrollbars.vertical)
-            || self.style.scrollbar_width.is_zero()
+            || (self.style.vertical_scrollbar_width.is_zero()
+                && self.style.horizontal_scrollbar_height.is_zero())
         {
             return None;
         }
@@ -1562,7 +1564,8 @@ impl EditorElement {
             scrollbar_layout_information,
             content_offset,
             scroll_position,
-            self.style.scrollbar_width,
+            self.style.vertical_scrollbar_width,
+            self.style.horizontal_scrollbar_height,
             right_margin,
             editor_width,
             show_scrollbars,
@@ -8681,7 +8684,7 @@ impl Element for EditorElement {
                     let vertical_scrollbar_width = (scrollbars_shown
                         && settings.scrollbar.axes.vertical
                         && self.editor.read(cx).show_scrollbars.vertical)
-                        .then_some(style.scrollbar_width)
+                        .then_some(style.vertical_scrollbar_width)
                         .unwrap_or_default();
                     let minimap_width = self
                         .get_minimap_width(
@@ -10434,7 +10437,8 @@ impl EditorScrollbars {
         layout_information: &ScrollbarLayoutInformation,
         content_offset: gpui::Point<Pixels>,
         scroll_position: gpui::Point<f64>,
-        scrollbar_width: Pixels,
+        vertical_scrollbar_width: Pixels,
+        horizontal_scrollbar_height: Pixels,
         right_margin: Pixels,
         editor_width: Pixels,
         show_scrollbars: bool,
@@ -10457,13 +10461,13 @@ impl EditorScrollbars {
                     // The horizontal viewport size differs from the space available for the
                     // horizontal scrollbar, so we have to manually stitch it together here.
                     editor_bounds.size.width - right_margin,
-                    scrollbar_width,
+                    horizontal_scrollbar_height,
                 ),
             ),
             ScrollbarAxis::Vertical => Bounds::from_anchor_and_size(
                 gpui::Anchor::TopRight,
                 editor_bounds.top_right(),
-                size(scrollbar_width, viewport_size.height),
+                size(vertical_scrollbar_width, viewport_size.height),
             ),
         };
 

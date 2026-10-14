@@ -26,6 +26,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 - Dropped the `Subagents & images` section from the seeded `AGENTS.md`; the subagent `model` argument and image inspection are covered by the system prompts.
 
+### Editor
+
+- Doubled the editor's vertical scrollbar width (`EDITOR_SCROLLBAR_WIDTH`, now 20px) while leaving the horizontal scrollbar its original height. `EditorStyle` separates `vertical_scrollbar_width` from `horizontal_scrollbar_height`, and `EditorScrollbars::from_scrollbar_axes` uses each for its own axis.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x

@@ -313,7 +313,8 @@ fn render_inline_input_block(
                     background: cx.theme().system().transparent,
                     local_player: cx.editor_style.local_player,
                     text: cx.editor_style.text.clone(),
-                    scrollbar_width: cx.editor_style.scrollbar_width,
+                    vertical_scrollbar_width: cx.editor_style.vertical_scrollbar_width,
+                    horizontal_scrollbar_height: cx.editor_style.horizontal_scrollbar_height,
                     syntax: cx.editor_style.syntax.clone(),
                     status: cx.editor_style.status.clone(),
                     ..EditorStyle::default()
