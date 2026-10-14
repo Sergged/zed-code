@@ -82,28 +82,7 @@
   "language_models": {
     "opencode": {
       "show_zen_models": false,
-      "available_models": [
-        {
-          "name": "deepseek-v4-flash-vision-exp",
-          "display_name": "DeepSeek V4 Flash Vision (Direct)",
-          "max_tokens": 1000000,
-          "max_output_tokens": 384000,
-          "protocol": "openai_chat",
-          "interleaved_reasoning": true,
-          "reasoning_effort_levels": ["low", "high", "max"],
-          "subscription": "go",
-        },
-        {
-          "name": "deepseek-v4-flash",
-          "display_name": "DeepSeek V4 Flash (Direct)",
-          "max_tokens": 1000000,
-          "max_output_tokens": 384000,
-          "protocol": "openai_chat",
-          "interleaved_reasoning": true,
-          "reasoning_effort_levels": ["low", "high", "max"],
-          "subscription": "go",
-        },
-      ],
+      "available_models": [],
     },
   },
   "toolbar": {
@@ -242,12 +221,6 @@
     "default_profile": "write",
     "profiles": {
       "write": {
-        "default_model": {
-          "provider": "opencode",
-          "model": "go/deepseek-v4-flash",
-          "enable_thinking": true,
-          "effort": "max",
-        },
         "name": "Write",
         "tools": {
           "copy_path": true,
@@ -289,12 +262,6 @@
         },
         "enable_all_context_servers": false,
         "context_servers": {},
-        "default_model": {
-          "provider": "opencode",
-          "model": "go/deepseek-v4-flash",
-          "enable_thinking": true,
-          "effort": "max",
-        },
       },
     },
     "sandbox_permissions": {
@@ -302,9 +269,9 @@
       "network_hosts": ["*.npmjs.org"],
     },
     "default_model": {
-      "effort": "high",
+      "effort": "low",
       "provider": "opencode",
-      "model": "go/deepseek-v4-flash",
+      "model": "go/deepseek-v4.1-flash",
       "enable_thinking": true,
     },
     "threads_sidebar": {
@@ -317,32 +284,20 @@
     "favorite_models": [
       {
         "provider": "opencode",
-        "model": "go/deepseek-v4-flash",
+        "model": "go/deepseek-v4.1-flash",
         "enable_thinking": true,
-        "effort": "high",
+        "effort": "low",
       },
       {
         "provider": "opencode",
-        "model": "go/kimi-k3",
+        "model": "go/muse-spark-1.3-contributor",
         "enable_thinking": true,
-        "effort": "max",
+        "effort": "xhigh",
       },
       {
         "provider": "opencode",
-        "model": "go/deepseek-v4-pro",
+        "model": "go/mimo-v2.6-flash",
         "enable_thinking": true,
-        "effort": "high",
-      },
-      {
-        "provider": "opencode",
-        "model": "go/minimax-m3",
-        "enable_thinking": false,
-      },
-      {
-        "provider": "opencode",
-        "model": "go/glm-5.2",
-        "enable_thinking": true,
-        "effort": "max",
       },
     ],
     "model_parameters": [],

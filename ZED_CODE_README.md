@@ -470,8 +470,8 @@ Two consequences:
 
 ### AI / agent panel
 
-- Default model: `opencode` / `go/deepseek-v4-flash` with thinking on, effort `high`. Two profiles: `Write` (all tools) and `Ask` (read-only: no delete/create/copy), both with effort `max`.
-- `favorite_models`: `go/deepseek-v4-flash`, `go/kimi-k3`, `go/deepseek-v4-pro`, `go/minimax-m3`, `go/glm-5.2` (thinking/effort set per entry).
+- Default model: `opencode` / `go/deepseek-v4.1-flash` with thinking on, effort `low`. The `Write` (all tools) and `Ask` (read-only: no delete/create/copy) profiles do not set their own model, so both inherit the default. `thread_summary_model` / `compaction_model` are left unset on purpose — summary and compaction fall back to the default model.
+- `favorite_models`: `go/deepseek-v4.1-flash` (effort `low`), `go/muse-spark-1.3-contributor` (effort `xhigh`), `go/mimo-v2.6-flash`.
 - Tool permissions: `write_file` and `edit_file` always allowed; `terminal` auto-allowed for a read-only allowlist (`grep`, `head`, `echo`, `tail`, `ls`, `date`, `wc`, `cat`, `sort`, `uniq`, `sed`, `du`, `pgrep`, `stat`, `find`, `strings`); `fetch` allowed for `skills.sh`, `raw.githubusercontent.com`, `api.github.com`; `search_web` allowed.
 - Sandbox: `allow_unsandboxed: true`, `network_hosts: ["*.npmjs.org"]`.
 - Layout and behavior: `agent.dock` / `threads_sidebar.position: "right"`, default width 420, `message_editor_min_lines: 2`, `auto_compact.threshold: "90%"`, `thinking_display: "auto"`, edit/terminal cards collapsed, single-file review off.
@@ -479,7 +479,7 @@ Two consequences:
 ### Custom models (`language_models.opencode`)
 
 - `show_zen_models: false` — hide the built-in Zen model list.
-- Two custom entries: `deepseek-v4-flash-vision-exp` ("DeepSeek V4 Flash Vision (Direct)") and `deepseek-v4-flash` ("DeepSeek V4 (Direct)"): 1M context / 384k max output, `openai_chat` protocol, interleaved reasoning, reasoning effort levels (`none`/`low`/`high`/`max` for the vision entry, `low`/`high`/`max` for the text one), `subscription: "go"`.
+- `available_models: []` — no hand-declared models. The DeepSeek v4.1 go-model (`go/deepseek-v4.1-flash`) is requested from opencode itself, so it appears in the picker without a static declaration.
 
 ### Agent rules (`assets/settings/initial_agents_md.md`)
 

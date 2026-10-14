@@ -6,6 +6,18 @@ Everything here is additive. Where a change extends something upstream already s
 
 Releases are listed newest first. Each one corresponds to a working session, so the dates are when the work landed rather than a published schedule.
 
+## Zed Code 2026.10.12
+
+Oct 12, 2026 · based on Zed v1.22.x
+
+The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's scrollbar and tidier queued-message rows, a code action applied by the agent now reaches disk, and the editor's vertical scrollbar is twice as wide.
+
+## Features
+
+### Agent
+
+- Moved the default model to `go/deepseek-v4.1-flash` (thinking on, effort `low`); the `Write` and `Ask` profiles no longer pin their own model, so both inherit the default, and summary/compaction fall back to it as well. Favorites are now `go/deepseek-v4.1-flash`, `go/muse-spark-1.3-contributor` and `go/mimo-v2.6-flash`.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x
