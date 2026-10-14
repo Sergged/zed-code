@@ -363,6 +363,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - The panel's scrollbar visibility follows `search.scrollbar.show` (inheriting the global `scrollbar.show` when unset), and `search.scrollbar.track` decides whether it reserves a track.
 - The panel has its own actions (`search_panel::Toggle`, `search_panel::ToggleFocus`), a header button that opens a plain project-search editor, collapsible file groups, file headers that can be dragged out, and an indicator when the result limit is reached.
 - The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
+- The panel searches as you type (debounced 250 ms) when `editor.search.search_on_type` is enabled, with Enter running immediately. While a search is in flight the previous results stay visible (only the idle spinner is shown until the first results arrive).
 
 ### References panel
 

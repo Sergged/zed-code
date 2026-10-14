@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 use std::pin::pin;
+use std::time::Duration;
 
 use editor::{Editor, EditorSettings};
 use file_icons::FileIcons;
@@ -25,8 +26,8 @@ use settings::{Settings, update_settings_file};
 use text::Anchor;
 use theme_settings::ThemeSettings;
 use ui::{
-    CommonAnimationExt, IconButton, IconButtonShape, LoadingLabel, ScrollAxes, Scrollbars, Tab,
-    Toggleable, Tooltip, WithScrollbar,
+    CommonAnimationExt, IconButton, IconButtonShape, ScrollAxes, Scrollbars, Tab, Toggleable,
+    Tooltip, WithScrollbar,
     prelude::*,
     scrollbars::{ScrollbarVisibility, ShowScrollbar},
 };
@@ -59,6 +60,8 @@ actions!(
 );
 
 const SEARCH_PANEL_KEY: &str = "SearchPanel";
+
+const SEARCH_ON_TYPE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// The search panel has no settings of its own, so its scrollbars follow the
 /// editor scrollbar setting that the other panels inherit by default.
@@ -200,6 +203,7 @@ pub struct SearchPanel {
     limit_reached: bool,
     scroll_handle: UniformListScrollHandle,
     pending_search: Option<Task<()>>,
+    debounced_search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -277,7 +281,17 @@ impl SearchPanel {
             editor
         });
 
-        let subscriptions = Vec::new();
+        let subscriptions = vec![
+            cx.observe_in(&query_editor, window, |this, _, window, cx| {
+                this.schedule_search_on_type(window, cx);
+            }),
+            cx.observe_in(&included_files_editor, window, |this, _, window, cx| {
+                this.schedule_search_on_type(window, cx);
+            }),
+            cx.observe_in(&excluded_files_editor, window, |this, _, window, cx| {
+                this.schedule_search_on_type(window, cx);
+            }),
+        ];
 
         Self {
             workspace: workspace.weak_handle(),
@@ -301,6 +315,7 @@ impl SearchPanel {
             limit_reached: false,
             scroll_handle: UniformListScrollHandle::new(),
             pending_search: None,
+            debounced_search: None,
             _subscriptions: subscriptions,
         }
     }
@@ -371,6 +386,24 @@ impl SearchPanel {
     /// Runs a search with the panel's current query, options and filters,
     /// listing the matches in the panel. An empty query resets the panel to
     /// its empty state and cancels any in-flight search.
+    /// Schedules a debounced re-run of the search as the user types, when
+    /// `editor.search.search_on_type` is enabled. Enter runs the search
+    /// immediately (see [`SearchPanel::confirm`]), bypassing the debounce.
+    fn schedule_search_on_type(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !EditorSettings::get_global(cx).search.search_on_type {
+            return;
+        }
+        self.debounced_search = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(SEARCH_ON_TYPE_DEBOUNCE)
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.search(window, cx);
+            })
+            .log_err();
+        }));
+    }
+
     fn search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.query_editor.read(cx).text(cx).is_empty() {
             self.query_error = None;
@@ -392,7 +425,6 @@ impl SearchPanel {
         };
         let project = workspace.read(cx).project().clone();
         self.searching = true;
-        self.results = None;
         self.selected_entry = None;
         self.limit_reached = false;
         cx.notify();
@@ -813,7 +845,12 @@ impl SearchPanel {
 
     fn render_contents(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let results_area = if self.searching {
-            self.render_searching(cx)
+            match &self.results {
+                Some(results) if !results.matches.is_empty() => {
+                    self.render_results_list(window, cx)
+                }
+                _ => self.render_searching(cx),
+            }
         } else {
             match &self.results {
                 None => {
@@ -982,11 +1019,6 @@ impl SearchPanel {
                     .size(IconSize::Small)
                     .color(Color::Muted)
                     .with_rotate_animation(2),
-            )
-            .child(
-                LoadingLabel::new("Searching")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
             )
             .into_any_element()
     }

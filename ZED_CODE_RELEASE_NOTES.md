@@ -42,6 +42,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 - Seeded `tasks.json` on first run like `settings.json`, `keymap.json` and `AGENTS.md`, instead of creating it only when the tasks file is first opened.
 
+### Search panel
+
+- Added search-on-type: the panel re-runs the search as you type (debounced 250 ms) when `editor.search.search_on_type` is enabled, while Enter still runs immediately. The previous results stay visible while a search is in flight, and the idle loader is now just the spinner (no `Searching` text).
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x
