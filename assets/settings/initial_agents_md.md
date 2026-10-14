@@ -33,11 +33,6 @@
 - **Prefer diagnostics**: if the diagnostics tool can give you what you need (errors, warnings, type or lint information), take it from there instead of running a long compiler, linter, or build command in the terminal.
 - **Mermaid**: be careful with mermaid — it often fails to render as a preview in chat (the code block is there but does not convert). Prefer a plain list or table; if you do use mermaid, keep it simple and valid.
 
-## Subagents & images
-
-- Zed lets the agent pick the model for a subagent: `spawn_agent` accepts an optional `model`, passed as the exact `models[].id` returned by `list_agents_and_models` for the native Zed agent (`is_native: true`). Omit it to use the configured default (`agent.subagent_model`, falling back to the parent model).
-- **Images**: to inspect an image (screenshot, mockup, diagram, photo) without pulling it into the main thread context, spawn a subagent with `model: "go/deepseek-v4-flash-vision-exp"` (provider `opencode`, shown in the UI as "DeepSeek V4 Flash Vision") and ask it to describe or answer questions about the image. The image then stays inside the subagent thread — bring only the subagent's text result back into the main thread.
-
 ## Documentation integrity
 
 Preserve existing comments and docstrings unrelated to your changes; never delete comments unless explicitly asked.

@@ -493,7 +493,6 @@ Seeded as the global `AGENTS.md` on first run — the always-on instructions the
 - **Behavior** — do not leave plan mode without an explicit confirmation; apply global rules only to the code the task touches (no drive-by refactors).
 - **Quality** — read the source or type definitions of third-party APIs instead of relying on memory; no `disable`/`ignore` suppressions, refactor instead; run diagnostics after changes and fix every error and warning.
 - **Tooling** — prefer file tools over the terminal, and the diagnostics tool over long compiler/linter runs; a gitignored file (such as one under `node_modules`) is not an exception, since the file tools scan it on demand, so never fall back to `cat`/`ls` for it; keep mermaid simple (it often fails to render).
-- **Subagents and images** — `spawn_agent` accepts an optional `model`; images can be inspected inside a subagent (e.g. `go/deepseek-v4-flash-vision-exp`) so they stay out of the main thread context.
 - **Documentation integrity** — never delete comments unrelated to the change.
 
 ### Keymap (`assets/keymaps/initial.json`, on top of `base_keymap: "VSCode"`)

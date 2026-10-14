@@ -22,6 +22,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Showed a thread waiting on a pending `ask_user` elicitation as waiting for confirmation (the warning triangle) instead of running.
 - Fell back to the thread's primary model for summarization and title generation while the registry has not resolved a summary model yet (a provider still loading its model list), instead of having no model.
 
+### Agent guide
+
+- Dropped the `Subagents & images` section from the seeded `AGENTS.md`; the subagent `model` argument and image inspection are covered by the system prompts.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x
