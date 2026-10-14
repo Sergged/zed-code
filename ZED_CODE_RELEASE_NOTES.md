@@ -49,6 +49,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 ### Keymap and queued messages
 
 - Wrote the seed keymap's macOS-only editing bindings (add cursor above/below, duplicate line down, delete forward) with an explicit `cmd-*` instead of `secondary-*`, so they are inert on Windows and VS Code's `ctrl`-based defaults stay in place.
+- Added up/down buttons to each queued message so the queue can be reordered before sending.
 
 ## Zed Code 2026.10.11
 

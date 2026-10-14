@@ -2227,6 +2227,20 @@ impl ThreadView {
         cx.notify();
     }
 
+    fn move_queue_entry_up(&mut self, id: QueueEntryId, cx: &mut Context<Self>) {
+        if self.message_queue.move_up(id) {
+            self.sync_queue_flag_to_native_thread(cx);
+            cx.notify();
+        }
+    }
+
+    fn move_queue_entry_down(&mut self, id: QueueEntryId, cx: &mut Context<Self>) {
+        if self.message_queue.move_down(id) {
+            self.sync_queue_flag_to_native_thread(cx);
+            cx.notify();
+        }
+    }
+
     pub fn sync_queue_flag_to_native_thread(&self, cx: &mut Context<Self>) {
         if let Some(native_thread) = self.as_native_thread(cx) {
             // By default queued messages wait for the turn to fully complete.
@@ -4512,11 +4526,7 @@ impl ThreadView {
             .children(self.message_queue.iter().enumerate().map(|(index, entry)| {
                 let entry_id = entry.id;
                 let is_next = index == 0;
-                let (icon_color, tooltip_text) = if is_next {
-                    (Color::Accent, "Next in Queue")
-                } else {
-                    (Color::Muted, "In Queue")
-                };
+                let is_last = index + 1 == queue_len;
 
                 let message_text = entry.editor.read(cx).text(cx).trim().to_string();
                 let keybinding_size = rems_from_px(12_f32);
@@ -4535,14 +4545,36 @@ impl ThreadView {
                             .border_color(cx.theme().colors().border_variant)
                     })
                     .child(
-                        div()
-                            .id("next_in_queue")
+                        v_flex()
+                            .id(("reorder_queue_entry", index))
+                            .flex_none()
+                            .gap_0p5()
                             .child(
-                                Icon::new(IconName::Circle)
-                                    .size(IconSize::Small)
-                                    .color(icon_color),
+                                IconButton::new(("queue_move_up", index), IconName::ArrowUp)
+                                    .icon_size(IconSize::Small)
+                                    .disabled(is_next)
+                                    .tooltip(Tooltip::text(if is_next {
+                                        "Next in Queue"
+                                    } else {
+                                        "Move Up"
+                                    }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.move_queue_entry_up(entry_id, cx);
+                                    })),
                             )
-                            .tooltip(Tooltip::text(tooltip_text)),
+                            .child(
+                                IconButton::new(("queue_move_down", index), IconName::ArrowDown)
+                                    .icon_size(IconSize::Small)
+                                    .disabled(is_last)
+                                    .tooltip(Tooltip::text(if is_last {
+                                        "Last in Queue"
+                                    } else {
+                                        "Move Down"
+                                    }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.move_queue_entry_down(entry_id, cx);
+                                    })),
+                            ),
                     )
                     .child(
                         div()

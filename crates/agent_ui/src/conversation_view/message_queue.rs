@@ -118,6 +118,32 @@ impl MessageQueue {
         self.entries.remove(index)
     }
 
+    /// Moves the entry with `id` one position toward the front of the queue.
+    /// Returns `true` when the entry moved.
+    pub fn move_up(&mut self, id: QueueEntryId) -> bool {
+        let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
+            return false;
+        };
+        if index == 0 {
+            return false;
+        }
+        self.entries.swap(index - 1, index);
+        true
+    }
+
+    /// Moves the entry with `id` one position toward the back of the queue.
+    /// Returns `true` when the entry moved.
+    pub fn move_down(&mut self, id: QueueEntryId) -> bool {
+        let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
+            return false;
+        };
+        if index + 1 >= self.entries.len() {
+            return false;
+        }
+        self.entries.swap(index, index + 1);
+        true
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.can_fast_track = false;
