@@ -304,6 +304,12 @@
     },
   },
   {
+    "context": "AcpThread > Editor",
+    "unbind": {
+      "secondary-enter": "agent::ChatWithFollow",
+    },
+  },
+  {
     "context": "Pane",
     "bindings": {
       "secondary--": "pane::GoBack",

@@ -519,7 +519,7 @@ Mac-only bindings are written with an explicit `cmd-*` instead of `secondary-*`,
 - **Lines and cursors**: `cmd-up` / `cmd-down` — move the current line up/down (Zed's paragraph navigation is moved to `ctrl-up` / `ctrl-down`); `cmd-shift-up` / `cmd-shift-down` — add a cursor above/below (Zed's `cmd-alt-up` / `cmd-alt-down` unbound); `cmd-shift-d` — duplicate line down. These three are written with an explicit `cmd-*` (instead of `secondary-*`) so they stay macOS-only.
 - **Editing**: `secondary-space` — show completions; `cmd-backspace` — delete forward (Zed's delete-to-line-start unbound); `secondary-r` in the editor — rename symbol; `secondary-shift-s` — save all (Save As unbound).
 - **Diff hunks**: `secondary-"` toggles all diff hunks instead of only expanding them.
-- **Agent**: `secondary-l` — add the current selection to the agent thread (editor, ACP thread and terminal; Zed's `cmd->` unbound); `secondary-shift-l` — toggle the agent panel.
+- **Agent**: `secondary-l` — add the current selection to the agent thread (editor, ACP thread and terminal; Zed's `cmd->` unbound); `secondary-shift-l` — toggle the agent panel; in the agent thread's message editor `secondary-enter` is explicitly unbound from `agent::ChatWithFollow`, so it stays `agent::AllowOnce`.
 - **Pane history and zoom**: `secondary--` / `secondary-=` — go back / forward (Zed's `ctrl--` / `ctrl-_` unbound); all buffer and UI font-zoom bindings (`cmd-=`, `cmd--`, `cmd-0`, `ctrl-=`, …) are unbound so the configured font sizes stay fixed.
 - **Terminal**: `secondary-shift-c` outside the terminal spawns the `Open External Terminal` task (the collab panel's `cmd-shift-c` is unbound).
 - **Keymap editor**: `secondary-e` is unbound there so the sidebar shortcut works while editing keymaps.
