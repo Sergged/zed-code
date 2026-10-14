@@ -52,6 +52,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Added up/down buttons to each queued message so the queue can be reordered before sending.
 - Unified **View File** across the thread's edited-files list, `AgentDiffView`, `SoloDiffView` and the git panel to open the working file as a preview tab.
 
+## Bug Fixes
+
+- Fixed `apply_code_action` leaving the files it changed unsaved; like `rename_symbol`, it now saves the touched buffers so the edit reaches disk.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x

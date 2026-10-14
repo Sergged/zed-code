@@ -1,3 +1,4 @@
+use collections::HashSet;
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -123,6 +124,16 @@ impl AgentTool for ApplyCodeActionTool {
                     "Code action '{title}' was applied but made no changes.",
                 ));
             }
+
+            let buffers = transaction.0.keys().cloned().collect::<HashSet<_>>();
+            project
+                .update(cx, |project, cx| project.save_buffers(buffers, cx))
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Code action '{title}' was applied, but failed to save modified files: {e}"
+                    )
+                })?;
 
             let mut output = format!(
                 "Applied code action '{title}'. Modified {} file(s):\n",

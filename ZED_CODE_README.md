@@ -314,6 +314,10 @@ One pill style now serves all four renderers — the agent's, the shared git one
 
 The pill is exactly one code line tall, which is why the buttons inside it use `full_height()` instead of a fixed `ButtonSize`: with a 14px buffer font a line is `round(14 × 1.618) = 23px`, and `box_sizing` is `border-box`, so the 1px borders and the 4px padding leave less room than a 22px default button needs — it overflowed the pill instead of fitting. Because the pill's height tracks the font size, so does its label: the buttons set `label_line_height_style(LineHeightStyle::UiLabel)` to make the label's line height equal its font size, as the default (font size × golden ratio) is taller than the pill at every font size and would never fit. Both effects come from `rem_size`, which the editor already scales with `buffer_font_size`.
 
+### Agent tools save the files they change
+
+Tools that apply a workspace edit persist the buffers they touched, so the change reaches disk and not just the in-memory buffer. `rename_symbol` saves the renamed buffers, and `apply_code_action` now does the same after applying the action (it previously left the edits unsaved). `edit_file` / `write_file` already save through the edit session. `Project::save_buffers` itself is unchanged — only the tools that bypass the edit session were given the save call.
+
 ### Selections and diagnostics as thread context
 
 A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand.
