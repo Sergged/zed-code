@@ -175,6 +175,7 @@ pub enum HighlightKey {
     Editor,
     HighlightOnYank,
     HighlightsTreeView(usize),
+    HoverDiagnostic,
     HoverState,
     HoveredLinkState,
     InlineAssist,

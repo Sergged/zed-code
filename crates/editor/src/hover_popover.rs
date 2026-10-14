@@ -258,6 +258,7 @@ pub fn hide_hover(editor: &mut Editor, cx: &mut Context<Editor>) -> bool {
     editor.hover_state.closest_mouse_distance = None;
 
     editor.clear_background_highlights(HighlightKey::HoverState, cx);
+    editor.clear_background_highlights(HighlightKey::HoverDiagnostic, cx);
 
     if did_hide {
         cx.notify();
@@ -359,6 +360,7 @@ fn show_hover(
                     .min_by_key(|(_, entry)| entry.range.end - entry.range.start)
             };
 
+            let diagnostic_highlight: Option<(Range<Anchor>, Hsla)>;
             let diagnostic_popover = if let Some((buffer_id, local_diagnostic)) = local_diagnostic {
                 let group = snapshot
                     .buffer_snapshot()
@@ -422,6 +424,7 @@ fn show_hover(
                             .anchor_after(local_diagnostic.range.end),
                     local_diagnostic.diagnostic.to_owned(),
                 );
+                diagnostic_highlight = Some((local_diagnostic.range.clone(), background_color));
 
                 let scroll_handle = ScrollHandle::new();
 
@@ -437,6 +440,7 @@ fn show_hover(
                     _subscription: subscription,
                 })
             } else {
+                diagnostic_highlight = None;
                 None
             };
 
@@ -596,6 +600,17 @@ fn show_hover(
             }
 
             this.update_in(cx, |editor, window, cx| {
+                if let Some((range, color)) = diagnostic_highlight {
+                    editor.highlight_background(
+                        HighlightKey::HoverDiagnostic,
+                        std::slice::from_ref(&range),
+                        move |_, _| color,
+                        cx,
+                    );
+                } else {
+                    editor.clear_background_highlights(HighlightKey::HoverDiagnostic, cx);
+                }
+
                 if hover_highlights.is_empty() {
                     editor.clear_background_highlights(HighlightKey::HoverState, cx);
                 } else {
