@@ -20,6 +20,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Added a loading state to the model selector: while a provider is still fetching its model list the selector shows **Loading Models…** and is disabled, instead of showing an empty list. `LanguageModelProvider` gained an `is_loading_models` hook, overridden by opencode while its fetch task is in flight.
 - Gave the agent panel's conversation list the editor scrollbar style (a full-track thumb with square corners, no padding), so it reads as one surface with the editor.
 - Showed a thread waiting on a pending `ask_user` elicitation as waiting for confirmation (the warning triangle) instead of running.
+- Fell back to the thread's primary model for summarization and title generation while the registry has not resolved a summary model yet (a provider still loading its model list), instead of having no model.
 
 ## Zed Code 2026.10.11
 
