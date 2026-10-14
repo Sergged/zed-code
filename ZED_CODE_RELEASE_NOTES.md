@@ -46,6 +46,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 - Added search-on-type: the panel re-runs the search as you type (debounced 250 ms) when `editor.search.search_on_type` is enabled, while Enter still runs immediately. The previous results stay visible while a search is in flight, and the idle loader is now just the spinner (no `Searching` text).
 
+### Keymap and queued messages
+
+- Wrote the seed keymap's macOS-only editing bindings (add cursor above/below, duplicate line down, delete forward) with an explicit `cmd-*` instead of `secondary-*`, so they are inert on Windows and VS Code's `ctrl`-based defaults stay in place.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x

@@ -421,8 +421,8 @@
   {
     "context": "Editor",
     "bindings": {
-      "secondary-shift-up": "editor::AddSelectionAbove",
-      "secondary-shift-down": "editor::AddSelectionBelow",
+      "cmd-shift-up": "editor::AddSelectionAbove",
+      "cmd-shift-down": "editor::AddSelectionBelow",
     },
   },
   {
@@ -442,19 +442,19 @@
   {
     "context": "Editor",
     "bindings": {
-      "secondary-backspace": "editor::Delete",
+      "cmd-backspace": "editor::Delete",
     },
   },
   {
     "context": "Editor",
     "unbind": {
-      "secondary-backspace": "editor::DeleteToBeginningOfLine",
+      "cmd-backspace": "editor::DeleteToBeginningOfLine",
     },
   },
   {
     "context": "Editor",
     "bindings": {
-      "secondary-shift-d": "editor::DuplicateLineDown",
+      "cmd-shift-d": "editor::DuplicateLineDown",
     },
   },
   {

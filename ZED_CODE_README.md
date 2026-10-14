@@ -505,12 +505,14 @@ Seeded as the global `AGENTS.md` on first run — the always-on instructions the
 
 ### Keymap (`assets/keymaps/initial.json`, on top of `base_keymap: "VSCode"`)
 
+Mac-only bindings are written with an explicit `cmd-*` instead of `secondary-*`, so on Windows (where `cmd` does not exist) they are inert and VS Code's defaults stay in place. Bindings that should behave the same everywhere keep `secondary-*`.
+
 - **Panels and docks**: `secondary-e` toggles the workspace sidebar (Zed's `alt-cmd-j` unbound), `secondary-shift-b` toggles the right dock (Zed's `secondary-r` unbound), `secondary-shift-e` / `secondary-shift-g` / `secondary-shift-l` toggle the project panel / git panel / agent panel.
 - **Project panel**: `enter` opens the entry instead of renaming (`f2` also unbound, `space` no longer opens); rename moves to `secondary-r`.
 - **Tabs**: `secondary-w` closes the active item but never closes pinned tabs (`close_pinned: false`).
 - **Editor navigation**: `ctrl-left` / `ctrl-right` — beginning/end of line (soft-wrap aware, stops at indent); `cmd-left` / `cmd-right` — previous/next word (Zed's `alt-left` / `alt-right` unbound); `ctrl-shift-left` / `ctrl-shift-right` — select to line start/end; `cmd-shift-left` / `cmd-shift-right` — select by word.
-- **Lines and cursors**: `cmd-up` / `cmd-down` — move the current line up/down (Zed's paragraph navigation is moved to `ctrl-up` / `ctrl-down`); `secondary-shift-up` / `secondary-shift-down` — add a cursor above/below (Zed's `cmd-alt-up` / `cmd-alt-down` unbound); `secondary-shift-d` — duplicate line down.
-- **Editing**: `secondary-space` — show completions; `secondary-backspace` — delete forward (Zed's delete-to-line-start unbound); `secondary-r` in the editor — rename symbol; `secondary-shift-s` — save all (Save As unbound).
+- **Lines and cursors**: `cmd-up` / `cmd-down` — move the current line up/down (Zed's paragraph navigation is moved to `ctrl-up` / `ctrl-down`); `cmd-shift-up` / `cmd-shift-down` — add a cursor above/below (Zed's `cmd-alt-up` / `cmd-alt-down` unbound); `cmd-shift-d` — duplicate line down. These three are written with an explicit `cmd-*` (instead of `secondary-*`) so they stay macOS-only.
+- **Editing**: `secondary-space` — show completions; `cmd-backspace` — delete forward (Zed's delete-to-line-start unbound); `secondary-r` in the editor — rename symbol; `secondary-shift-s` — save all (Save As unbound).
 - **Diff hunks**: `secondary-"` toggles all diff hunks instead of only expanding them.
 - **Agent**: `secondary-l` — add the current selection to the agent thread (editor, ACP thread and terminal; Zed's `cmd->` unbound); `secondary-shift-l` — toggle the agent panel.
 - **Pane history and zoom**: `secondary--` / `secondary-=` — go back / forward (Zed's `ctrl--` / `ctrl-_` unbound); all buffer and UI font-zoom bindings (`cmd-=`, `cmd--`, `cmd-0`, `ctrl-=`, …) are unbound so the configured font sizes stay fixed.
