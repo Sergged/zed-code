@@ -18,6 +18,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 - Moved the default model to `go/deepseek-v4.1-flash` (thinking on, effort `low`); the `Write` and `Ask` profiles no longer pin their own model, so both inherit the default, and summary/compaction fall back to it as well. Favorites are now `go/deepseek-v4.1-flash`, `go/muse-spark-1.3-contributor` and `go/mimo-v2.6-flash`.
 - Added a loading state to the model selector: while a provider is still fetching its model list the selector shows **Loading Models…** and is disabled, instead of showing an empty list. `LanguageModelProvider` gained an `is_loading_models` hook, overridden by opencode while its fetch task is in flight.
+- Gave the agent panel's conversation list the editor scrollbar style (a full-track thumb with square corners, no padding), so it reads as one surface with the editor.
 
 ## Zed Code 2026.10.11
 

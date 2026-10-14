@@ -42,8 +42,8 @@ use language_model::{
 use notifications::status_toast::StatusToast;
 use settings::{update_settings_file, update_settings_file_with_completion};
 use ui::{
-    ButtonLike, CalloutBorderPosition, Checkbox, SpinnerLabel, SpinnerVariant, SplitButton,
-    SplitButtonStyle, Tab, ToggleState,
+    ButtonLike, CalloutBorderPosition, Checkbox, ScrollAxes, ScrollbarStyle, Scrollbars,
+    SpinnerLabel, SpinnerVariant, SplitButton, SplitButtonStyle, Tab, ToggleState,
 };
 use util::markdown::{source_position_from_fragment, split_local_url_fragment};
 use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
@@ -12253,7 +12253,13 @@ impl Render for ThreadView {
                     this.flex_1()
                         .size_full()
                         .child(self.render_entries(cx))
-                        .vertical_scrollbar_for(&list_state, window, cx)
+                        .custom_scrollbars(
+                            Scrollbars::new(ScrollAxes::Vertical)
+                                .style(ScrollbarStyle::Editor)
+                                .tracked_scroll_handle(&list_state),
+                            window,
+                            cx,
+                        )
                         .into_any()
                 } else {
                     this.into_any()
