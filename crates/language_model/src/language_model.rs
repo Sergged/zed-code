@@ -408,6 +408,13 @@ pub trait LanguageModelProvider: 'static {
     fn default_model(&self, cx: &App) -> Option<Arc<dyn LanguageModel>>;
     fn default_fast_model(&self, cx: &App) -> Option<Arc<dyn LanguageModel>>;
     fn provided_models(&self, cx: &App) -> Vec<Arc<dyn LanguageModel>>;
+
+    /// Whether this provider is still fetching its model list (e.g. an async
+    /// network request). Used by the model selector to show a loading state.
+    fn is_loading_models(&self, _cx: &App) -> bool {
+        false
+    }
+
     fn recommended_models(&self, _cx: &App) -> Vec<Arc<dyn LanguageModel>> {
         Vec::new()
     }

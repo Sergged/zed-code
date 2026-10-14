@@ -5,7 +5,7 @@ use crate::{
 };
 use fs::Fs;
 use gpui::{Entity, FocusHandle, SharedString};
-use language_model::IconOrSvg;
+use language_model::{IconOrSvg, LanguageModelRegistry};
 use picker::popover_menu::PickerPopoverMenu;
 use settings::update_settings_file;
 use std::sync::Arc;
@@ -88,10 +88,20 @@ impl AgentModelSelector {
 impl Render for AgentModelSelector {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = self.selector.read(cx).delegate.active_model(cx);
-        let model_name = model
-            .as_ref()
-            .map(|model| model.model.name().0)
-            .unwrap_or_else(|| SharedString::from("Select a Model"));
+        let loading = model.is_none()
+            && LanguageModelRegistry::global(cx)
+                .read(cx)
+                .visible_providers()
+                .iter()
+                .any(|provider| provider.is_loading_models(cx));
+        let model_name = if loading {
+            SharedString::from("Loading Models…")
+        } else {
+            model
+                .as_ref()
+                .map(|model| model.model.name().0)
+                .unwrap_or_else(|| SharedString::from("Select a Model"))
+        };
 
         let provider_icon = model.as_ref().map(|model| model.provider.icon());
         let color = if self.menu_handle.is_deployed() {
@@ -115,6 +125,7 @@ impl Render for AgentModelSelector {
             Button::new("active-model", model_name)
                 .label_size(LabelSize::Small)
                 .color(color)
+                .disabled(loading)
                 .when_some(provider_icon, |this, icon| {
                     this.start_icon(
                         match icon {

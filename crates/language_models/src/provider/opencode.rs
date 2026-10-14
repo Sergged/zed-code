@@ -315,6 +315,10 @@ impl LanguageModelProvider for OpenCodeLanguageModelProvider {
         None
     }
 
+    fn is_loading_models(&self, cx: &App) -> bool {
+        self.state.read(cx).fetch_models_task.is_some()
+    }
+
     fn provided_models(&self, cx: &App) -> Vec<Arc<dyn LanguageModel>> {
         let mut models: BTreeMap<String, (DiscoveredModel, OpenCodeSubscription)> =
             BTreeMap::default();
