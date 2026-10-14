@@ -38,6 +38,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Tightened the tab inset to `Base8`, keeping the icon/text/close insets equal.
 - Ordered the project-panel entry context menu as New File, New Folder, Rename, Trash, Delete, before the `Reveal in File Manager` group.
 
+### Tasks
+
+- Seeded `tasks.json` on first run like `settings.json`, `keymap.json` and `AGENTS.md`, instead of creating it only when the tasks file is first opened.
+
 ## Zed Code 2026.10.11
 
 Oct 11, 2026 · based on Zed v1.22.x

@@ -404,6 +404,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - Task templates support per-OS overrides (`osx` / `linux` / `windows`: `command`, `args`, `cwd`, `env`) and a `$ZED_ACTIVE_WORKTREE_ROOT` variable that follows the title-bar worktree switcher / git-panel repository selection.
 - The default tasks include **Open External Terminal**, which opens the OS terminal in the selected folder (`open -a Terminal` on macOS, `start cmd /k` on Windows).
+- `tasks.json` is seeded on first run like `settings.json`, `keymap.json` and `AGENTS.md` (see the seeded-files list below), instead of only being created when the tasks file is first opened.
 
 ### Migrations
 
@@ -415,6 +416,7 @@ Unlike "Settings added in this branch" above (options this branch adds to Zed it
 
 - `assets/settings/initial_user_settings.json` — seeded as the user settings;
 - `assets/keymaps/initial.json` — seeded as the initial user keymap;
+- `assets/settings/initial_tasks.json` — seeded as the global `tasks.json`;
 - `assets/settings/initial_agents_md.md` — seeded as the global `AGENTS.md` (agent rules).
 
 A fresh Zed Code install therefore starts with a VS Code-like setup (`"base_keymap": "VSCode"`) and a ready-made agent rules file, while keeping Zed's architecture and defaults underneath.
@@ -427,7 +429,7 @@ Seeding writes into Zed's own config directory: this branch keeps `paths::APP_NA
 
 Two consequences:
 
-- Running a build of this branch now **creates** `~/.config/zed/settings.json` and `keymap.json` on first launch when they do not exist yet. Those files carry this branch's recommended values — `"base_keymap": "VSCode"`, the 20/16 font sizes, the Ayu Dark theme, `"auto_update": false`, the `telemetry` block — and an official Zed on the same machine will apply them too. Before the branch started seeding, a dev build left those files absent, so nothing leaked across.
+- Running a build of this branch now **creates** `~/.config/zed/settings.json`, `keymap.json` and `tasks.json` on first launch when they do not exist yet. Those files carry this branch's recommended values — `"base_keymap": "VSCode"`, the 20/16 font sizes, the Ayu Dark theme, `"auto_update": false`, the `telemetry` block — and an official Zed on the same machine will apply them too. Before the branch started seeding, a dev build left those files absent, so nothing leaked across.
 - `AGENTS.md` is new for this branch, but it is seeded into the same shared directory for the same reason.
 
 `crates/paths/src/paths.rs` already states the intended remedy ("Forks should change this to avoid colliding with Zed's user data"): giving the fork its own `APP_NAME` moves the config, data, cache and state directories away from an official install. That is a separate decision, because it also relocates an existing user's settings.

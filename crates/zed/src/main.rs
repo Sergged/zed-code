@@ -498,6 +498,7 @@ fn main() {
         zlog_settings::init(cx);
         zed::seed_user_settings_file(fs.clone(), cx);
         zed::seed_user_keymap_file(fs.clone(), cx);
+        zed::seed_user_tasks_file(fs.clone(), cx);
         zed::watch_settings_files(fs.clone(), cx);
         handle_keymap_file_changes(user_keymap_file_rx, user_keymap_watcher, cx);
 

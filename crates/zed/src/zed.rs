@@ -2208,6 +2208,18 @@ pub fn seed_user_keymap_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
     );
 }
 
+/// Creates `tasks.json` from the bundled initial content when it is missing.
+/// An existing file is never overwritten, so user edits are preserved.
+pub fn seed_user_tasks_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
+    seed_file_if_missing(
+        fs,
+        paths::tasks_file().as_path(),
+        settings::initial_tasks_content(),
+        "user tasks",
+        cx,
+    );
+}
+
 /// Upper bound on how long startup waits for a missing config file to be
 /// written. Seeding a few small files is sub-millisecond on a local disk, so
 /// approaching this means the config directory lives on a stalled mount.
@@ -5682,12 +5694,13 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_seed_user_settings_and_keymap(cx: &mut TestAppContext) {
+    async fn test_seed_user_settings_keymap_and_tasks(cx: &mut TestAppContext) {
         let fs = FakeFs::new(cx.background_executor.clone());
 
         cx.update(|cx| {
             seed_user_settings_file(fs.clone(), cx);
             seed_user_keymap_file(fs.clone(), cx);
+            seed_user_tasks_file(fs.clone(), cx);
         });
 
         assert_eq!(
@@ -5697,6 +5710,10 @@ mod tests {
         assert_eq!(
             fs.load(paths::keymap_file()).await.unwrap(),
             settings::initial_keymap_content().as_ref(),
+        );
+        assert_eq!(
+            fs.load(paths::tasks_file()).await.unwrap(),
+            settings::initial_tasks_content().as_ref(),
         );
     }
 
