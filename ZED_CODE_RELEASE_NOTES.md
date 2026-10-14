@@ -55,6 +55,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 ## Bug Fixes
 
 - Fixed `apply_code_action` leaving the files it changed unsaved; like `rename_symbol`, it now saves the touched buffers so the edit reaches disk.
+- Fixed the empty stage/restore pill that `DefaultDiffHunkRenderer` drew when `git.show_stage_restore_buttons: false`; every renderer now returns early, and the pill's button gap is `0p5`.
 
 ## Zed Code 2026.10.11
 

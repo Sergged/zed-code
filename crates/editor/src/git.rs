@@ -3052,7 +3052,7 @@ pub fn diff_hunk_controls_pill(line_height: Pixels, cx: &mut App) -> Div {
     h_flex()
         .h(line_height)
         .mr_1()
-        .gap_1()
+        .gap_0p5()
         .px_1()
         .py_1()
         .border_x_1()
@@ -3084,6 +3084,9 @@ pub fn render_diff_hunk_controls(
     let show_stage_restore = ProjectSettings::get_global(cx)
         .git
         .show_stage_restore_buttons;
+    if !show_stage_restore {
+        return gpui::Empty.into_any_element();
+    }
     let supports_staging = operations
         .as_ref()
         .is_some_and(|operations| operations.supports_staging());
@@ -3095,7 +3098,7 @@ pub fn render_diff_hunk_controls(
         .is_some_and(|operations| operations.supports_restore());
 
     diff_hunk_controls_pill(line_height, cx)
-        .gap_1()
+        .gap_0p5()
         .when(
             show_stage_restore
                 && ((status.has_secondary_hunk() && supports_staging)
