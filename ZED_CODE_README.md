@@ -306,6 +306,8 @@ No other toolbar duplicates those controls: `SoloDiffStyleToolbar` and `FileDiff
 
 Like `SoloDiffView`, the view returns `None` from `Item::act_as_type` for `SplittableEditor`. That keeps the buffer search bar in its own toolbar row below the buttons — both toolbars stay visible at once instead of the search displacing the review actions — and stops the search bar from re-rendering the split/unified and fold controls the toolbar already owns. Returning `Some` there is what puts the search in `PrimaryLeft` and produces the duplicate controls.
 
+The view enables git-diff scrollbar markers on its content editor (`rhs_editor`) whenever the full file is shown, matching `SoloDiffView`; the flag is refreshed both on construction and when Show Full File is toggled.
+
 The Keep/Reject pill for a diff hunk renders **above** the hunk (one line up, clamped to the sticky header) instead of covering its first row. This lives in the shared diff-hunk layout, so it applies to every diff hunk renderer, including the git views.
 
 One pill style now serves all four renderers — the agent's, the shared git one, and the staged/unstaged ones — via `diff_hunk_controls_pill` in `crates/editor/src/git.rs`: symmetric `px_1` / `py_1` padding, a border on all four sides with matching `rounded_t_md` / `rounded_b_md` corners, the `border` color, and `shadow_md` only on opaque windows (a drop shadow renders as a dark halo on transparent ones). Previously the git renderers had padding at the bottom only, a bottom border only, `_lg` bottom corners, the `border_variant` color, and an unconditional shadow, so the same control looked different in git and agent views.

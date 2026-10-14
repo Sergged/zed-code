@@ -129,6 +129,7 @@ impl AgentDiffView {
             // Open on the first hunk rather than the top of the file, matching
             // the git panel's `SoloDiffView`.
             editor.rhs_editor().update(cx, |editor, cx| {
+                editor.set_allow_git_diff_scrollbar_markers(showing_full_file, cx);
                 let snapshot = editor.snapshot(window, cx);
                 editor.go_to_hunk_before_or_after_position(
                     &snapshot,
@@ -265,6 +266,9 @@ impl AgentDiffView {
                 self.diff.clone(),
                 cx,
             );
+            editor.rhs_editor().update(cx, |editor, cx| {
+                editor.set_allow_git_diff_scrollbar_markers(showing_full_file, cx);
+            });
         });
 
         self.showing_full_file = showing_full_file;
