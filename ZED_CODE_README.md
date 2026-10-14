@@ -474,6 +474,7 @@ Two consequences:
 - `favorite_models`: `go/deepseek-v4.1-flash` (effort `low`), `go/muse-spark-1.3-contributor` (effort `xhigh`), `go/mimo-v2.6-flash`.
 - While a provider is still fetching its model list (an async request, as with opencode), the model selector shows **Loading Models…** and is disabled instead of offering an empty list; `LanguageModelProvider` gained an `is_loading_models` hook (default `false`, overridden by opencode while its fetch task is in flight).
 - The agent panel's conversation list uses the editor scrollbar style (`ScrollbarStyle::Editor`: a full-track thumb with square corners and no padding), i.e. the same 20px track as the editor.
+- A thread waiting on a pending `ask_user` elicitation is shown as waiting for confirmation (the warning triangle), not as running — the status now accounts for pending elicitations, not only pending tool calls.
 - Tool permissions: `write_file` and `edit_file` always allowed; `terminal` auto-allowed for a read-only allowlist (`grep`, `head`, `echo`, `tail`, `ls`, `date`, `wc`, `cat`, `sort`, `uniq`, `sed`, `du`, `pgrep`, `stat`, `find`, `strings`); `fetch` allowed for `skills.sh`, `raw.githubusercontent.com`, `api.github.com`; `search_web` allowed.
 - Sandbox: `allow_unsandboxed: true`, `network_hosts: ["*.npmjs.org"]`.
 - Layout and behavior: `agent.dock` / `threads_sidebar.position: "right"`, default width 420, `message_editor_min_lines: 2`, `auto_compact.threshold: "90%"`, `thinking_display: "auto"`, edit/terminal cards collapsed, single-file review off.
