@@ -359,6 +359,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Clicking a row's checkbox toggles it without selecting the row or starting a file drag, and leaves the row hovered so its hover-only controls stay visible.
 - Following the editor also scrolls the panel to the newly focused row, and expands collapsed folders in tree view so the row is visible.
 - Each section header has a context menu that stages, unstages or discards every file in that section.
+- Following the editor is edge-triggered: a status refresh that does not actually move focus (for example staging a file) no longer re-reveals the row.
 - Renamed files get their own status instead of showing as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left on for `git status` (matching VS Code), and the original path travels through the status pipeline to the panel for both local and remote projects.
 
 ### Search panel

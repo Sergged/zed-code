@@ -1189,6 +1189,10 @@ pub struct GitPanel {
     scroll_handle: UniformListScrollHandle,
     max_width_item_index: Option<usize>,
     selected_entry: Option<usize>,
+    /// The project path the selection last followed, so a workspace
+    /// `ActiveItemChanged` that did not actually move focus (a diff or title
+    /// refresh triggered by staging) does not re-reveal the row.
+    last_focused_path: Option<ProjectPath>,
     marked_entries: HashSet<RepoPath>,
     marked_directories: HashSet<TreeKey>,
     mark_range_gesture: Option<MarkRangeGesture>,
@@ -1519,6 +1523,7 @@ impl GitPanel {
                 scroll_handle,
                 max_width_item_index: None,
                 selected_entry: None,
+                last_focused_path: None,
                 marked_entries: HashSet::default(),
                 marked_directories: HashSet::default(),
                 mark_range_gesture: None,
@@ -8856,9 +8861,17 @@ impl GitPanel {
     /// lands outside the list — a closed tab, a buffer without a file, another
     /// repository — clears the selection instead of leaving a stale row lit.
     fn sync_selection_to_focused_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focused_in_list = self
-            .focused_project_path(cx)
-            .is_some_and(|path| self.select_entry_by_path_inner(path, window, cx));
+        let focused_path = self.focused_project_path(cx);
+        // `ActiveItemChanged` also fires for a diff or title refresh (e.g. after
+        // staging), which does not move focus. Only follow when the focused path
+        // actually changed, so staging no longer re-reveals the row.
+        if focused_path == self.last_focused_path {
+            return;
+        }
+        self.last_focused_path = focused_path.clone();
+
+        let focused_in_list =
+            focused_path.is_some_and(|path| self.select_entry_by_path_inner(path, window, cx));
 
         if !focused_in_list && self.selected_entry.take().is_some() {
             cx.notify();
