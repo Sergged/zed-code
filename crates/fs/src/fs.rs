@@ -2547,6 +2547,19 @@ impl FakeFs {
             state.index_contents.clear();
             state.head_contents.clear();
             state.unmerged_paths.clear();
+            let workdir_repo_paths = workdir_contents
+                .iter()
+                .filter_map(|(path, _)| {
+                    use util::{paths::PathStyle, rel_path::RelPath};
+                    let rel = RelPath::new(
+                        path.strip_prefix(&workdir_path).ok()?,
+                        PathStyle::local(),
+                    )
+                    .ok()?;
+                    Some(RepoPath::from_rel_path(&rel).as_unix_str().to_string())
+                })
+                .collect::<Vec<_>>();
+
             for (path, content) in workdir_contents {
                 use util::{paths::PathStyle, rel_path::RelPath};
 
@@ -2622,6 +2635,34 @@ impl FakeFs {
                     state
                         .head_contents
                         .insert(repo_path.clone(), content.into_bytes());
+                }
+            }
+
+            // Statuses for paths absent from the working directory (for example a
+            // file deleted from the worktree but still tracked in the index).
+            // There is no workdir entry to iterate, so write the head/index
+            // content directly, which makes `status()` report worktree-Deleted.
+            for (status_path, status) in statuses {
+                if workdir_repo_paths.iter().any(|path| path == status_path) {
+                    continue;
+                }
+                let Ok(rel) = util::rel_path::RelPath::from_unix_str(status_path) else {
+                    continue;
+                };
+                let repo_path = RepoPath::from_rel_path(&rel);
+                match status {
+                    FileStatus::Tracked(TrackedStatus {
+                        index_status,
+                        worktree_status,
+                    }) if *worktree_status == StatusCode::Deleted => {
+                        if !matches!(index_status, StatusCode::Added | StatusCode::Deleted) {
+                            state.index_contents.insert(repo_path.clone(), Vec::new());
+                            state.head_contents.insert(repo_path, Vec::new());
+                        }
+                    }
+                    // Other statuses describe a file that must exist on disk, so
+                    // there is nothing to set for an absent path.
+                    _ => {}
                 }
             }
         }).unwrap();

@@ -54,6 +54,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 ### Git
 
+- Added a context menu to each git-panel section header, so a whole section (staged, unstaged or conflicted) can be staged, unstaged or discarded at once.
 - Showed renamed files with a dedicated status instead of as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left enabled for `git status` (as in VS Code), and the original path is carried through the status pipeline to the panel for local and remote projects.
 
 ## Bug Fixes

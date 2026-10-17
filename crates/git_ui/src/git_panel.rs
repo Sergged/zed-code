@@ -2913,6 +2913,27 @@ impl GitPanel {
             return;
         }
 
+        // A section selection discards or trashes every changed entry it contains.
+        let selected_section = match self.selected_entry.and_then(|ix| self.entries.get(ix)) {
+            Some(GitListEntry::Header(header)) => Some(header.header),
+            _ => None,
+        };
+        if let Some(section) = selected_section {
+            let section_entries = self.status_entries_in_section(section);
+            if section_entries.is_empty() {
+                return;
+            }
+            let all_created = section_entries
+                .iter()
+                .all(|entry| entry.status.is_created());
+            return self.revert_entries(
+                section_entries,
+                action.skip_prompt || all_created,
+                window,
+                cx,
+            );
+        }
+
         // A directory selection discards or trashes every changed entry it contains.
         if let Some(directory_entries) = self.selected_directory_descendants() {
             if directory_entries.is_empty() {
@@ -6059,6 +6080,14 @@ impl GitPanel {
         })
     }
 
+    /// The changed files that belong to `section` in the current projection.
+    fn status_entries_in_section(&self, section: Section) -> Vec<GitStatusEntry> {
+        (0..self.entries.len())
+            .filter(|&ix| self.section_for_entry_index(ix) == Some(section))
+            .filter_map(|ix| self.entries[ix].status_entry().cloned())
+            .collect()
+    }
+
     fn visible_flat_entry_indices(&self) -> Vec<usize> {
         let mut section = None;
         self.entries
@@ -8331,6 +8360,7 @@ impl GitPanel {
         let section = header.header;
         let weak = cx.weak_entity();
         let checkbox_weak = weak.clone();
+        let context_weak = weak.clone();
         let stage_intent = StageIntent::for_section(section);
         let toggle_state = stage_intent.checkbox_state(|| self.header_state(header.header));
         let is_collapsed = self.collapsed_sections.contains(&section);
@@ -8421,6 +8451,22 @@ impl GitPanel {
                     this.toggle_section_collapsed(section, window, cx);
                 })
                 .ok();
+            })
+            .on_mouse_down(MouseButton::Right, {
+                move |event: &MouseDownEvent, window, cx| {
+                    // why isn't this happening automatically? we are passing MouseButton::Right to `on_mouse_down`?
+                    if event.button != MouseButton::Right {
+                        return;
+                    }
+
+                    let Some(this) = context_weak.upgrade() else {
+                        return;
+                    };
+                    this.update(cx, |this, cx| {
+                        this.deploy_section_context_menu(event.position, section, ix, window, cx);
+                    });
+                    cx.stop_propagation();
+                }
             })
             .into_any_element()
     }
@@ -8609,6 +8655,85 @@ impl GitPanel {
             (stage_title, restore_title)
         };
         let is_bulk = bulk_entries.len() > 1;
+        let project = self.project.read(cx);
+        let reveal_label = ui::utils::reveal_in_file_manager_label(project.is_remote());
+        let can_reveal = project.is_local() || project.is_via_wsl_with_host_interop(cx);
+
+        let context_menu = ContextMenu::build(window, cx, |context_menu, _, _| {
+            context_menu
+                .context(self.focus_handle.clone())
+                .action(stage_title, ToggleStaged.boxed_clone())
+                .action(restore_title, git::RestoreFile::default().boxed_clone())
+                .separator()
+                .when(can_reveal, |context_menu| {
+                    context_menu.action(reveal_label, Box::new(RevealInFileManager))
+                })
+                .action("Copy Path", CopyPath.boxed_clone())
+                .action("Copy Relative Path", CopyRelativePath.boxed_clone())
+                .separator()
+                .action_disabled_when(
+                    !has_untracked || is_bulk,
+                    "Add to .gitignore",
+                    git::AddToGitignore.boxed_clone(),
+                )
+                .action_disabled_when(
+                    !has_untracked || is_bulk,
+                    "Add to .git/info/exclude",
+                    git::AddToGitInfoExclude.boxed_clone(),
+                )
+        });
+        self.set_context_menu(context_menu, position, Some(ix), window, cx);
+    }
+
+    fn deploy_section_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        section: Section,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_marks();
+        self.selected_entry = Some(ix);
+
+        let section_entries = self.status_entries_in_section(section);
+        let count = section_entries.len();
+        let has_untracked = section_entries
+            .iter()
+            .any(|entry| entry.status.is_created());
+        let all_created = count > 0
+            && section_entries
+                .iter()
+                .all(|entry| entry.status.is_created());
+        let all_staged = count > 0
+            && section_entries
+                .iter()
+                .all(|entry| entry.status.staging().is_fully_staged());
+
+        let stage_title = if count > 1 {
+            if all_staged {
+                format!("Unstage {count} Files")
+            } else {
+                format!("Stage {count} Files")
+            }
+        } else if all_staged {
+            "Unstage All".to_string()
+        } else {
+            "Stage All".to_string()
+        };
+        let restore_title = if count > 1 {
+            if all_created {
+                format!("Trash {count} Files")
+            } else {
+                format!("Discard Changes to {count} Files")
+            }
+        } else if all_created {
+            "Trash Files".to_string()
+        } else {
+            "Discard Changes".to_string()
+        };
+
+        let is_bulk = count > 1;
         let project = self.project.read(cx);
         let reveal_label = ui::utils::reveal_in_file_manager_label(project.is_remote());
         let can_reveal = project.is_local() || project.is_via_wsl_with_host_interop(cx);
@@ -13679,6 +13804,250 @@ mod tests {
                 .expect("SoloDiffView should be active");
             assert_eq!(diff.entity_id(), staged_view);
             assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 2);
+        });
+    }
+
+    /// Table-driven coverage of the staged/unstaged projection: every file state
+    /// must land in exactly the sections it belongs to. This is the early
+    /// detector for the section logic the solo-diff base is derived from, and
+    /// for the stage/unstage mapping, without opening a diff per case.
+    #[gpui::test]
+    async fn test_staging_section_membership_matrix(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "staged_only.rs": "content\n",
+                "unstaged_only.rs": "content\n",
+                "partial.rs": "content\n",
+                "added_staged.rs": "content\n",
+                "untracked.rs": "content\n",
+                "deleted_index.rs": "content\n",
+                "conflict.rs": "content\n",
+            }),
+        )
+        .await;
+
+        fs.set_status_for_repo(
+            path!("/project/.git").as_ref(),
+            &[
+                (
+                    "staged_only.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Modified,
+                        worktree_status: StatusCode::Unmodified,
+                    }
+                    .into(),
+                ),
+                (
+                    "unstaged_only.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Unmodified,
+                        worktree_status: StatusCode::Modified,
+                    }
+                    .into(),
+                ),
+                (
+                    "partial.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Modified,
+                        worktree_status: StatusCode::Modified,
+                    }
+                    .into(),
+                ),
+                (
+                    "added_staged.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Added,
+                        worktree_status: StatusCode::Unmodified,
+                    }
+                    .into(),
+                ),
+                ("untracked.rs", FileStatus::Untracked),
+                (
+                    "deleted_index.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Deleted,
+                        worktree_status: StatusCode::Unmodified,
+                    }
+                    .into(),
+                ),
+                (
+                    "deleted_worktree.rs",
+                    TrackedStatus {
+                        index_status: StatusCode::Unmodified,
+                        worktree_status: StatusCode::Deleted,
+                    }
+                    .into(),
+                ),
+                (
+                    "conflict.rs",
+                    git::status::UnmergedStatus {
+                        first_head: git::status::UnmergedStatusCode::Updated,
+                        second_head: git::status::UnmergedStatusCode::Updated,
+                    }
+                    .into(),
+                ),
+            ],
+        );
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Staging);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(&mut cx, GitPanel::new);
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        // (file, in Staged, in Unstaged, in Conflict)
+        let cases: &[(&str, bool, bool, bool)] = &[
+            ("staged_only.rs", true, false, false),
+            ("unstaged_only.rs", false, true, false),
+            ("partial.rs", true, true, false),
+            ("added_staged.rs", true, false, false),
+            ("untracked.rs", false, true, false),
+            ("deleted_index.rs", true, false, false),
+            ("deleted_worktree.rs", false, true, false),
+            ("conflict.rs", false, false, true),
+        ];
+
+        panel.read_with(&cx, |panel, _| {
+            for (file, in_staged, in_unstaged, in_conflict) in cases {
+                let path = repo_path(file);
+                assert_eq!(
+                    panel
+                        .entry_by_path_in_section(&path, Section::Staged)
+                        .is_some(),
+                    *in_staged,
+                    "{file}: Staged section membership"
+                );
+                assert_eq!(
+                    panel
+                        .entry_by_path_in_section(&path, Section::Unstaged)
+                        .is_some(),
+                    *in_unstaged,
+                    "{file}: Unstaged section membership"
+                );
+                assert_eq!(
+                    panel
+                        .entry_by_path_in_section(&path, Section::Conflict)
+                        .is_some(),
+                    *in_conflict,
+                    "{file}: Conflict section membership"
+                );
+            }
+        });
+    }
+
+    /// A staged rename is reported as a single `R` entry whose original path is
+    /// carried through to the panel, so the row shows the new name and an
+    /// `old → new` tooltip instead of a separate add/delete pair.
+    #[gpui::test]
+    async fn test_staged_rename_entry_carries_original_path(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "new.rs": "content\n",
+            }),
+        )
+        .await;
+
+        let dot_git = path!("/project/.git");
+        fs.set_head_for_repo(
+            dot_git.as_ref(),
+            &[("old.rs", "content\n".to_string())],
+            "sha",
+        );
+        fs.set_index_for_repo(dot_git.as_ref(), &[("new.rs", "content\n".to_string())]);
+        fs.set_renames_for_repo(dot_git.as_ref(), &[("new.rs", "old.rs")]);
+
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+
+        cx.update(|_window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Staging);
+                })
+            });
+        });
+
+        cx.read(|cx| {
+            project
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .unwrap()
+                .read(cx)
+                .as_local()
+                .unwrap()
+                .scan_complete()
+        })
+        .await;
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(&mut cx, GitPanel::new);
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        panel.read_with(&cx, |panel, _| {
+            let new_path = repo_path("new.rs");
+            let old_path = repo_path("old.rs");
+
+            let index = panel
+                .entry_by_path_in_section(&new_path, Section::Staged)
+                .expect("the staged rename should be in the Staged section");
+            let entry = panel.entries[index].status_entry().expect("a status entry");
+            assert!(entry.status.is_renamed());
+            assert_eq!(entry.old_repo_path.as_ref(), Some(&old_path));
+
+            assert!(
+                panel
+                    .entry_by_path_in_section(&old_path, Section::Staged)
+                    .is_none()
+                    && panel
+                        .entry_by_path_in_section(&old_path, Section::Unstaged)
+                        .is_none(),
+                "the original path must not appear as its own entry"
+            );
         });
     }
 
