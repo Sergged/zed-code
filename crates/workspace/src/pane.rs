@@ -4375,12 +4375,9 @@ impl Pane {
 
 fn default_render_tab_bar_buttons(
     pane: &mut Pane,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<Pane>,
 ) -> (Option<AnyElement>, Option<AnyElement>) {
-    if !pane.has_focus(window, cx) && !pane.context_menu_focused(window, cx) {
-        return (None, None);
-    }
     let (can_clone, can_split_move) = match pane.active_item() {
         Some(active_item) if active_item.can_split(cx) => (true, false),
         Some(_) => (false, pane.items_len() > 1),
@@ -4400,10 +4397,36 @@ fn default_render_tab_bar_buttons(
                 .anchor(Anchor::TopRight)
                 .with_handle(pane.new_item_context_menu_handle.clone())
                 .menu(move |window, cx| {
+                    let split_mode = if can_split_move {
+                        SplitMode::MovePane
+                    } else {
+                        SplitMode::ClonePane
+                    };
+                    let can_split = can_clone || can_split_move;
                     Some(ContextMenu::build(window, cx, |menu, _, _| {
                         menu.action("New File", NewFile.boxed_clone())
                             .action("Open File", ToggleFileFinder::default().boxed_clone())
                             .separator()
+                            .action_disabled_when(
+                                !can_split,
+                                "Split Right",
+                                SplitRight { mode: split_mode }.boxed_clone(),
+                            )
+                            .action_disabled_when(
+                                !can_split,
+                                "Split Left",
+                                SplitLeft { mode: split_mode }.boxed_clone(),
+                            )
+                            .action_disabled_when(
+                                !can_split,
+                                "Split Up",
+                                SplitUp { mode: split_mode }.boxed_clone(),
+                            )
+                            .action_disabled_when(
+                                !can_split,
+                                "Split Down",
+                                SplitDown { mode: split_mode }.boxed_clone(),
+                            )
                             .action("Search Project", DeploySearch::default().boxed_clone())
                             .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
                             .separator()
@@ -4413,34 +4436,6 @@ fn default_render_tab_bar_buttons(
                                 NewCenterTerminal::default().boxed_clone(),
                             )
                     }))
-                }),
-        )
-        .child(
-            PopoverMenu::new("pane-tab-bar-split")
-                .trigger_with_tooltip(
-                    IconButton::new("split", IconName::Split)
-                        .icon_size(IconSize::Small)
-                        .disabled(!can_clone && !can_split_move),
-                    Tooltip::text("Split Pane"),
-                )
-                .anchor(Anchor::TopRight)
-                .with_handle(pane.split_item_context_menu_handle.clone())
-                .menu(move |window, cx| {
-                    ContextMenu::build(window, cx, |menu, _, _| {
-                        let mode = SplitMode::MovePane;
-                        if can_split_move {
-                            menu.action("Split Right", SplitRight { mode }.boxed_clone())
-                                .action("Split Left", SplitLeft { mode }.boxed_clone())
-                                .action("Split Up", SplitUp { mode }.boxed_clone())
-                                .action("Split Down", SplitDown { mode }.boxed_clone())
-                        } else {
-                            menu.action("Split Right", SplitRight::default().boxed_clone())
-                                .action("Split Left", SplitLeft::default().boxed_clone())
-                                .action("Split Up", SplitUp::default().boxed_clone())
-                                .action("Split Down", SplitDown::default().boxed_clone())
-                        }
-                    })
-                    .into()
                 }),
         )
         .child({
@@ -8572,7 +8567,9 @@ mod tests {
             cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
         let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
 
-        cx.simulate_resize(size(px(300.), px(300.)));
+        // Narrow enough that the tabs overflow even without the split button now
+        // that the tab bar's trailing buttons are leaner.
+        cx.simulate_resize(size(px(200.), px(300.)));
 
         add_labeled_item(&pane, "untitled", false, cx);
         add_labeled_item(&pane, "untitled", false, cx);
