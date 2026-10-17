@@ -421,7 +421,7 @@ The migration banner lists exactly what a settings or keymap migration would cha
 Unlike "Settings added in this branch" above (options this branch adds to Zed itself), the files below are the branch's **recommended starting setup**. They are seeded on first run:
 
 - `assets/settings/initial_user_settings.json` — seeded as the user settings;
-- `assets/keymaps/initial.json` — seeded as the initial user keymap;
+- `assets/keymaps/initial-macos.json` / `assets/keymaps/initial-windows.json` — seeded as the initial user keymap (the macOS file on macOS, the Windows/Linux one elsewhere);
 - `assets/settings/initial_tasks.json` — seeded as the global `tasks.json`;
 - `assets/settings/initial_agents_md.md` — seeded as the global `AGENTS.md` (agent rules).
 
@@ -508,15 +508,15 @@ Seeded as the global `AGENTS.md` on first run — the always-on instructions the
 - **Tooling** — prefer file tools over the terminal, and the diagnostics tool over long compiler/linter runs; a gitignored file (such as one under `node_modules`) is not an exception, since the file tools scan it on demand, so never fall back to `cat`/`ls` for it; keep mermaid simple (it often fails to render).
 - **Documentation integrity** — never delete comments unrelated to the change.
 
-### Keymap (`assets/keymaps/initial.json`, on top of `base_keymap: "VSCode"`)
+### Keymap (`assets/keymaps/initial-macos.json` / `initial-windows.json`, on top of `base_keymap: "VSCode"`)
 
-Mac-only bindings are written with an explicit `cmd-*` instead of `secondary-*`, so on Windows (where `cmd` does not exist) they are inert and VS Code's defaults stay in place. Bindings that should behave the same everywhere keep `secondary-*`.
+The seeded keymap is per-OS: macOS gets `initial-macos.json` (the `cmd`-based bindings below), Windows/Linux get `initial-windows.json`, which keeps VS Code's `ctrl`-based navigation (`ctrl-left`/`ctrl-right` move by word, `ctrl-shift-up`/`ctrl-alt-up` add cursors, `ctrl-backspace` deletes a word) and only carries the bindings that are the same everywhere.
 
 - **Panels and docks**: `secondary-e` toggles the workspace sidebar (Zed's `alt-cmd-j` unbound), `secondary-shift-b` toggles the right dock (Zed's `secondary-r` unbound), `secondary-shift-e` / `secondary-shift-g` / `secondary-shift-l` toggle the project panel / git panel / agent panel.
 - **Project panel**: `enter` opens the entry instead of renaming (`f2` also unbound, `space` no longer opens); rename moves to `secondary-r`.
 - **Tabs**: `secondary-w` closes the active item but never closes pinned tabs (`close_pinned: false`).
-- **Editor navigation**: `ctrl-left` / `ctrl-right` — beginning/end of line (soft-wrap aware, stops at indent); `cmd-left` / `cmd-right` — previous/next word (Zed's `alt-left` / `alt-right` unbound); `ctrl-shift-left` / `ctrl-shift-right` — select to line start/end; `cmd-shift-left` / `cmd-shift-right` — select by word.
-- **Lines and cursors**: `cmd-up` / `cmd-down` — move the current line up/down (Zed's paragraph navigation is moved to `ctrl-up` / `ctrl-down`); `cmd-shift-up` / `cmd-shift-down` — add a cursor above/below (Zed's `cmd-alt-up` / `cmd-alt-down` unbound); `cmd-shift-d` — duplicate line down. These three are written with an explicit `cmd-*` (instead of `secondary-*`) so they stay macOS-only.
+- **Editor navigation (macOS only)**: `ctrl-left` / `ctrl-right` — beginning/end of line (soft-wrap aware, stops at indent); `cmd-left` / `cmd-right` — previous/next word (Zed's `alt-left` / `alt-right` unbound); `ctrl-shift-left` / `ctrl-shift-right` — select to line start/end; `cmd-shift-left` / `cmd-shift-right` — select by word. On Windows the `ctrl-*` line bindings are absent, so VS Code's word navigation stays.
+- **Lines and cursors**: `cmd-up` / `cmd-down` — move the current line up/down (Zed's paragraph navigation is moved to `ctrl-up` / `ctrl-down`); `cmd-shift-up` / `cmd-shift-down` — add a cursor above/below (Zed's `cmd-alt-up` / `cmd-alt-down` unbound); `cmd-shift-d` — duplicate line down. These use explicit `cmd-*` so they are macOS-only.
 - **Editing**: `secondary-space` — show completions; `cmd-backspace` — delete forward (Zed's delete-to-line-start unbound); `secondary-r` in the editor — rename symbol; `secondary-shift-s` — save all (Save As unbound).
 - **Diff hunks**: `secondary-"` toggles all diff hunks instead of only expanding them.
 - **Agent**: `secondary-l` — add the current selection to the agent thread (editor, ACP thread and terminal; Zed's `cmd->` unbound); `secondary-shift-l` — toggle the agent panel; in the agent thread's message editor `secondary-enter` is explicitly unbound from `agent::ChatWithFollow`, so it stays `agent::AllowOnce`.

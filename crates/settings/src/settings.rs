@@ -183,8 +183,16 @@ pub fn initial_project_settings_content() -> Cow<'static, str> {
 }
 
 pub fn initial_keymap_content() -> Cow<'static, str> {
-    asset_str::<SettingsAssets>("keymaps/initial.json")
+    asset_str::<SettingsAssets>(INITIAL_KEYMAP_PATH)
 }
+
+// The seeded user keymap: macOS keeps its `cmd`-based bindings, while Windows
+// and Linux keep VS Code's `ctrl`-based navigation, so the two differ.
+#[cfg(target_os = "macos")]
+pub const INITIAL_KEYMAP_PATH: &str = "keymaps/initial-macos.json";
+
+#[cfg(not(target_os = "macos"))]
+pub const INITIAL_KEYMAP_PATH: &str = "keymaps/initial-windows.json";
 
 pub fn initial_tasks_content() -> Cow<'static, str> {
     asset_str::<SettingsAssets>("settings/initial_tasks.json")

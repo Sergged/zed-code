@@ -1,0 +1,273 @@
+// Zed keymap (Windows / Linux)
+//
+// For information on binding keys, see the Zed
+// documentation: https://zed.dev/docs/key-bindings
+//
+// To see the default key bindings run `zed: open default keymap`
+// from the command palette.
+//
+// Windows keeps VS Code's keymap for navigation (`ctrl-left`/`ctrl-right`
+// move by word) and cursor editing (`ctrl-shift-up`/`ctrl-alt-up`), so this
+// file only carries the bindings that are the same on every platform.
+[
+  {
+    "context": "Workspace",
+    "bindings": {
+      // "shift shift": "file_finder::Toggle"
+    },
+  },
+  {
+    "context": "Editor && vim_mode == insert",
+    "bindings": {
+      // "j k": "vim::NormalBefore"
+    },
+  },
+  {
+    "context": "Workspace",
+    "bindings": {
+      "secondary-e": "multi_workspace::ToggleWorkspaceSidebar",
+    },
+  },
+  {
+    "context": "Editor && mode == full",
+    "unbind": {
+      "secondary-e": "buffer_search::UseSelectionForFind",
+    },
+  },
+  {
+    "context": "KeymapEditor",
+    "unbind": {
+      "secondary-e": "zed::OpenKeymapFile",
+    },
+  },
+  {
+    "context": "Workspace",
+    "bindings": {
+      "secondary-shift-b": "workspace::ToggleRightDock",
+    },
+  },
+  {
+    "context": "Workspace",
+    "unbind": {
+      "secondary-r": "workspace::ToggleRightDock",
+    },
+  },
+  {
+    "context": "ProjectPanel",
+    "unbind": {
+      "enter": "project_panel::Rename",
+    },
+  },
+  {
+    "context": "ProjectPanel",
+    "bindings": {
+      "secondary-r": "project_panel::Rename",
+    },
+  },
+  {
+    "context": "ProjectPanel",
+    "unbind": {
+      "f2": "project_panel::Rename",
+    },
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "bindings": {
+      "enter": "project_panel::Open",
+    },
+  },
+  {
+    "context": "ProjectPanel && not_editing",
+    "unbind": {
+      "space": "project_panel::Open",
+    },
+  },
+  {
+    "context": "Workspace",
+    "unbind": {
+      "secondary-w": "workspace::CloseActiveDock",
+      "ctrl-alt-w": "workspace::CloseActiveDock",
+    },
+  },
+  {
+    "context": "Pane || Workspace",
+    "bindings": {
+      "secondary-w": [
+        "pane::CloseActiveItem",
+        {
+          "close_pinned": false,
+        },
+      ],
+    },
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "secondary-space": "editor::ShowCompletions",
+    },
+  },
+  {
+    "context": "Editor && mode == full",
+    "bindings": {
+      "secondary-l": "agent::AddSelectionToThread",
+    },
+  },
+  {
+    "context": "AcpThread",
+    "bindings": {
+      "secondary-l": "agent::AddSelectionToThread",
+    },
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "secondary-l": "agent::AddSelectionToThread",
+    },
+  },
+  {
+    "context": "AcpThread",
+    "bindings": {
+      "secondary-enter": "agent::AllowOnce",
+    },
+  },
+  {
+    "context": "AcpThread",
+    "unbind": {
+      "shift-alt-a": "agent::AllowOnce",
+    },
+  },
+  {
+    "context": "AcpThread > Editor",
+    "unbind": {
+      "secondary-enter": "agent::ChatWithFollow",
+    },
+  },
+  {
+    "context": "Pane",
+    "bindings": {
+      "secondary--": "pane::GoBack",
+    },
+  },
+  {
+    "context": "Pane",
+    "unbind": {
+      "ctrl--": "pane::GoBack",
+    },
+  },
+  {
+    "context": "Pane",
+    "bindings": {
+      "secondary-=": "pane::GoForward",
+    },
+  },
+  {
+    "context": "Pane",
+    "unbind": {
+      "ctrl-_": "pane::GoForward",
+    },
+  },
+  {
+    "unbind": {
+      "secondary-=": ["zed::IncreaseBufferFontSize", { "persist": false }],
+      "secondary-+": ["zed::IncreaseBufferFontSize", { "persist": false }],
+      "secondary--": ["zed::DecreaseBufferFontSize", { "persist": false }],
+      "secondary-0": ["zed::ResetBufferFontSize", { "persist": false }],
+      "ctrl-shift-=": ["zed::IncreaseBufferFontSize", { "persist": false }],
+    },
+  },
+  {
+    "context": "Onboarding",
+    "unbind": {
+      "secondary-=": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary-+": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary--": ["zed::DecreaseUiFontSize", { "persist": false }],
+      "secondary-0": ["zed::ResetUiFontSize", { "persist": false }],
+    },
+  },
+  {
+    "context": "Welcome",
+    "unbind": {
+      "secondary-=": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary-+": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "secondary--": ["zed::DecreaseUiFontSize", { "persist": false }],
+      "secondary-0": ["zed::ResetUiFontSize", { "persist": false }],
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-g": "git_panel::Toggle",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-e": "project_panel::Toggle",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-l": "agent::Toggle",
+    },
+  },
+  {
+    "bindings": {
+      "secondary-shift-f": "search_panel::Toggle",
+    },
+  },
+  {
+    "context": "Editor",
+    "unbind": {
+      "secondary-\"": "editor::ExpandAllDiffHunks",
+    },
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "secondary-\"": "editor::ToggleAllDiffHunks",
+    },
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "ctrl-up": "editor::LineUp",
+      "ctrl-down": "editor::LineDown",
+    },
+  },
+  {
+    "context": "Editor",
+    "unbind": {
+      "ctrl-up": "editor::MoveToStartOfParagraph",
+      "ctrl-down": "editor::MoveToEndOfParagraph",
+    },
+  },
+  {
+    "context": "Editor",
+    "bindings": {
+      "secondary-r": "editor::Rename",
+    },
+  },
+  {
+    "context": "Workspace",
+    "bindings": {
+      "secondary-shift-s": "workspace::SaveAll",
+    },
+  },
+  {
+    "context": "Workspace",
+    "unbind": {
+      "secondary-shift-s": "workspace::SaveAs",
+    },
+  },
+  {
+    "unbind": {
+      "ctrl-=": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "ctrl-+": ["zed::IncreaseUiFontSize", { "persist": false }],
+      "ctrl--": ["zed::DecreaseUiFontSize", { "persist": false }],
+    },
+  },
+  {
+    "context": "Workspace && !Terminal",
+    "bindings": {
+      "secondary-shift-c": ["task::Spawn", { "task_name": "Open External Terminal" }],
+    },
+  },
+]

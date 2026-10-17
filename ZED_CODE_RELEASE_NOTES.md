@@ -48,7 +48,7 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 ### Keymap and queued messages
 
-- Wrote the seed keymap's macOS-only editing bindings (add cursor above/below, duplicate line down, delete forward) with an explicit `cmd-*` instead of `secondary-*`, so they are inert on Windows and VS Code's `ctrl`-based defaults stay in place.
+- Split the seeded keymap into `initial-macos.json` and `initial-windows.json`: macOS keeps its `cmd`-based editing (add cursor, duplicate line, delete forward) and `ctrl`-line navigation, while Windows/Linux keep VS Code's `ctrl`-based navigation and only carry the shared bindings.
 - Added up/down buttons to each queued message so the queue can be reordered before sending.
 - Unified **View File** across the thread's edited-files list, `AgentDiffView`, `SoloDiffView` and the git panel to open the working file as a preview tab.
 
