@@ -1489,6 +1489,14 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
                 } in &prepaint_state.thumbs
                 {
                     const MAXIMUM_OPACITY: f32 = 0.7;
+                    // The editor scrollbar (and the agent panel, which shares the
+                    // same style) draws a more translucent thumb at rest; panel
+                    // scrollbars keep the original opacity.
+                    const EDITOR_MAXIMUM_OPACITY: f32 = 0.5;
+                    let maximum_opacity = match style {
+                        ScrollbarStyle::Editor => EDITOR_MAXIMUM_OPACITY,
+                        ScrollbarStyle::Regular => MAXIMUM_OPACITY,
+                    };
                     let (thumb_base_color, hovered) = match thumb_state {
                         ThumbState::Dragging(dragged_axis, _) if dragged_axis == axis => {
                             (colors.scrollbar_thumb_active_background, false)
@@ -1507,7 +1515,7 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
                     let blending_color = if hovered || reserved_space.needs_scroll_track() {
                         blend_color
                     } else {
-                        blend_color.min(blend_color.alpha(MAXIMUM_OPACITY))
+                        blend_color.min(blend_color.alpha(maximum_opacity))
                     };
 
                     let mut thumb_color = blending_color.blend(thumb_base_color);

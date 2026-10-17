@@ -26,6 +26,7 @@ The agent now loads the project's stack skills on its own, panel tooltips and qu
 - Added **Add to Agent Thread** to the markdown preview's context menu: right-clicking a file link there inserts it into the agent thread's message editor as a file mention chip.
 - Queued-message rows render as markdown (mentions, inline code) like the message box, and the row tooltip shows the full text as secondary text.
 - Path tooltips in the git panel and project panel show the file or folder name as the title and the full path as secondary text.
+- The editor and agent scrollbar thumbs are more transparent at rest.
 
 ## Zed Code 2026.10.12
 
