@@ -13,7 +13,7 @@
 
 - Branch: `zed-code`, based on upstream `main` and periodically merged with release branches (`origin/v1.21.x`, `origin/v1.22.x`, …).
 - After merging upstream, check `crates/zed/RELEASE_CHANNEL`: merges can reset it (e.g. to `preview`). Keep it at `dev` for local builds — the dev channel uses its own data directory (`db/0-dev`) and its own CLI socket, while other channels share data and the socket with the installed Zed app and can migrate its databases.
-- Local build tooling added on this branch: `script/bundle-fast-mac` (see below).
+- Local build tooling added on this branch: `script/bundle-fast-mac` and `script/bundle-fast-windows.ps1` (see below).
 
 ## Building on macOS without full Xcode
 
@@ -53,6 +53,37 @@ Local tweaks in this checkout:
 
 - **Metal shaders are compiled at runtime** — the `runtime_shaders` feature is enabled in `crates/gpui_macos/Cargo.toml` (`gpui_apple = { workspace = true, features = ["runtime_shaders"] }`). Normally shaders are AOT-compiled during the build by `xcrun metal`, which only exists with a full Xcode install; with this feature the shader source is embedded and compiled by macOS on first launch. Cost: a slightly slower first startup. Rendering performance is the same as the official build. To restore the canonical AOT build, install full Xcode and revert that file: `git checkout crates/gpui_macos/Cargo.toml`.
 - **Incremental compilation is disabled** — `incremental = false` is set explicitly in every profile (`dev`, `dbg`, `release`, `release-fast`) in the root `Cargo.toml`, and the per-crate `[profile.dev.package.*] incremental = true` overrides for `zed`/`editor`/`workspace`/`project` are removed. Reason: incremental artifacts for this workspace grow to several GB. Trade-off: rebuilding `zed`/`editor`/`workspace`/`project` during the dev loop is a full recompile instead of incremental.
+
+## Building on Windows
+
+`script/bundle-fast-windows.ps1` builds a local installer. It compiles the editor
+binaries in one build (`zed` + `cli` + `auto_update_helper`, plus the tiny
+`explorer_command_injector`) and runs Inno Setup. Upstream's
+`script/bundle-windows.ps1` additionally builds `remote_server`, a second heavy
+build — its feature set diverges from `zed`'s, so `gpui` and its dependents are
+recompiled. Skipping that is where most of the time is saved.
+
+```powershell
+.\script\bundle-fast-windows.ps1 -Jobs 4     # fast installer (one build)
+# release channel comes from crates/zed/RELEASE_CHANNEL (dev => "Zed Dev");
+# the script logs the channel and warns when it is not `dev`.
+
+# artifact:
+target\Zed-x86_64.exe                        # Zed Dev installer
+```
+
+Notes:
+
+- **Slow final step? It is thin LTO, not the linker** — the same as on macOS (see above). Use `--profile release-fast` for faster local iteration, at a small runtime cost.
+- **`-Jobs 4`** is for a 16 GiB machine; more parallel rustc jobs push it into swap. Omit it to build with all cores.
+- **`-Install`** runs the resulting `target\Zed-<arch>.exe` after building.
+- **Third-party runtime DLLs** (ConPTY, AMD GPU Services) are downloaded into the repo root and cached; the extracted payloads are kept so a re-run skips the downloads. Their versions are read from `script/bundle-windows.ps1` — a tracked file merged from upstream — so an upstream version bump is picked up automatically instead of silently drifting. The `libwebrtc` archive (~240 MB) is downloaded by the `webrtc-sys` build script instead.
+- **Prerequisites:**
+  - **Inno Setup 6** — `winget install JRSoftware.InnoSetup`. The script finds `ISCC.exe` on `PATH`, in the standard install locations (machine-wide and per-user) or via the registry.
+  - **Visual Studio 2022** with the C++ workload, including the **Spectre-mitigated libs** component: `msvc_spectre_libs` (pulled in through `pet`/`languages`) looks for `lib\spectre\<arch>` in the selected MSVC toolset and fails with `No spectre-mitigated libs were found` when it is missing.
+  - **A recent MSVC toolset.** The prebuilt `libwebrtc` that `webrtc-sys` links needs the newer STL symbol `__std_find_first_of_trivial_pos_1`; older toolsets (for example 14.43 and below) do not export it, so the link fails with `LNK2019: unresolved external symbol __std_find_first_of_trivial_pos_1`. Keep Visual Studio updated.
+- **The installer is unsigned** — there are no signing secrets locally.
+- `target\Zed-<arch>.exe` installs **Zed Dev** next to any official Zed on the machine; it shares the config directory with it (see "The config directory is shared with the official Zed build" below).
 
 ## Settings added in this branch
 

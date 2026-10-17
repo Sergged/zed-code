@@ -62,3 +62,12 @@ crates/docs_preprocessor/actions.json
 
 .local*
 .cache
+
+# Output of the Windows bundling scripts (script/bundle-windows.ps1 and
+# script/bundle-fast-windows.ps1): downloaded third-party dependencies and the
+# Inno Setup staging directory. Both scripts place these in the repo root.
+/conpty/
+/AGS_SDK-*/
+/AGS_SDK_*.zip
+/Microsoft.Windows.Console.ConPTY*
+/inno/

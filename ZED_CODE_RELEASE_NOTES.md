@@ -57,6 +57,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Added a context menu to each git-panel section header, so a whole section (staged, unstaged or conflicted) can be staged, unstaged or discarded at once.
 - Showed renamed files with a dedicated status instead of as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left enabled for `git status` (as in VS Code), and the original path is carried through the status pipeline to the panel for local and remote projects.
 
+## Building Zed Code
+
+- Added `script/bundle-fast-windows.ps1`, a fast local Windows installer: it builds the editor binaries and `explorer_command_injector` in one build and runs Inno Setup, skipping the separate `remote_server` build that upstream's `script/bundle-windows.ps1` performs. Its ConPTY and AMD GPU Services downloads are cached in the repo root, and their versions are read from `script/bundle-windows.ps1` so an upstream version bump is picked up automatically instead of silently drifting. Its download and staging output is gitignored.
+
 ## Bug Fixes
 
 - Fixed `apply_code_action` leaving the files it changed unsaved; like `rename_symbol`, it now saves the touched buffers so the edit reaches disk.
