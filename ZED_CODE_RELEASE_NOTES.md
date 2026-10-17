@@ -6,6 +6,19 @@ Everything here is additive. Where a change extends something upstream already s
 
 Releases are listed newest first. Each one corresponds to a working session, so the dates are when the work landed rather than a published schedule.
 
+## Zed Code 2026.10.17
+
+Oct 17, 2026 · based on Zed v1.22.x
+
+The agent now loads the project's stack skills on its own, panel tooltips and queued-message rows read better, and the tab bar's trailing buttons are always visible.
+
+## Features
+
+### Agent
+
+- The system prompt now asks the agent to load a project's stack Skills proactively — at the start of a new chat, before editing — instead of only when a request obviously matches.
+- Trimmed the seeded `AGENTS.md` to the user-facing conventions (behavior, quality, documentation integrity); the stack-skill router and the tooling/diagnostics guidance moved to the system prompt, so they are no longer duplicated.
+
 ## Zed Code 2026.10.12
 
 Oct 12, 2026 · based on Zed v1.22.x

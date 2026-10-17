@@ -289,6 +289,7 @@ The agent guide (`system_prompt.hbs`, mirrored in `experimental_system_prompt.hb
 - A `## Web Search` section (rendered when `search_web` is available) explains when to reach for it, and — when `fetch` is also available — that search results carry URLs worth fetching for the full content.
 - The `## Multi-agent delegation` section was rewritten with concrete delegation triggers, cost framing (a sub-agent costs one tool call), parallel spawning in the same turn, self-contained briefs with disjoint write scopes, and optional sub-agent model selection via `list_agents_and_models` — pass the exact `models[].id` from the native entry (`is_native: true`); omitting `model` falls back to the configured subagent model, or the parent model when none is set. For long-output commands it asks the sub-agent to report the failing lines or diagnostics.
 - The tool-selection bullet and the `## Validation` / `## Fixing Diagnostics` sections (rendered when `diagnostics` is available) now draw the line between the `diagnostics` tool and the terminal: diagnostics for errors, warnings, type errors and the project's configured linter; the terminal for builds, tests, code generation and running things. They also forbid the "the diagnostics were wrong / the cache was stale" explanation — the tool cannot see stale cache, only whether a file was checked, and "this file was not checked" is the statement that names a next action.
+- The `## Agent Skills` section now asks for stack loading to be **proactive** instead of reactive: at the start of a new chat, before editing, the agent identifies the project's stack, takes a brief look at the codebase, and retrieves every Skill whose description applies — rather than waiting for an obvious match in the request.
 
 ### `diagnostics` reports what it checked, not just what it found
 
@@ -359,7 +360,7 @@ Messages queued while the agent is running render as a two-line clamped text pre
 
 ### Built-in agent skills
 
-Five skills ship inside the binary next to upstream's `create-skill`: `strict-typescript`, `strict-angular`, `strict-react`, `strict-compose-plan` and `strict-implement-plan`. The seeded `AGENTS.md` tells the agent to load them (see "Agent rules" below).
+Five skills ship inside the binary next to upstream's `create-skill`: `strict-typescript`, `strict-angular`, `strict-react`, `strict-compose-plan` and `strict-implement-plan`. The system prompt tells the agent to load a stack's Skills proactively — at the start of a new chat, before editing — rather than only when a request obviously matches.
 
 ### Web search
 
@@ -534,13 +535,13 @@ Two consequences:
 
 ### Agent rules (`assets/settings/initial_agents_md.md`)
 
-Seeded as the global `AGENTS.md` on first run — the always-on instructions the agent picks up in every project:
+Seeded as the global `AGENTS.md` on first run — the always-on instructions the agent picks up in every project. It holds only the user-facing conventions; anything about how the harness works (file tools, diagnostics, mermaid, the stack-skill router) lives in the system prompt:
 
-- **Stack skills (`strict-*`)** — identify the project stack and load the matching built-in skill before writing or reviewing code: `strict-typescript` (TS/JS/web), `strict-angular` (plus `strict-typescript`), `strict-react` (plus `strict-typescript`). Planning is skills too: `/strict-compose-plan`, `/strict-implement-plan`.
 - **Behavior** — do not leave plan mode without an explicit confirmation; apply global rules only to the code the task touches (no drive-by refactors).
-- **Quality** — read the source or type definitions of third-party APIs instead of relying on memory; no `disable`/`ignore` suppressions, refactor instead; run diagnostics after changes and fix every error and warning.
-- **Tooling** — prefer file tools over the terminal, and the diagnostics tool over long compiler/linter runs; a gitignored file (such as one under `node_modules`) is not an exception, since the file tools scan it on demand, so never fall back to `cat`/`ls` for it; keep mermaid simple (it often fails to render).
+- **Quality** — read the source or type definitions of third-party APIs instead of relying on memory; no `disable`/`ignore` suppressions, refactor instead.
 - **Documentation integrity** — never delete comments unrelated to the change.
+
+The stack-`strict-*` router that used to sit here now lives in the system prompt's `## Agent Skills` section, and the tooling/diagnostics guidance is covered by the guide itself (see "Guide content updates"); neither is duplicated in the seed.
 
 ### Keymap (`assets/keymaps/initial-macos.json` / `initial-windows.json`, on top of `base_keymap: "VSCode"`)
 

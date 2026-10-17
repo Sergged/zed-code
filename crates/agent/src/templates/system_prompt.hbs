@@ -250,6 +250,8 @@ You are powered by the model named {{model_name}}.
 
 You have access to the following Skills - modular capabilities that provide specialized instructions for specific tasks. When a user's request matches a Skill's description, use the `skill` tool to retrieve the full instructions.
 
+Load a stack's Skills before you start editing rather than only when a request obviously matches: at the start of a new chat, identify the project's stack, take a brief look at the codebase, and retrieve every Skill whose description applies — each description names the stack it covers and any companion Skills to load alongside it.
+
 {{!--
   `name` and `description` use `{{...}}` and are HTML-escaped as defense in
   depth. `location` uses `{{{...}}}` (no escaping) because it's a filesystem
