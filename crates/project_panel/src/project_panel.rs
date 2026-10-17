@@ -6095,8 +6095,11 @@ impl ProjectPanel {
                     Some((path, delay))
                 }),
                 |this, (path, delay)| {
+                    let title = file_name.clone();
                     this.tooltip_show_delay(Duration::from_millis(delay))
-                        .tooltip(Tooltip::text(path))
+                        .tooltip(move |_, cx| {
+                            Tooltip::with_meta(title.clone(), None, path.clone(), cx)
+                        })
                 },
             )
             .cursor_pointer()

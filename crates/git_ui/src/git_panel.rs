@@ -8918,6 +8918,7 @@ impl GitPanel {
             }),
             None => tooltip_path,
         };
+        let tooltip_title = entry.display_name(path_style);
         let tooltip_show_delay = title_tooltip_show_delay(cx);
 
         let selected = self.selected_entry == Some(ix);
@@ -9085,8 +9086,11 @@ impl GitPanel {
             .active(|s| s.bg(active_bg))
             .when_some(
                 tooltip_text.zip(tooltip_show_delay),
-                move |this, (path, delay)| {
-                    this.tooltip_show_delay(delay).tooltip(Tooltip::text(path))
+                |this, (path, delay)| {
+                    let title = tooltip_title.clone();
+                    this.tooltip_show_delay(delay).tooltip(move |_, cx| {
+                        Tooltip::with_meta(title.clone(), None, path.clone(), cx)
+                    })
                 },
             )
             .child(name_row)
@@ -9281,6 +9285,7 @@ impl GitPanel {
                             .into_owned()
                     })
             });
+        let tooltip_title = entry.name.clone();
         let tooltip_show_delay = title_tooltip_show_delay(cx);
         let folder_indicators = FileIcons::get_folder_indicators(
             folder_indicator,
@@ -9365,8 +9370,11 @@ impl GitPanel {
             .active(|s| s.bg(active_bg))
             .when_some(
                 tooltip_path.zip(tooltip_show_delay),
-                move |this, (path, delay)| {
-                    this.tooltip_show_delay(delay).tooltip(Tooltip::text(path))
+                |this, (path, delay)| {
+                    let title = tooltip_title.clone();
+                    this.tooltip_show_delay(delay).tooltip(move |_, cx| {
+                        Tooltip::with_meta(title.clone(), None, path.clone(), cx)
+                    })
                 },
             )
             .child(name_row)
