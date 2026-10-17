@@ -166,8 +166,19 @@ impl FileStatus {
         self.is_modified()
             || self.is_created()
             || self.is_deleted()
+            || self.is_renamed()
             || self.is_untracked()
             || self.is_conflicted()
+    }
+
+    pub fn is_renamed(self) -> bool {
+        match self {
+            FileStatus::Tracked(tracked) => matches!(
+                (tracked.index_status, tracked.worktree_status),
+                (StatusCode::Renamed, _) | (_, StatusCode::Renamed)
+            ),
+            _ => false,
+        }
     }
 
     pub fn is_modified(self) -> bool {
@@ -430,34 +441,68 @@ impl std::ops::Sub for GitSummary {
 #[derive(Clone, Debug)]
 pub struct GitStatus {
     pub entries: Arc<[(RepoPath, FileStatus)]>,
+    /// Renames reported by git, keyed by the new path with the original path as
+    /// the value. The original path only appears in the `-z` status output as a
+    /// second NUL-delimited token of a rename entry, so it is stored out-of-band
+    /// rather than in `entries`, whose `(path, status)` shape is relied upon
+    /// throughout the `git` crate.
+    pub renames: Arc<HashMap<RepoPath, RepoPath>>,
 }
 
 impl FromStr for GitStatus {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        let mut entries = s
-            .split('\0')
-            .filter_map(|entry| {
-                let sep = entry.get(2..3)?;
-                if sep != " " {
-                    return None;
-                };
-                let path = &entry[3..];
-                // The git status output includes untracked directories as well as untracked files.
-                // We do our own processing to compute the "summary" status of each directory,
-                // so just skip any directories in the output, since they'll otherwise interfere
-                // with our handling of nested repositories.
-                if path.ends_with('/') {
-                    return None;
+        let mut entries = Vec::new();
+        let mut renames = HashMap::default();
+        let mut fields = s.split('\0');
+        while let Some(entry) = fields.next() {
+            let Some(sep) = entry.get(2..3) else {
+                continue;
+            };
+            if sep != " " {
+                continue;
+            };
+            let status = entry.as_bytes()[0..2].try_into().unwrap();
+            let Some(status) = FileStatus::from_bytes(status).log_err() else {
+                continue;
+            };
+            let path = &entry[3..];
+            // The git status output includes untracked directories as well as untracked files.
+            // We do our own processing to compute the "summary" status of each directory,
+            // so just skip any directories in the output, since they'll otherwise interfere
+            // with our handling of nested repositories.
+            if path.ends_with('/') {
+                continue;
+            }
+            // git-status outputs `/`-delimited repo paths, even on Windows.
+            let Ok(path) = RelPath::from_unix_str(path) else {
+                continue;
+            };
+            let repo_path = RepoPath::from_rel_path(path);
+            // In `-z` output a rename (or copy) occupies two NUL-delimited
+            // tokens: the destination path, then the original path.
+            let is_rename_or_copy = match status {
+                FileStatus::Tracked(tracked) => {
+                    matches!(
+                        tracked.index_status,
+                        StatusCode::Renamed | StatusCode::Copied
+                    ) || matches!(
+                        tracked.worktree_status,
+                        StatusCode::Renamed | StatusCode::Copied
+                    )
                 }
-                let status = entry.as_bytes()[0..2].try_into().unwrap();
-                let status = FileStatus::from_bytes(status).log_err()?;
-                // git-status outputs `/`-delimited repo paths, even on Windows.
-                let path = RepoPath::from_rel_path(RelPath::from_unix_str(path).log_err()?);
-                Some((path, status))
-            })
-            .collect::<Vec<_>>();
+                _ => false,
+            };
+            if is_rename_or_copy {
+                if let Some(old_path) = fields.next()
+                    && let Ok(old_path) = RelPath::from_unix_str(old_path)
+                {
+                    renames.insert(repo_path.clone(), RepoPath::from_rel_path(old_path));
+                }
+            }
+            entries.push((repo_path, status));
+        }
         entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         // When a file exists in HEAD, is deleted in the index, and exists again in the working copy,
         // git produces two lines for it, one reading `D ` (deleted in index, unmodified in working copy)
@@ -486,6 +531,7 @@ impl FromStr for GitStatus {
         });
         Ok(Self {
             entries: entries.into(),
+            renames: renames.into(),
         })
     }
 }
@@ -494,6 +540,7 @@ impl Default for GitStatus {
     fn default() -> Self {
         Self {
             entries: Arc::new([]),
+            renames: Arc::new(HashMap::default()),
         }
     }
 }
@@ -620,7 +667,9 @@ mod tests {
 
     use crate::{
         repository::RepoPath,
-        status::{FileStatus, GitStatus, TreeDiff, TreeDiffStatus},
+        status::{
+            FileStatus, GitStatus, StageStatus, StatusCode, TrackedStatus, TreeDiff, TreeDiffStatus,
+        },
     };
 
     use super::{DiffStat, parse_numstat};
@@ -724,6 +773,76 @@ mod tests {
         let status: GitStatus = input.parse().unwrap();
         assert_eq!(status.entries.len(), 1);
         assert_eq!(status.entries[0].1, FileStatus::Untracked);
+    }
+
+    #[test]
+    fn test_parses_staged_rename_and_old_path() {
+        // `git status --porcelain=v1 -z` emits a rename as the destination path,
+        // then the original path, as two NUL-delimited tokens.
+        let input = "R  new.rs\0old.rs\0";
+        let status: GitStatus = input.parse().unwrap();
+
+        let new_path = RepoPath::new("new.rs").unwrap();
+        assert_eq!(status.entries.len(), 1);
+        assert_eq!(
+            status.entries[0].1,
+            FileStatus::Tracked(TrackedStatus {
+                index_status: StatusCode::Renamed,
+                worktree_status: StatusCode::Unmodified,
+            })
+        );
+        assert!(status.entries[0].1.is_renamed());
+        assert_eq!(
+            status.renames.get(&new_path),
+            Some(&RepoPath::new("old.rs").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_rename_status_is_a_change_and_stays_staged() {
+        let staged_rename = FileStatus::Tracked(TrackedStatus {
+            index_status: StatusCode::Renamed,
+            worktree_status: StatusCode::Unmodified,
+        });
+
+        assert!(staged_rename.is_renamed());
+        assert!(staged_rename.has_changes());
+        assert!(!staged_rename.is_created());
+        assert!(!staged_rename.is_deleted());
+        assert!(!staged_rename.is_modified());
+        assert_eq!(staged_rename.staging(), StageStatus::Staged);
+    }
+
+    #[test]
+    fn test_rename_original_path_is_consumed_not_an_entry() {
+        // The original path of a rename carries no `XY ` prefix; it must be
+        // consumed as part of the rename and not swallow the following entry.
+        let input = "R  new.rs\0old.rs\0 M other.rs\0";
+        let status: GitStatus = input.parse().unwrap();
+
+        assert_eq!(status.entries.len(), 2);
+        assert!(
+            status
+                .entries
+                .iter()
+                .any(|(path, s)| *path == RepoPath::new("new.rs").unwrap() && s.is_renamed())
+        );
+        assert!(
+            status
+                .entries
+                .iter()
+                .any(|(path, s)| *path == RepoPath::new("other.rs").unwrap() && s.is_modified())
+        );
+        assert!(
+            status
+                .renames
+                .contains_key(&RepoPath::new("new.rs").unwrap())
+        );
+        assert!(
+            !status
+                .renames
+                .contains_key(&RepoPath::new("other.rs").unwrap())
+        );
     }
 
     #[test]

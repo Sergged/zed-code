@@ -1063,6 +1063,8 @@ struct TreeNode {
 pub struct GitStatusEntry {
     pub(crate) repo_path: RepoPath,
     pub(crate) status: FileStatus,
+    /// The original path when `status` is a rename, shown in the row's tooltip.
+    pub(crate) old_repo_path: Option<RepoPath>,
     pub(crate) staging: StageStatus,
     pub(crate) diff_stat: Option<DiffStat>,
 }
@@ -5737,6 +5739,7 @@ impl GitPanel {
             let entry = GitStatusEntry {
                 repo_path: status_entry.repo_path.clone(),
                 status: status_entry.status,
+                old_repo_path: status_entry.old_repo_path.clone(),
                 staging,
                 diff_stat: status_entry.diff_stat,
             };
@@ -5793,6 +5796,7 @@ impl GitPanel {
                         .map(|status| GitStatusEntry {
                             repo_path: ops.repo_path.clone(),
                             status: status.status,
+                            old_repo_path: status.old_repo_path,
                             staging: StageStatus::Staged,
                             diff_stat: status.diff_stat,
                         });
@@ -8752,20 +8756,30 @@ impl GitPanel {
         let git_path_style = ProjectSettings::get_global(cx).git.path_style;
         let display_name = entry.display_name(path_style);
         let display_name_for_drag = display_name.clone();
-        let tooltip_path = repo
-            .repo_path_to_project_path(&entry.repo_path, cx)
-            .and_then(|project_path| {
-                self.project
-                    .read(cx)
-                    .worktree_for_id(project_path.worktree_id, cx)
-                    .map(|worktree| {
-                        worktree
-                            .read(cx)
-                            .full_path(&project_path.path)
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-            });
+        let full_path_for = |repo_path: &RepoPath| -> Option<String> {
+            repo.repo_path_to_project_path(repo_path, cx)
+                .and_then(|project_path| {
+                    self.project
+                        .read(cx)
+                        .worktree_for_id(project_path.worktree_id, cx)
+                        .map(|worktree| {
+                            worktree
+                                .read(cx)
+                                .full_path(&project_path.path)
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                })
+        };
+        let tooltip_path = full_path_for(&entry.repo_path);
+        // For a rename the tooltip shows `old → new`; otherwise just the path.
+        let tooltip_text = match entry.old_repo_path.as_ref().and_then(&full_path_for) {
+            Some(old_path) => Some(match tooltip_path.as_deref() {
+                Some(new_path) => format!("{old_path} → {new_path}"),
+                None => old_path,
+            }),
+            None => tooltip_path,
+        };
         let tooltip_show_delay = title_tooltip_show_delay(cx);
 
         let selected = self.selected_entry == Some(ix);
@@ -8782,6 +8796,7 @@ impl GitPanel {
         let is_modified = status.is_modified();
         let is_deleted = status.is_deleted();
         let is_created = status.is_created();
+        let is_renamed = status.is_renamed();
 
         let label_color = if status_style == StatusStyle::LabelColor {
             if has_conflict {
@@ -8793,6 +8808,8 @@ impl GitPanel {
             } else if is_deleted {
                 // We don't want a bunch of red labels in the list
                 Color::Disabled
+            } else if is_renamed {
+                Color::VersionControlRenamed
             } else {
                 Color::VersionControlAdded
             }
@@ -8929,7 +8946,7 @@ impl GitPanel {
             .hover(|s| s.bg(hover_bg))
             .active(|s| s.bg(active_bg))
             .when_some(
-                tooltip_path.zip(tooltip_show_delay),
+                tooltip_text.zip(tooltip_show_delay),
                 move |this, (path, delay)| {
                     this.tooltip_show_delay(delay).tooltip(Tooltip::text(path))
                 },
@@ -10394,6 +10411,7 @@ mod tests {
     fn test_tree_view_directory_expansion_is_scoped_to_section() {
         let entry = |path, status| GitStatusEntry {
             repo_path: repo_path(path),
+            old_repo_path: None,
             status,
             staging: StageStatus::Unstaged,
             diff_stat: None,
@@ -11995,6 +12013,7 @@ mod tests {
                 }),
                 GitListEntry::Status(GitStatusEntry {
                     repo_path: repo_path("crates/gpui/gpui.rs"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
                     diff_stat: Some(DiffStat {
@@ -12004,6 +12023,7 @@ mod tests {
                 }),
                 GitListEntry::Status(GitStatusEntry {
                     repo_path: repo_path("crates/util/util.rs"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
                     diff_stat: Some(DiffStat {
@@ -12028,6 +12048,7 @@ mod tests {
                 }),
                 GitListEntry::Status(GitStatusEntry {
                     repo_path: repo_path("crates/gpui/gpui.rs"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
                     diff_stat: Some(DiffStat {
@@ -12037,6 +12058,7 @@ mod tests {
                 }),
                 GitListEntry::Status(GitStatusEntry {
                     repo_path: repo_path("crates/util/util.rs"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
                     diff_stat: Some(DiffStat {
@@ -16516,6 +16538,7 @@ mod tests {
     fn test_directory_discard_tracked_changes() {
         let entry = |path, status: FileStatus| GitStatusEntry {
             repo_path: repo_path(path),
+            old_repo_path: None,
             staging: status.staging(),
             status,
             diff_stat: None,

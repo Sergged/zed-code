@@ -497,6 +497,8 @@ pub struct GitStoreCheckpoint {
 pub struct StatusEntry {
     pub repo_path: RepoPath,
     pub status: FileStatus,
+    /// The original path when `status` is a rename, used to show `old → new`.
+    pub old_repo_path: Option<RepoPath>,
     pub diff_stat: Option<DiffStat>,
     pub staged_diff_stat: Option<DiffStat>,
     pub unstaged_diff_stat: Option<DiffStat>,
@@ -521,6 +523,10 @@ impl StatusEntry {
             repo_path: self.repo_path.as_unix_str().to_owned(),
             simple_status,
             status: Some(status_to_proto(self.status)),
+            old_repo_path: self
+                .old_repo_path
+                .as_ref()
+                .map(|path| path.as_unix_str().to_owned()),
             diff_stat_added: self.diff_stat.map(|ds| ds.added),
             diff_stat_deleted: self.diff_stat.map(|ds| ds.deleted),
             staged_diff_stat_added: self.staged_diff_stat.map(|ds| ds.added),
@@ -537,6 +543,12 @@ impl TryFrom<proto::StatusEntry> for StatusEntry {
     fn try_from(value: proto::StatusEntry) -> Result<Self, Self::Error> {
         let repo_path = RepoPath::from_proto(&value.repo_path).context("invalid repo path")?;
         let status = status_from_proto(value.simple_status, value.status)?;
+        let old_repo_path = value
+            .old_repo_path
+            .as_deref()
+            .map(RepoPath::from_proto)
+            .transpose()
+            .context("invalid old repo path")?;
         let diff_stat = match (value.diff_stat_added, value.diff_stat_deleted) {
             (Some(added), Some(deleted)) => Some(DiffStat { added, deleted }),
             _ => None,
@@ -556,6 +568,7 @@ impl TryFrom<proto::StatusEntry> for StatusEntry {
         Ok(Self {
             repo_path,
             status,
+            old_repo_path,
             diff_stat,
             staged_diff_stat,
             unstaged_diff_stat,
@@ -10523,10 +10536,12 @@ impl Repository {
                                 staged_diff_stats.get(repo_path).copied();
                             let current_unstaged_diff_stat =
                                 unstaged_diff_stats.get(repo_path).copied();
+                            let current_old_repo_path = statuses.renames.get(repo_path).cloned();
 
                             if cursor.seek_forward(&PathTarget::Path(repo_path), Bias::Left)
                                 && cursor.item().is_some_and(|entry| {
                                     entry.status == *status
+                                        && entry.old_repo_path == current_old_repo_path
                                         && entry.diff_stat == current_diff_stat
                                         && entry.staged_diff_stat == current_staged_diff_stat
                                         && entry.unstaged_diff_stat == current_unstaged_diff_stat
@@ -10538,6 +10553,7 @@ impl Repository {
                             changed_path_statuses.push(Edit::Insert(StatusEntry {
                                 repo_path: repo_path.clone(),
                                 status: *status,
+                                old_repo_path: current_old_repo_path,
                                 diff_stat: current_diff_stat,
                                 staged_diff_stat: current_staged_diff_stat,
                                 unstaged_diff_stat: current_unstaged_diff_stat,
@@ -12553,6 +12569,7 @@ async fn compute_snapshot(
             StatusEntry {
                 repo_path: repo_path.clone(),
                 status: *status,
+                old_repo_path: statuses.renames.get(repo_path).cloned(),
                 diff_stat: diff_stat_map.get(repo_path).copied(),
                 staged_diff_stat: staged_diff_stat_map.get(repo_path).copied(),
                 unstaged_diff_stat: unstaged_diff_stat_map.get(repo_path).copied(),

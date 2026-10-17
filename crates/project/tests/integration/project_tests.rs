@@ -17007,6 +17007,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
             [
                 StatusEntry {
                     repo_path: repo_path("a.txt"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     diff_stat: Some(DiffStat {
                         added: 1,
@@ -17020,6 +17021,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
                 },
                 StatusEntry {
                     repo_path: repo_path("b.txt"),
+                    old_repo_path: None,
                     status: FileStatus::Untracked,
                     diff_stat: None,
                     staged_diff_stat: None,
@@ -17027,6 +17029,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
                 },
                 StatusEntry {
                     repo_path: repo_path("d.txt"),
+                    old_repo_path: None,
                     status: StatusCode::Deleted.worktree(),
                     diff_stat: Some(DiffStat {
                         added: 0,
@@ -17057,6 +17060,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
             [
                 StatusEntry {
                     repo_path: repo_path("a.txt"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     diff_stat: Some(DiffStat {
                         added: 1,
@@ -17070,6 +17074,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
                 },
                 StatusEntry {
                     repo_path: repo_path("b.txt"),
+                    old_repo_path: None,
                     status: FileStatus::Untracked,
                     diff_stat: None,
                     staged_diff_stat: None,
@@ -17077,6 +17082,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
                 },
                 StatusEntry {
                     repo_path: repo_path("c.txt"),
+                    old_repo_path: None,
                     status: StatusCode::Modified.worktree(),
                     diff_stat: Some(DiffStat {
                         added: 1,
@@ -17090,6 +17096,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
                 },
                 StatusEntry {
                     repo_path: repo_path("d.txt"),
+                    old_repo_path: None,
                     status: StatusCode::Deleted.worktree(),
                     diff_stat: Some(DiffStat {
                         added: 0,
@@ -17132,6 +17139,7 @@ async fn test_git_repository_status(cx: &mut gpui::TestAppContext) {
             entries,
             [StatusEntry {
                 repo_path: repo_path("a.txt"),
+                old_repo_path: None,
                 status: StatusCode::Deleted.worktree(),
                 diff_stat: Some(DiffStat {
                     added: 0,
@@ -17188,6 +17196,7 @@ async fn test_git_repository_status_removes_directory_descendants(cx: &mut gpui:
             repository.cached_status().collect::<Vec<_>>(),
             [StatusEntry {
                 repo_path: repo_path("ci2/Dockerfile.namespace"),
+                old_repo_path: None,
                 status: FileStatus::Untracked,
                 diff_stat: None,
                 staged_diff_stat: None,
@@ -17232,6 +17241,7 @@ async fn test_git_repository_status_removes_directory_descendants(cx: &mut gpui:
             repository.cached_status().collect::<Vec<_>>(),
             [StatusEntry {
                 repo_path: repo_path("ci3/Dockerfile.namespace"),
+                old_repo_path: None,
                 status: FileStatus::Untracked,
                 diff_stat: None,
                 staged_diff_stat: None,
@@ -17382,6 +17392,7 @@ async fn test_git_status_postprocessing(cx: &mut gpui::TestAppContext) {
             entries,
             [StatusEntry {
                 repo_path: repo_path("a.txt"),
+                old_repo_path: None,
                 status: TrackedStatus {
                     index_status: StatusCode::Deleted,
                     worktree_status: StatusCode::Added
@@ -17590,6 +17601,7 @@ async fn test_repository_pending_ops_staging(
             git_statuses,
             [StatusEntry {
                 repo_path: repo_path("a.txt"),
+                old_repo_path: None,
                 status: TrackedStatus {
                     index_status: StatusCode::Added,
                     worktree_status: StatusCode::Unmodified
@@ -17705,6 +17717,7 @@ async fn test_repository_pending_ops_long_running_staging(
             git_statuses,
             [StatusEntry {
                 repo_path: repo_path("a.txt"),
+                old_repo_path: None,
                 status: TrackedStatus {
                     index_status: StatusCode::Added,
                     worktree_status: StatusCode::Unmodified
@@ -17842,6 +17855,7 @@ async fn test_repository_pending_ops_stage_all(
             [
                 StatusEntry {
                     repo_path: repo_path("a.txt"),
+                    old_repo_path: None,
                     status: FileStatus::Untracked,
                     diff_stat: None,
                     staged_diff_stat: None,
@@ -17849,6 +17863,7 @@ async fn test_repository_pending_ops_stage_all(
                 },
                 StatusEntry {
                     repo_path: repo_path("b.txt"),
+                    old_repo_path: None,
                     status: FileStatus::Untracked,
                     diff_stat: None,
                     staged_diff_stat: None,

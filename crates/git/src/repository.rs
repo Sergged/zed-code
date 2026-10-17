@@ -3751,11 +3751,14 @@ fn parse_initial_graph_output<'a>(
 }
 
 fn git_status_args(path_prefixes: &[RepoPath]) -> Vec<OsString> {
+    // Renames are left enabled so that `git status` pairs an index-added path
+    // with an identical index-deleted path, matching what the git panel shows
+    // (VS Code does the same). The `-z` output then gives the original path as
+    // a second NUL-delimited token, which `GitStatus::from_str` reads.
     let mut args = vec![
         OsString::from("status"),
         OsString::from("--porcelain=v1"),
         OsString::from("--untracked-files=all"),
-        OsString::from("--no-renames"),
         OsString::from("-z"),
         OsString::from("--"),
     ];
@@ -4567,6 +4570,45 @@ mod tests {
                     TreeDiffStatus::Modified { old: base_oid },
                 )]),
             }
+        );
+    }
+
+    #[gpui::test]
+    async fn test_status_detects_staged_rename(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        git_init_repo(repo_dir.path());
+        fs::write(repo_dir.path().join("old.txt"), "content\n").unwrap();
+        git_command(repo_dir.path(), ["add", "old.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "base"]);
+        git_command(repo_dir.path(), ["mv", "old.txt", "new.txt"]);
+
+        let repository = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        let status = repository.status(&[]).await.unwrap();
+
+        let new_path = RepoPath::new("new.txt").unwrap();
+        let old_path = RepoPath::new("old.txt").unwrap();
+
+        let (path, file_status) = status
+            .entries
+            .iter()
+            .find(|(path, _)| path == &new_path)
+            .expect("the renamed file should be reported under its new path");
+        assert_eq!(path, &new_path);
+        assert!(file_status.is_renamed());
+        assert_eq!(status.renames.get(&new_path), Some(&old_path));
+        assert!(
+            status.entries.iter().all(|(path, _)| path != &old_path),
+            "the original path must not appear as a separate entry"
         );
     }
 

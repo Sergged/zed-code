@@ -730,6 +730,7 @@ fn db_status_to_proto(
         status: Some(proto::GitFileStatus {
             variant: Some(variant),
         }),
+        old_repo_path: None,
         diff_stat_added: entry.lines_added.map(|v| v as u32),
         diff_stat_deleted: entry.lines_deleted.map(|v| v as u32),
         staged_diff_stat_added: None,

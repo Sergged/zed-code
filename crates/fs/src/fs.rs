@@ -2399,6 +2399,25 @@ impl FakeFs {
         .unwrap();
     }
 
+    /// Declare staged renames for the given repository, mirroring what git's
+    /// rename detection reports: an index-added destination paired with an
+    /// identical index-deleted source. Each `(new_path, old_path)` is reported
+    /// by [`FakeGitRepository::status`] as an `R` entry for `new_path`. Callers
+    /// set up head and index separately (for example with
+    /// [`FakeFs::set_head_for_repo`] and [`FakeFs::set_index_for_repo`]) so the
+    /// contents of the two paths match.
+    pub fn set_renames_for_repo(&self, dot_git: &Path, renames: &[(&str, &str)]) {
+        self.with_git_state(dot_git, true, |state| {
+            state.renames.clear();
+            state.renames.extend(
+                renames
+                    .iter()
+                    .map(|(new_path, old_path)| (repo_path(new_path), repo_path(old_path))),
+            );
+        })
+        .unwrap();
+    }
+
     pub fn set_index_for_repo(&self, dot_git: &Path, index_state: &[(&str, String)]) {
         self.with_git_state(dot_git, true, |state| {
             state.index_contents.clear();

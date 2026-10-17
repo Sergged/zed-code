@@ -358,6 +358,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - The commit message editor's height is configurable through `git_panel.message_editor_min_lines`.
 - Clicking a row's checkbox toggles it without selecting the row or starting a file drag, and leaves the row hovered so its hover-only controls stay visible.
 - Following the editor also scrolls the panel to the newly focused row, and expands collapsed folders in tree view so the row is visible.
+- Renamed files get their own status instead of showing as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left on for `git status` (matching VS Code), and the original path travels through the status pipeline to the panel for both local and remote projects.
 
 ### Search panel
 

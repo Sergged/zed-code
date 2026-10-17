@@ -52,6 +52,10 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 - Added up/down buttons to each queued message so the queue can be reordered before sending.
 - Unified **View File** across the thread's edited-files list, `AgentDiffView`, `SoloDiffView` and the git panel to open the working file as a preview tab.
 
+### Git
+
+- Showed renamed files with a dedicated status instead of as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left enabled for `git status` (as in VS Code), and the original path is carried through the status pipeline to the panel for local and remote projects.
+
 ## Bug Fixes
 
 - Fixed `apply_code_action` leaving the files it changed unsaved; like `rename_symbol`, it now saves the touched buffers so the edit reaches disk.

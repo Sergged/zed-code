@@ -61,6 +61,10 @@ pub struct FakeGitRepositoryState {
     pub commit_history: Vec<FakeCommitSnapshot>,
     pub event_emitter: async_channel::Sender<PathBuf>,
     pub unmerged_paths: HashMap<RepoPath, UnmergedStatus>,
+    /// Declared staged renames, keyed by the new path with the original path as
+    /// the value. Set by [`FakeFs::set_renames_for_repo`]; `status` reports these
+    /// as `R` entries, mirroring git's rename detection.
+    pub renames: HashMap<RepoPath, RepoPath>,
     pub head_contents: HashMap<RepoPath, Vec<u8>>,
     pub index_contents: HashMap<RepoPath, Vec<u8>>,
     // everything in commit contents is in oids
@@ -93,6 +97,7 @@ impl FakeGitRepositoryState {
             head_contents: Default::default(),
             index_contents: Default::default(),
             unmerged_paths: Default::default(),
+            renames: Default::default(),
             blames: Default::default(),
             blames_at_revision: Default::default(),
             current_branch_name: Default::default(),
@@ -609,9 +614,30 @@ impl GitRepository for FakeGitRepository {
                     entries.push((path.clone(), status));
                 }
             }
+            // Declared renames replace the derived `A` + `D` pair with a single
+            // `R` entry, the way git's rename detection would.
+            let mut renames = HashMap::default();
+            for (new_path, old_path) in &state.renames {
+                if !path_prefixes
+                    .iter()
+                    .any(|prefix| new_path.starts_with(prefix))
+                {
+                    continue;
+                }
+                entries.retain(|(path, _)| path != new_path && path != old_path);
+                entries.push((
+                    new_path.clone(),
+                    FileStatus::Tracked(TrackedStatus {
+                        index_status: StatusCode::Renamed,
+                        worktree_status: StatusCode::Unmodified,
+                    }),
+                ));
+                renames.insert(new_path.clone(), old_path.clone());
+            }
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             anyhow::Ok(GitStatus {
                 entries: entries.into(),
+                renames: renames.into(),
             })
         });
         Task::ready(match result {

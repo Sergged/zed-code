@@ -426,6 +426,7 @@ fn file_diff_entry(
                 GitStatusEntry {
                     repo_path,
                     status: status_entry.status,
+                    old_repo_path: status_entry.old_repo_path,
                     staging: status_entry.status.staging(),
                     diff_stat: status_entry.diff_stat,
                 },
@@ -1234,6 +1235,11 @@ impl RenderOnce for GitStatusIcon {
             (
                 IconName::SquareMinus,
                 cx.theme().colors().version_control_deleted,
+            )
+        } else if status.is_renamed() {
+            (
+                IconName::ArrowRight,
+                cx.theme().colors().version_control_renamed,
             )
         } else if status.is_modified() {
             (
