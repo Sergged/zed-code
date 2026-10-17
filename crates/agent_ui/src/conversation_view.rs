@@ -3288,6 +3288,24 @@ impl ConversationView {
         }
     }
 
+    /// Inserts a mention (a clickable chip) into the active thread's message
+    /// editor. Used by the markdown preview and agent thread context menus,
+    /// which surface a link under the cursor rather than an editor selection.
+    pub(crate) fn insert_mention(
+        &self,
+        mention_uri: MentionUri,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(active_thread) = self.active_thread() {
+            active_thread.update(cx, |thread, cx| {
+                thread.active_editor(cx).update(cx, |editor, cx| {
+                    editor.insert_mention(mention_uri, window, cx);
+                })
+            });
+        }
+    }
+
     /// Inserts the given text at the cursor position in the message editor or
     /// the message being edited, if any.
     pub(crate) fn append_text(&self, text: &str, window: &mut Window, cx: &mut Context<Self>) {

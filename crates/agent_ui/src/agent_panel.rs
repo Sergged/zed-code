@@ -25,9 +25,9 @@ use serde::{Deserialize, Serialize};
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
     agent::{
-        AddDiagnosticToThread, AddSelectionToThread, ConflictContent, LogoutAgent, OpenSettings,
-        ReauthenticateAgent, ResetAgentZoom, ResetOnboarding, ResolveConflictedFilesWithAgent,
-        ResolveConflictsWithAgent, ReviewBranchDiff, SelectAgent,
+        AddDiagnosticToThread, AddFileToThread, AddSelectionToThread, ConflictContent, LogoutAgent,
+        OpenSettings, ReauthenticateAgent, ResetAgentZoom, ResetOnboarding,
+        ResolveConflictedFilesWithAgent, ResolveConflictsWithAgent, ReviewBranchDiff, SelectAgent,
     },
     assistant::{
         FocusAgent, ManageSkills, OpenGlobalAgentsMdRules, OpenProjectAgentsMdRules, Toggle,
@@ -704,6 +704,28 @@ pub fn init(cx: &mut App) {
                 )
                 .register_action(|workspace, action: &AddDiagnosticToThread, window, cx| {
                     add_selection_to_thread(workspace, action.diagnostic_text.clone(), window, cx);
+                })
+                .register_action(|workspace, action: &AddFileToThread, window, cx| {
+                    let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
+                        return;
+                    };
+                    let path_style = workspace.project().read(cx).path_style(cx);
+                    let Ok(mention_uri) = MentionUri::parse_hyperlink(&action.url, path_style)
+                    else {
+                        return;
+                    };
+                    if !agent_panel.focus_handle(cx).contains_focused(window, cx) {
+                        workspace.toggle_panel_focus::<AgentPanel>(window, cx);
+                    }
+                    agent_panel.update(cx, |_panel, cx| {
+                        cx.defer_in(window, move |panel, window, cx| {
+                            if let Some(conversation_view) = panel.active_conversation_view() {
+                                conversation_view.update(cx, |conversation_view, cx| {
+                                    conversation_view.insert_mention(mention_uri, window, cx);
+                                });
+                            }
+                        });
+                    });
                 })
                 .register_action(|workspace, _: &menu::Cancel, _window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {

@@ -1615,6 +1615,58 @@ impl MessageEditor {
         }
     }
 
+    /// Inserts `mention_uri` at the cursor as a clickable mention chip, the
+    /// same way the completion flow does.
+    pub(crate) fn insert_mention(
+        &mut self,
+        mention_uri: MentionUri,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let supports_images = self.session_capabilities.read().supports_images();
+        let crease_text: SharedString = mention_uri.name().into();
+        let mention_text = mention_uri.as_link().to_string();
+        let content_len = mention_text.len();
+
+        let text_anchor = self.editor.update(cx, |editor, cx| {
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+            let buffer_snapshot = snapshot.as_singleton()?;
+            let text_anchor = snapshot
+                .anchor_to_buffer_anchor(editor.selections.newest_anchor().start)?
+                .0
+                .bias_left(&buffer_snapshot);
+
+            editor.insert(&mention_text, window, cx);
+            editor.insert(" ", window, cx);
+
+            Some(text_anchor)
+        });
+
+        let Some(text_anchor) = text_anchor else {
+            return;
+        };
+
+        let editor = self.editor.clone();
+        let task = self.mention_set.update(cx, |mention_set, cx| {
+            mention_set.confirm_mention_completion(
+                crease_text,
+                text_anchor,
+                content_len,
+                mention_uri,
+                supports_images,
+                editor,
+                &workspace,
+                window,
+                cx,
+            )
+        });
+        task.detach();
+    }
+
     pub fn add_images_from_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.session_capabilities.read().supports_images() {
             return;

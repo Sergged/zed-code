@@ -18,6 +18,11 @@ The agent now loads the project's stack skills on its own, panel tooltips and qu
 
 - The system prompt now asks the agent to load a project's stack Skills proactively — at the start of a new chat, before editing — instead of only when a request obviously matches.
 - Trimmed the seeded `AGENTS.md` to the user-facing conventions (behavior, quality, documentation integrity); the stack-skill router and the tooling/diagnostics guidance moved to the system prompt, so they are no longer duplicated.
+- Added **Add to Agent Thread** to the agent thread's response context menu: right-clicking a file link there inserts it into the message editor as a file mention chip, the same way `secondary-l` already does in the editor.
+
+### Editor
+
+- Added **Add to Agent Thread** to the markdown preview's context menu: right-clicking a file link there inserts it into the agent thread's message editor as a file mention chip.
 
 ## Zed Code 2026.10.12
 

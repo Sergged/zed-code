@@ -45,7 +45,7 @@ use ui::{
     ButtonLike, CalloutBorderPosition, Checkbox, ScrollAxes, ScrollbarStyle, Scrollbars,
     SpinnerLabel, SpinnerVariant, SplitButton, SplitButtonStyle, Tab, ToggleState,
 };
-use util::markdown::{source_position_from_fragment, split_local_url_fragment};
+use util::markdown::{is_local_link, source_position_from_fragment, split_local_url_fragment};
 use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
 
 use super::elicitation::{
@@ -7648,6 +7648,12 @@ impl ThreadView {
                         .and_then(|markdown| markdown.context_menu_selected_text().cloned());
                     let selected_markdown = markdown
                         .and_then(|markdown| markdown.context_menu_selected_markdown().cloned());
+                    // Only file paths (or scheme-less local paths) can become a
+                    // mention chip; ordinary web links cannot.
+                    let mentionable_link = context_menu_link
+                        .as_ref()
+                        .filter(|url| is_local_link(url.as_str()))
+                        .cloned();
 
                     let copy_this_agent_response =
                         ContextMenuEntry::new("Copy This Agent Response").handler({
@@ -7725,6 +7731,14 @@ impl ThreadView {
                             )
                         })
                         .item(copy_this_agent_response)
+                        .when_some(mentionable_link, |menu, url| {
+                            menu.action(
+                                "Add to Agent Thread",
+                                Box::new(zed_actions::agent::AddFileToThread {
+                                    url: url.to_string(),
+                                }),
+                            )
+                        })
                         .separator()
                         .item(scroll_item)
                         .item(open_thread_as_markdown)

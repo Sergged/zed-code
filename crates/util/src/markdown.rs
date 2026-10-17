@@ -57,6 +57,13 @@ pub fn split_local_url_fragment(url: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Whether `url` points at a local file — a `file://` URL or a scheme-less
+/// relative path — as opposed to a web or app link. Used to decide whether a
+/// link can be turned into a file mention.
+pub fn is_local_link(url: &str) -> bool {
+    url.starts_with("file://") || !url.contains("://")
+}
+
 pub fn source_position_from_fragment(fragment: &str) -> Option<(u32, u32)> {
     let fragment = fragment.strip_prefix('L').unwrap_or(fragment);
     let fragment = fragment
@@ -403,5 +410,15 @@ mod tests {
             generate_heading_slug("  leading spaces  "),
             "leading-spaces"
         );
+    }
+
+    #[test]
+    fn test_is_local_link() {
+        assert!(is_local_link("file:///tmp/foo.rs"));
+        assert!(is_local_link("file:///tmp/foo.rs#L1:5"));
+        assert!(is_local_link("src/main.rs"));
+        assert!(is_local_link("src/main.rs#L10"));
+        assert!(!is_local_link("https://example.com"));
+        assert!(!is_local_link("zed://agent/pasted-image"));
     }
 }

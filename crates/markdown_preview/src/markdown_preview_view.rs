@@ -35,7 +35,7 @@ use ui::{
 };
 use util::{
     ResultExt,
-    markdown::{source_position_from_fragment, split_local_url_fragment},
+    markdown::{is_local_link, source_position_from_fragment, split_local_url_fragment},
     paths::{PathStyle, PathWithPosition},
     rel_path::RelPath,
 };
@@ -1807,6 +1807,12 @@ impl Render for MarkdownPreviewView {
                                     let focus = window.focused(cx);
                                     let markdown = markdown.read(cx);
                                     let context_menu_link = markdown.context_menu_link().cloned();
+                                    // Only file paths (or scheme-less local paths) can
+                                    // become a mention chip; web links cannot.
+                                    let mentionable_link = context_menu_link
+                                        .as_ref()
+                                        .filter(|url| is_local_link(url.as_str()))
+                                        .cloned();
                                     let selected_text =
                                         markdown.context_menu_selected_text().cloned();
                                     let selected_markdown =
@@ -1851,6 +1857,14 @@ impl Render for MarkdownPreviewView {
                                                         ClipboardItem::new_string(url.to_string()),
                                                     );
                                                 })
+                                            })
+                                            .when_some(mentionable_link, |menu, url| {
+                                                menu.action(
+                                                    "Add to Agent Thread",
+                                                    Box::new(zed_actions::agent::AddFileToThread {
+                                                        url: url.to_string(),
+                                                    }),
+                                                )
                                             })
                                     }))
                                 });

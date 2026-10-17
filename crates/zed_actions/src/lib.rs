@@ -618,6 +618,19 @@ pub mod agent {
         pub diagnostic_text: SharedString,
     }
 
+    /// Adds a file (or a file range) referenced by a hyperlink as a mention
+    /// chip in the agent panel's active thread.
+    ///
+    /// Used by the markdown preview and the agent thread context menus, which
+    /// expose a link under the cursor rather than an editor selection.
+    #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+    #[action(namespace = agent)]
+    #[serde(deny_unknown_fields)]
+    pub struct AddFileToThread {
+        /// The hyperlink to add, e.g. `file:///path/to/file.rs#L10:20`.
+        pub url: String,
+    }
+
     /// Selects the agent used for new threads in the agent panel, without
     /// opening the panel. The selected agent is launched the next time the
     /// panel is opened.

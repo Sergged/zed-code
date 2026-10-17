@@ -352,7 +352,7 @@ Tools that apply a workspace edit persist the buffers they touched, so the chang
 
 ### Selections and diagnostics as thread context
 
-A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand.
+A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand. A file **link** can be added the same way — "Add to Agent Thread" on a link in the markdown preview or in an agent response inserts it into the message editor as a file mention chip (the same chip `secondary-l` produces in the editor), which opens the file when clicked.
 
 ### Queued messages render as text previews
 
