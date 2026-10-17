@@ -354,9 +354,9 @@ Tools that apply a workspace edit persist the buffers they touched, so the chang
 
 A thread accepts more than editor and terminal selections: a diagnostic can be added to a thread too ("Add Diagnostic to Thread"), so a compiler or linter error travels to the agent as context without being copied by hand. A file **link** can be added the same way — "Add to Agent Thread" on a link in the markdown preview or in an agent response inserts it into the message editor as a file mention chip (the same chip `secondary-l` produces in the editor), which opens the file when clicked.
 
-### Queued messages render as text previews
+### Queued messages render as markdown previews
 
-Messages queued while the agent is running render as a two-line clamped text preview with a full-text tooltip instead of a live editor; the row actions (steer, send now, delete) stay right-aligned. Every queued row keeps its actions visible (not only the front one), `Send Now` is always an outlined button, the preview reserves two lines' height, and `Steer` and `Send Now` fill their grid column so they share one width. A pair of up/down buttons replaces the old queue-position dot, so messages can be reordered before they are sent.
+Messages queued while the agent is running render as a two-line clamped markdown preview (mentions and inline code are formatted, as in the message box) with a full-text tooltip, instead of a plain text label; the row actions (steer, send now, delete) stay right-aligned. Every queued row keeps its actions visible (not only the front one), `Send Now` is always an outlined button, the preview reserves two lines' height, and `Steer` and `Send Now` fill their grid column so they share one width. A pair of up/down buttons replaces the old queue-position dot, so messages can be reordered before they are sent.
 
 ### Built-in agent skills
 

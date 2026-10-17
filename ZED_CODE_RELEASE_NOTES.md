@@ -24,6 +24,7 @@ The agent now loads the project's stack skills on its own, panel tooltips and qu
 
 - The tab bar's trailing buttons are now always visible, not only while the pane is focused. The separate Split button is gone: Split Right/Left/Up/Down moved into the `+` menu, between the divider and Search Project.
 - Added **Add to Agent Thread** to the markdown preview's context menu: right-clicking a file link there inserts it into the agent thread's message editor as a file mention chip.
+- Queued-message rows render as markdown (mentions, inline code) like the message box, and the row tooltip shows the full text as secondary text.
 
 ## Zed Code 2026.10.12
 
