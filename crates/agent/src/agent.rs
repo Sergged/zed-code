@@ -829,12 +829,6 @@ impl NativeAgent {
         let weak = cx.weak_entity();
         let weak_thread = thread_handle.downgrade();
         thread_handle.update(cx, |thread, cx| {
-            // Prefer the registry's summary model, but fall back to the thread's
-            // primary model when it cannot be resolved yet (a provider still
-            // loading its model list).
-            let summarization_model = summarization_model
-                .clone()
-                .or_else(|| thread.model().cloned());
             thread.set_summarization_model(summarization_model, cx);
             thread.add_default_tools(
                 Rc::new(NativeThreadEnvironment {
@@ -1457,14 +1451,7 @@ impl NativeAgent {
             session.thread.update(cx, |thread, cx| {
                 thread.ensure_model(default_model.as_ref(), cx);
 
-                // Fall back to the thread's primary model while the registry has
-                // not resolved a summary model yet (e.g. a provider still loading
-                // its model list), so summarizing and title generation always have
-                // a model to call.
-                let summary_model = summarization_model
-                    .clone()
-                    .or_else(|| thread.model().cloned());
-                if let Some(model) = summary_model {
+                if let Some(model) = summarization_model.clone() {
                     if thread.summarization_model().is_none()
                         || matches!(event, language_model::Event::ThreadSummaryModelChanged)
                     {

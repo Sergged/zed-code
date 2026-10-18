@@ -4,7 +4,21 @@ Zed Code layers VS Code-like UX onto [Zed](https://github.com/zed-industries/zed
 
 Everything here is additive. Where a change extends something upstream already ships, the upstream part stays untouched and only the behavior described here is new. When upstream ships its own version of the same problem, that version wins and this branch's version is dropped.
 
+On terminology: **upstream** is the `origin/1.22` branch of [zed-industries/zed](https://github.com/zed-industries/zed) — the `v1.22.x` release line this project tracks. **`zed-code`** is a **fork** (the `zed-code` branch of [Sergged/zed-code](https://github.com/Sergged/zed-code)); everything described here is the fork's own work layered on upstream.
+
 Releases are listed newest first. Each one corresponds to a working session, so the dates are when the work landed rather than a published schedule.
+
+## Zed Code 2026.10.18
+
+Oct 18, 2026 · based on Zed v1.22.x
+
+Panel path tooltips read as project-relative paths, and on Windows the agent's file tools accept rooted paths without a drive.
+
+## Features
+
+### Agent
+
+- Summarization and title generation resolve their model lazily — the configured summary model when there is one, otherwise the thread's primary model — so they work while a provider is still loading. The previous eager fallback was a no-op (the registry already fell back, and the thread's model was unresolved in the same window), so it is gone.
 
 ## Zed Code 2026.10.17
 
@@ -38,11 +52,11 @@ The recommended setup moves to DeepSeek v4.1, the agent panel gets the editor's 
 
 ### Agent
 
-- Moved the default model to `go/deepseek-v4.1-flash` (thinking on, effort `low`); the `Write` and `Ask` profiles no longer pin their own model, so both inherit the default, and summary/compaction fall back to it as well. Favorites are now `go/deepseek-v4.1-flash`, `go/muse-spark-1.3-contributor` and `go/mimo-v2.6-flash`.
+- Moved the default model to `go/deepseek-v4.1-flash` (thinking on, effort `low`); the `Write` and `Ask` profiles no longer pin their own model, so both inherit the default, and summarization and compaction fall back to the thread's model. Favorites are now `go/deepseek-v4.1-flash`, `go/muse-spark-1.3-contributor` and `go/mimo-v2.6-flash`.
 - Added a loading state to the model selector: while a provider is still fetching its model list the selector shows **Loading Models…** and is disabled, instead of showing an empty list. `LanguageModelProvider` gained an `is_loading_models` hook, overridden by opencode while its fetch task is in flight.
 - Gave the agent panel's conversation list the editor scrollbar style (a full-track thumb with square corners, no padding), so it reads as one surface with the editor.
 - Showed a thread waiting on a pending `ask_user` elicitation as waiting for confirmation (the warning triangle) instead of running.
-- Fell back to the thread's primary model for summarization and title generation while the registry has not resolved a summary model yet (a provider still loading its model list), instead of having no model.
+- Summarization and title generation fall back to the thread's primary model when the registry has not resolved a summary model yet (a provider still loading its model list), instead of bailing with no model. The fallback resolves at call time, since the thread's model comes from the same registry and is also unresolved in that window.
 
 ### Agent guide
 

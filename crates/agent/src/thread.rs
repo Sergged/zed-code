@@ -2086,6 +2086,20 @@ impl Thread {
         self.summarization_model.as_ref()
     }
 
+    /// The model to use for summarization and title generation: the configured
+    /// summary model when there is one, otherwise the thread's primary model.
+    ///
+    /// Resolved lazily rather than stored, so a thread still has a model while
+    /// the registry has not resolved a summary model yet (a provider still
+    /// loading its model list). The thread's primary model comes from that same
+    /// registry, so there is no earlier point at which a fallback could be
+    /// stored instead.
+    pub fn summarization_model_or_thread(&self) -> Option<Arc<dyn LanguageModel>> {
+        self.summarization_model
+            .clone()
+            .or_else(|| self.model().cloned())
+    }
+
     pub fn set_summarization_model(
         &mut self,
         model: Option<Arc<dyn LanguageModel>>,
@@ -3900,7 +3914,7 @@ impl Thread {
     }
 
     pub fn can_generate_title(&self) -> bool {
-        self.pending_title_generation.is_none() && self.summarization_model.is_some()
+        self.pending_title_generation.is_none() && self.summarization_model_or_thread().is_some()
     }
 
     pub fn summary(&mut self, cx: &mut Context<Self>) -> Shared<Task<Option<SharedString>>> {
@@ -3910,7 +3924,7 @@ impl Thread {
         if let Some(task) = self.pending_summary_generation.clone() {
             return task;
         }
-        let Some(model) = self.summarization_model.clone() else {
+        let Some(model) = self.summarization_model_or_thread() else {
             log::error!("No summarization model available");
             return Task::ready(None).shared();
         };
@@ -3966,7 +3980,7 @@ impl Thread {
         if !self.can_generate_title() {
             return;
         }
-        let Some(model) = self.summarization_model.clone() else {
+        let Some(model) = self.summarization_model_or_thread() else {
             return;
         };
         self.spawn_title_generation(model, None, cx);
@@ -3985,7 +3999,7 @@ impl Thread {
             return false;
         }
 
-        let Some(model) = self.summarization_model.clone() else {
+        let Some(model) = self.summarization_model_or_thread() else {
             return false;
         };
 
@@ -7315,6 +7329,72 @@ mod tests {
         summary_model.send_completion_stream_text_chunk(&summary_request, "thread summary");
         summary_model.end_completion_stream(&summary_request);
         assert_eq!(summary_task.await.as_deref(), Some("thread summary"));
+    }
+
+    /// A thread with a primary model but no summary model still summarizes: the
+    /// summary model falls back to the thread's model at call time, instead of
+    /// bailing with "No summarization model available".
+    #[gpui::test]
+    async fn test_summary_falls_back_to_the_thread_model(cx: &mut TestAppContext) {
+        let (thread, _event_stream) = setup_thread_for_test(cx).await;
+        let thread_model = Arc::new(FakeLanguageModel::default());
+
+        let summary_task = cx.update(|cx| {
+            thread.update(cx, |thread, cx| {
+                thread.set_model(thread_model.clone(), cx);
+                thread.set_summarization_model(None, cx);
+                assert!(thread.summarization_model().is_none());
+                assert!(thread.can_generate_title());
+                thread.summary(cx)
+            })
+        });
+        cx.run_until_parked();
+
+        let request = thread_model.pending_completions().pop().unwrap();
+        thread_model.send_completion_stream_text_chunk(&request, "thread summary");
+        thread_model.end_completion_stream(&request);
+        assert_eq!(summary_task.await.as_deref(), Some("thread summary"));
+    }
+
+    /// A set summary model still wins over the thread's model.
+    #[gpui::test]
+    async fn test_summarization_model_prefers_the_summary_model(cx: &mut TestAppContext) {
+        let (thread, _event_stream) = setup_thread_for_test(cx).await;
+        let thread_model = Arc::new(FakeLanguageModel::default());
+        let summary_model = Arc::new(FakeLanguageModel::default());
+
+        cx.update(|cx| {
+            thread.update(cx, |thread, cx| {
+                thread.set_model(thread_model.clone(), cx);
+                thread.set_summarization_model(None, cx);
+                let thread_resolved: Arc<dyn LanguageModel> =
+                    thread.summarization_model_or_thread().unwrap();
+                assert!(Arc::ptr_eq(
+                    &thread_resolved,
+                    &(thread_model.clone() as Arc<dyn LanguageModel>)
+                ));
+
+                thread.set_summarization_model(Some(summary_model.clone()), cx);
+                let summary_resolved: Arc<dyn LanguageModel> =
+                    thread.summarization_model_or_thread().unwrap();
+                assert!(Arc::ptr_eq(
+                    &summary_resolved,
+                    &(summary_model.clone() as Arc<dyn LanguageModel>)
+                ));
+            })
+        });
+    }
+
+    /// With no model at all (neither a summary model nor a thread model), summary
+    /// still bails instead of panicking.
+    #[gpui::test]
+    async fn test_summary_without_any_model_falls_back_to_none(cx: &mut TestAppContext) {
+        let (thread, _event_stream) = setup_thread_for_test(cx).await;
+
+        let summary_task = cx.update(|cx| thread.update(cx, |thread, cx| thread.summary(cx)));
+        cx.run_until_parked();
+
+        assert!(summary_task.await.is_none());
     }
 
     #[test]
