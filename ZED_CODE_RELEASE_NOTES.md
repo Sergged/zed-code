@@ -20,6 +20,7 @@ Panel path tooltips read as project-relative paths, and on Windows the agent's f
 
 - Summarization and title generation resolve their model lazily — the configured summary model when there is one, otherwise the thread's primary model — so they work while a provider is still loading. The previous eager fallback was a no-op (the registry already fell back, and the thread's model was unresolved in the same window), so it is gone.
 - On Windows, the agent's file tools now treat a rooted path without a drive (`/foo`, the shape Git-Bash and WSL emit) as absolute, resolved against the current drive, instead of rejecting it with **not in the project**. This covers every `is_absolute()` gate: path resolution, directory creation, terminal write paths, and the ignored-directory scan.
+- Arrow keys now move the selection in the agent panel's chat switcher (`ctrl-tab`, `ctrl-shift-tab`), matching the editor's tab switcher; previously only re-pressing the switcher shortcut moved it.
 
 ## Zed Code 2026.10.17
 

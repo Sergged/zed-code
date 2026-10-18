@@ -322,6 +322,26 @@ impl ThreadSwitcher {
         }
     }
 
+    fn select_next(
+        &mut self,
+        _: &menu::SelectNext,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_selection(cx);
+        cx.notify();
+    }
+
+    fn select_previous(
+        &mut self,
+        _: &menu::SelectPrevious,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_last(cx);
+        cx.notify();
+    }
+
     fn handle_modifiers_changed(
         &mut self,
         event: &ModifiersChangedEvent,
@@ -367,6 +387,8 @@ impl Render for ThreadSwitcher {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::toggle))
+            .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::select_previous))
             .child(
                 v_flex()
                     .id("thread-switcher-list")
