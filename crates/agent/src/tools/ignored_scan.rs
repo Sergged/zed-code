@@ -28,7 +28,9 @@ fn ignored_unscanned_ancestor(
     path: &Path,
     cx: &App,
 ) -> Option<(WorktreeId, Arc<RelPath>)> {
-    if path.is_absolute() || path.to_string_lossy().starts_with('~') {
+    if super::tool_permissions::is_absolute_or_rooted(path)
+        || path.to_string_lossy().starts_with('~')
+    {
         return None;
     }
     if project.find_project_path(path, cx).is_some() {

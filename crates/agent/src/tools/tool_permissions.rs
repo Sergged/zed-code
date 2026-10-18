@@ -191,9 +191,49 @@ async fn is_in_linked_global_skill_dir(
             .await
 }
 
+/// Resolves a Windows path with a root but no drive (`/foo`, the shape
+/// Git-Bash and WSL emit) to the current drive, e.g. `C:\foo`.
+///
+/// `Path::is_absolute` returns `false` for such a path — it has a root but no
+/// prefix — so without this it reads as worktree-relative and the file tools
+/// refuse it with "not in the project". Always `None` off Windows, where
+/// `/foo` is already absolute.
+pub(crate) fn resolve_rooted_without_prefix(path: &Path) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return None;
+    }
+
+    let current_dir = std::env::current_dir().ok()?;
+    let drive = current_dir.components().next()?;
+    if !matches!(drive, Component::Prefix(_)) {
+        return None;
+    }
+
+    let mut resolved = PathBuf::from(drive.as_os_str());
+    resolved.push(Component::RootDir.as_os_str());
+    for component in components {
+        resolved.push(component.as_os_str());
+    }
+    Some(resolved)
+}
+
+/// Whether `path` names an absolute location, counting a Windows path with a
+/// root but no drive as absolute (resolved against the current drive).
+pub(crate) fn is_absolute_or_rooted(path: &Path) -> bool {
+    path.is_absolute() || resolve_rooted_without_prefix(path).is_some()
+}
+
 fn expand_home_prefix(path: &Path) -> Option<PathBuf> {
     if path.is_absolute() {
         return Some(path.to_path_buf());
+    }
+    if let Some(rooted) = resolve_rooted_without_prefix(path) {
+        return Some(rooted);
     }
 
     let mut components = path.components();
@@ -792,7 +832,7 @@ pub fn explain_unresolved_relative_path(
     path: &Path,
     cx: &App,
 ) -> Option<String> {
-    if path.is_absolute() || path.to_string_lossy().starts_with('~') {
+    if is_absolute_or_rooted(path) || path.to_string_lossy().starts_with('~') {
         return None;
     }
 
@@ -1463,6 +1503,42 @@ mod tests {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
         });
+    }
+
+    #[test]
+    fn rooted_paths_count_as_absolute() {
+        // A rooted path is absolute on Unix; on Windows it has a root but no
+        // drive, yet it must not read as worktree-relative there either.
+        assert!(is_absolute_or_rooted(Path::new("/etc/secret")));
+        assert!(!is_absolute_or_rooted(Path::new("crates/foo.rs")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rooted_without_prefix_resolves_against_the_current_drive() {
+        let resolved = resolve_rooted_without_prefix(Path::new("/outside_project/file.txt"))
+            .expect("a rooted path resolves on Windows");
+        let current_dir = std::env::current_dir().expect("cwd");
+        assert_eq!(
+            resolved.components().next(),
+            current_dir.components().next(),
+            "the drive comes from the current directory",
+        );
+        let tail: Vec<_> = resolved
+            .components()
+            .rev()
+            .take(2)
+            .map(|component| component.as_os_str().to_os_string())
+            .collect();
+        assert_eq!(tail, vec!["file.txt".into(), "outside_project".into()]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_home_prefix_resolves_rooted_paths() {
+        let expanded = expand_home_prefix(Path::new("/outside_project/file.txt"))
+            .expect("a rooted path resolves on Windows");
+        assert!(expanded.is_absolute());
     }
 
     /// The tests below exercise the same worktree roots the tools use, so they

@@ -1104,7 +1104,11 @@ fn join_write_paths(
             }
 
             let path = Path::new(raw);
-            let absolute = if path.is_absolute() {
+            let absolute = if let Some(rooted) =
+                super::tool_permissions::resolve_rooted_without_prefix(path)
+            {
+                rooted
+            } else if path.is_absolute() {
                 path.to_path_buf()
             } else {
                 base?.join(path)

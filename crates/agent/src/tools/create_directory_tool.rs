@@ -446,17 +446,20 @@ fn resolve_absolute_path(
     cx: &mut AsyncApp,
 ) -> Option<PathBuf> {
     let path = Path::new(raw);
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        let base = project.read_with(cx, |project, cx| {
-            project
-                .worktrees(cx)
-                .next()
-                .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
-        })?;
-        base.join(path)
-    };
+    let absolute =
+        if let Some(rooted) = super::tool_permissions::resolve_rooted_without_prefix(path) {
+            rooted
+        } else if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            let base = project.read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+            })?;
+            base.join(path)
+        };
     util::paths::normalize_lexically(&absolute).ok()
 }
 

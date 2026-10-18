@@ -117,7 +117,7 @@ Behavior changes to the built-in agent (Zed AI) layered on top of upstream.
 
 `read_file`, `write_file`, `edit_file`, `delete_path`, `move_path`, `copy_path`, `create_directory` and `list_directory` accept any absolute path (or one with a `~` prefix), not only project paths and `~/.agents/skills`. Access is gated by the user's `tool_permissions` rules, and destructive operations refuse protected roots (the filesystem root, the home directory, and ancestors of a project worktree). `grep` and `find_path` accept one too, through their `path` parameter (see below).
 
-**Path forms.** A project-relative path normally starts with a worktree root directory name (`zed/crates/foo.rs`); that prefix always resolves. A bare relative path (`crates/foo.rs`) also resolves when it is unambiguous, and a bare path into a gitignored tree (`node_modules/...`) is made to resolve by scanning that directory on demand. Anything outside the project is addressed by an absolute path (or one with a `~` prefix).
+**Path forms.** A project-relative path normally starts with a worktree root directory name (`zed/crates/foo.rs`); that prefix always resolves. A bare relative path (`crates/foo.rs`) also resolves when it is unambiguous, and a bare path into a gitignored tree (`node_modules/...`) is made to resolve by scanning that directory on demand. Anything outside the project is addressed by an absolute path (or one with a `~` prefix). On Windows a rooted path without a drive (`/foo`, as Git-Bash and WSL emit) counts as absolute too: `Path::is_absolute` does not recognize it, so the tools resolve it against the current drive instead of mistaking it for a worktree-relative path.
 
 ### Upstream vs. this branch
 
