@@ -68,7 +68,7 @@ use util::{
     ResultExt, TakeUntilExt, TryFutureExt,
     markdown::MarkdownInlineCode,
     maybe,
-    paths::{PathExt, PathStyle, compare_paths},
+    paths::{PathStyle, compare_paths},
     rel_path::{RelPath, RelPathBuf},
 };
 use workspace::{
@@ -6073,8 +6073,7 @@ impl ProjectPanel {
             .map(|worktree| {
                 worktree
                     .read(cx)
-                    .absolutize(&path)
-                    .compact()
+                    .full_path(&path)
                     .to_string_lossy()
                     .into_owned()
             });

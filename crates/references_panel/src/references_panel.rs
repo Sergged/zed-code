@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::ops::Range;
+use std::time::Duration;
 
 mod panel_settings;
 
@@ -26,7 +27,7 @@ use workspace::dock::{DockPosition, Panel, PanelEvent};
 use workspace::item::{ItemSettings, PreviewTabsSettings, Settings};
 
 use crate::panel_settings::ReferencesPanelSettings;
-use settings::update_settings_file;
+use settings::{SettingsStore, update_settings_file};
 
 actions!(
     references_panel,
@@ -299,6 +300,20 @@ pub struct ReferencesPanel {
     /// query has been run yet, so the panel shows a hint instead of results.
     results: Option<ReferenceResults>,
     selected_entry: Option<usize>,
+}
+
+/// The delay before a file header's path tooltip appears, mirroring the
+/// `project_panel.title_tooltip_delay` setting so this panel's entries behave
+/// like the project and git panels. `None` disables the tooltip.
+fn title_tooltip_show_delay(cx: &App) -> Option<Duration> {
+    let title_tooltip_delay = cx
+        .global::<SettingsStore>()
+        .merged_settings()
+        .project_panel
+        .as_ref()
+        .and_then(|project_panel| project_panel.title_tooltip_delay)
+        .unwrap_or_default();
+    title_tooltip_delay.show_delay()
 }
 
 impl ReferencesPanel {
@@ -793,6 +808,21 @@ impl ReferencesPanel {
             .map(|parent| parent.display(path_style))
             .map(SharedString::new)
             .unwrap_or_default();
+        let tooltip_path = title_tooltip_show_delay(cx).and_then(|delay| {
+            self.project
+                .read(cx)
+                .worktree_for_id(path.worktree_id, cx)
+                .map(|worktree| {
+                    (
+                        worktree
+                            .read(cx)
+                            .full_path(&path.path)
+                            .to_string_lossy()
+                            .into_owned(),
+                        delay,
+                    )
+                })
+        });
         let file_icon = ItemSettings::get_global(cx)
             .file_icons
             .then(|| FileIcons::get_icon(path.path.as_std_path(), cx))
@@ -817,6 +847,11 @@ impl ReferencesPanel {
             .gap_1p5()
             .cursor_pointer()
             .hover(|style| style.bg(hover_background))
+            .when_some(tooltip_path, |this, (path, delay)| {
+                let title = file_name.clone();
+                this.tooltip_show_delay(delay)
+                    .tooltip(move |_, cx| Tooltip::with_meta(title.clone(), None, path.clone(), cx))
+            })
             .on_drag(
                 path.clone(),
                 move |path: &ProjectPath, click_offset, _window, cx| {

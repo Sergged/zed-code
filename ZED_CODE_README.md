@@ -382,6 +382,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 
 - A **Project** header above the tree with an expand/collapse-all toggle.
 - The entry context menu orders **New File**, **New Folder**, **Rename**, **Trash**, **Delete** together at the top, before the `Reveal in File Manager` group.
+- Entry tooltips show the entry's name as the title and the project-relative path (`zed/crates/foo.rs`) as secondary text.
 
 ### Git panel and diffs
 
@@ -399,7 +400,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - Following the editor also scrolls the panel to the newly focused row, and expands collapsed folders in tree view so the row is visible.
 - Each section header has a context menu that stages, unstages or discards every file in that section.
 - Following the editor is edge-triggered: a status refresh that does not actually move focus (for example staging a file) no longer re-reveals the row.
-- Renamed files get their own status instead of showing as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left on for `git status` (matching VS Code), and the original path travels through the status pipeline to the panel for both local and remote projects.
+- Renamed files get their own status instead of showing as an added file: the row keeps the new name (icon or color per `git_panel.status_style`) and the tooltip reads `old → new`. Rename detection is left on for `git status` (matching VS Code), and the original path travels through the status pipeline to the panel for both local and remote projects. Status and directory tooltips show the project-relative path (`zed/crates/foo.rs`) as the tooltip's secondary text.
 
 ### Search panel
 
@@ -411,6 +412,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - The panel has its own actions (`search_panel::Toggle`, `search_panel::ToggleFocus`), a header button that opens a plain project-search editor, collapsible file groups, file headers that can be dragged out, and an indicator when the result limit is reached.
 - The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
 - The panel searches as you type (debounced 250 ms) when `editor.search.search_on_type` is enabled, with Enter running immediately. While a search is in flight the previous results stay visible (only the idle spinner is shown until the first results arrive).
+- File headers carry a hover tooltip with the file name as its title and the project-relative path as secondary text, honoring `project_panel.title_tooltip_delay`.
 
 ### References panel
 
@@ -418,6 +420,7 @@ Everything in this section is a `zed-code` change — upstream ships none of it.
 - The panel is dockable left/right, its status-bar button is hideable, and its width comes from `references_panel.default_width`.
 - Opening selects and centers the match the query was run from.
 - The results list is measured by its widest match row, so long lines make the list horizontally scrollable instead of being clipped.
+- File headers carry a hover tooltip with the file name as its title and the project-relative path as secondary text, honoring `project_panel.title_tooltip_delay`.
 
 ### Editor
 

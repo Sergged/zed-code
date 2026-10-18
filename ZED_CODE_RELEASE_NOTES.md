@@ -22,6 +22,10 @@ Panel path tooltips read as project-relative paths, and on Windows the agent's f
 - On Windows, the agent's file tools now treat a rooted path without a drive (`/foo`, the shape Git-Bash and WSL emit) as absolute, resolved against the current drive, instead of rejecting it with **not in the project**. This covers every `is_absolute()` gate: path resolution, directory creation, terminal write paths, and the ignored-directory scan.
 - Arrow keys now move the selection in the agent panel's chat switcher (`ctrl-tab`, `ctrl-shift-tab`), matching the editor's tab switcher; previously only re-pressing the switcher shortcut moved it.
 
+### Editor
+
+- File and folder tooltips in the project, git, references and search panels show the entry's name as the title and the project-relative path (`zed/crates/foo.rs`) as secondary text, instead of the whole absolute path; all four honor the `project_panel.title_tooltip_delay` setting, and the git panel keeps `old → new` for a renamed file.
+
 ## Zed Code 2026.10.17
 
 Oct 17, 2026 · based on Zed v1.22.x
@@ -41,7 +45,7 @@ The agent now loads the project's stack skills on its own, panel tooltips and qu
 - The tab bar's trailing buttons are now always visible, not only while the pane is focused. The separate Split button is gone: Split Right/Left/Up/Down moved into the `+` menu, between the divider and Search Project.
 - Added **Add to Agent Thread** to the markdown preview's context menu: right-clicking a file link there inserts it into the agent thread's message editor as a file mention chip.
 - Queued-message rows render as markdown (mentions, inline code) like the message box, and the row tooltip shows the full text as secondary text.
-- Path tooltips in the git panel and project panel show the file or folder name as the title and the full path as secondary text.
+- Path tooltips in the git panel and project panel show the file or folder name as the title and the path as secondary text.
 - The editor and agent scrollbar thumbs are more transparent at rest.
 
 ## Zed Code 2026.10.12
