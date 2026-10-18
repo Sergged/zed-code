@@ -35,6 +35,17 @@
     },
   },
   {
+    // `repl::Run` (jupyter) shares `ctrl-shift-enter` with `editor::NewlineAbove`
+    // at the same context depth, and the jupyter block comes later in the
+    // default keymap, so it wins and the editor binding never fires. Unbind it
+    // so `ctrl-shift-enter` inserts a line above, like `cmd-shift-enter` does on
+    // macOS (zed-industries/zed#59208).
+    "context": "Editor && jupyter",
+    "unbind": {
+      "ctrl-shift-enter": "repl::Run",
+    },
+  },
+  {
     "context": "KeymapEditor",
     "unbind": {
       "secondary-e": "zed::OpenKeymapFile",

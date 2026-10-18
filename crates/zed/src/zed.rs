@@ -5768,6 +5768,62 @@ mod tests {
         })
     }
 
+    /// The actions the Windows/Linux default keymap resolves for `keystroke` in
+    /// `context`, with the branch's seeded keymap layered on top as a user keymap.
+    fn windows_seeded_bindings_for(
+        keystroke: &str,
+        context: &str,
+        cx: &mut TestAppContext,
+    ) -> Vec<String> {
+        cx.update(|cx| {
+            let mut bindings = settings::KeymapFile::load_asset_allow_partial_failure(
+                "keymaps/default-windows.json",
+                cx,
+            )
+            .unwrap();
+            for binding in &mut bindings {
+                binding.set_meta(settings::KeybindSource::Default.meta());
+            }
+            bindings.extend(
+                settings::KeymapFile::load_asset_allow_partial_failure(
+                    "keymaps/initial-windows.json",
+                    cx,
+                )
+                .unwrap(),
+            );
+
+            gpui::Keymap::new(bindings)
+                .bindings_for_input(
+                    &[gpui::Keystroke::parse(keystroke).unwrap()],
+                    &[gpui::KeyContext::parse(context).unwrap()],
+                )
+                .0
+                .iter()
+                .map(|binding| binding.action().name().to_string())
+                .collect()
+        })
+    }
+
+    /// `repl::Run` (jupyter) shares `ctrl-shift-enter` with `editor::NewlineAbove`
+    /// at the same context depth in the Windows/Linux default keymap, and the
+    /// jupyter block comes later so it would win; the seeded keymap unbinds it so
+    /// the editor binding fires (zed-industries/zed#59208).
+    #[gpui::test]
+    fn test_windows_ctrl_shift_enter_inserts_line_above(cx: &mut TestAppContext) {
+        init_keymap_test(cx);
+
+        let actions =
+            windows_seeded_bindings_for("ctrl-shift-enter", "Editor mode=full jupyter", cx);
+        assert!(
+            actions.contains(&"editor::NewlineAbove".to_string()),
+            "ctrl-shift-enter should insert a line above, got {actions:?}"
+        );
+        assert!(
+            !actions.contains(&"repl::Run".to_string()),
+            "repl::Run should be unbound in the seeded keymap, got {actions:?}"
+        );
+    }
+
     /// `editor::MoveDown` and `editor::MoveUp` propagate when the cursor doesn't move, which at the
     /// ends of a buffer let `ctrl-n` and `ctrl-p` fall through to the default bindings and open a
     /// new file / the file finder.

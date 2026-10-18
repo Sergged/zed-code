@@ -25,6 +25,7 @@ Panel path tooltips read as project-relative paths, and on Windows the agent's f
 ### Editor
 
 - File and folder tooltips in the project, git, references and search panels show the entry's name as the title and the project-relative path (`zed/crates/foo.rs`) as secondary text, instead of the whole absolute path; all four honor the `project_panel.title_tooltip_delay` setting, and the git panel keeps `old → new` for a renamed file.
+- On Windows and Linux, `ctrl-shift-enter` inserts a line above again. The default keymap binds both `editor::NewlineAbove` (`Editor && mode == full`) and `repl::Run` (`Editor && jupyter`) to it at the same context depth, and the later jupyter block wins; the seeded keymap now unbinds `repl::Run` (targeted), so the editor binding fires. `editor.jupyter.enabled` stays on (zed-industries/zed#59208).
 
 ## Zed Code 2026.10.17
 
