@@ -68,12 +68,19 @@ recompiled. Skipping that is where most of the time is saved.
 # release channel comes from crates/zed/RELEASE_CHANNEL (dev => "Zed Dev");
 # the script logs the channel and warns when it is not `dev`.
 
-# artifact:
-target\Zed-x86_64.exe                        # Zed Dev installer
+# artifacts, in the order the build produces them:
+target\x86_64-pc-windows-msvc\release\      # raw cargo output (see below)
+inno\x86_64\                                # staged installer resources
+                                                  # (zed.iss layout)
+target\Zed-x86_64.exe                       # Zed Dev installer (the deliverable)
 ```
 
 Notes:
 
+- **Three artifact locations.** Each stage of the pipeline has its own directory, and only the last one is the installer:
+  - `target\x86_64-pc-windows-msvc\release\` — the plain `cargo build --release` output: `zed.exe`, `cli.exe`, `auto_update_helper.exe`, `explorer_command_injector.dll`. The build scripts also drop the ConPTY helpers (`conpty.dll`, `x64\`/`arm64\OpenConsole.exe`) and `amd_ags_x64.dll` here, so `zed.exe` runs correctly straight from this directory — it is the same "Zed Dev" as the installed copy (same config and data directories, see below), so it is a portable smoke-test rather than a separate install. Delete the directory to force a full rebuild.
+  - `inno\x86_64\` — staging. The script copies the binaries and `crates\zed\resources\windows\*` here and arranges them the way `crates\zed\resources\windows\zed.iss` expects (`bin\`, `tools\`, `appx\`, `x64\`, `arm64\`, the runtime `.dll`s). Purely intermediate: it is wiped and recreated on every run.
+  - `target\Zed-<arch>.exe` — the finished Inno Setup installer, the only file to keep or hand out. Run it to install Zed Dev.
 - **Slow final step? It is thin LTO, not the linker** — the same as on macOS (see above). Use `--profile release-fast` for faster local iteration, at a small runtime cost.
 - **`-Jobs 4`** is for a 16 GiB machine; more parallel rustc jobs push it into swap. Omit it to build with all cores.
 - **`-Install`** runs the resulting `target\Zed-<arch>.exe` after building.
