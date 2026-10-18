@@ -1127,7 +1127,7 @@
       // ("track") or floats over it ("thumb").
       // Not inherited: there is no global scrollbar track setting, so this
       // carries its own default.
-      "track": "track",
+      "track": "thumb",
     },
   },
   "git_panel": {

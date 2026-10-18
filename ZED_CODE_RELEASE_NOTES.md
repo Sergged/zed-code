@@ -52,6 +52,7 @@ The agent now loads the project's stack skills on its own, panel tooltips and qu
 - Queued-message rows render as markdown (mentions, inline code) like the message box, and the row tooltip shows the full text as secondary text.
 - Path tooltips in the git panel and project panel show the file or folder name as the title and the path as secondary text.
 - The editor and agent scrollbar thumbs are more transparent at rest.
+- Context menus and dropdowns float the scrollbar over their content by default: `context_menu.scrollbar.track` now defaults to `"thumb"` instead of `"track"`.
 
 ## Zed Code 2026.10.12
 
