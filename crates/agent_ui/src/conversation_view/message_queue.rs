@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use markdown::Markdown;
+
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -14,6 +16,10 @@ pub struct QueueEntry {
     /// entry's value matters, since messages are delivered in FIFO order.
     pub steer: bool,
     pub editor: Entity<MessageEditor>,
+    /// Parsed markdown for the two-line preview in the queue row. Stored on the
+    /// entry (rather than built in `render`) because `Markdown` parses
+    /// asynchronously — a fresh entity per render would always render empty.
+    pub markdown: Entity<Markdown>,
     pub _subscription: Subscription,
 }
 

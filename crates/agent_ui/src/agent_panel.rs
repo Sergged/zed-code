@@ -14424,4 +14424,66 @@ mod tests {
             );
         });
     }
+
+    /// The two-line preview in a queued-message row renders a `MarkdownElement`,
+    /// and `Markdown` parses asynchronously. A fresh entity built during render
+    /// would always be unparsed at paint time (the row showed no text at all), so
+    /// the entry must own a persistent entity that is parsed by the time it is
+    /// rendered.
+    #[gpui::test]
+    async fn test_queued_message_preview_markdown_is_parsed(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            agent::ThreadStore::init_global(cx);
+            language_model::LanguageModelRegistry::test(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let multi_workspace =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace
+            .read_with(cx, |multi_workspace, _cx| {
+                multi_workspace.workspace().clone()
+            })
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
+        cx.simulate_resize(size(px(900.), px(700.)));
+
+        let connection = StubAgentConnection::new();
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.focus_panel::<AgentPanel>(window, cx);
+            panel
+        });
+        open_thread_with_connection(&panel, connection, cx);
+
+        let thread_view = panel.read_with(cx, |panel, cx| panel.active_thread_view(cx).unwrap());
+        thread_view.update_in(cx, |thread_view, window, cx| {
+            thread_view.add_to_queue(
+                vec![acp::ContentBlock::Text(acp::TextContent::new(
+                    "**bold** queued preview".to_string(),
+                ))],
+                vec![],
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        thread_view.read_with(cx, |thread_view, cx| {
+            let entry = thread_view
+                .message_queue
+                .iter()
+                .next()
+                .expect("the queued message should be in the queue");
+            let markdown = entry.markdown.read(cx);
+            assert_eq!(markdown.source().as_ref(), "**bold** queued preview");
+            assert!(
+                !markdown.is_parsing(),
+                "the queued preview markdown should have finished parsing"
+            );
+        });
+    }
 }

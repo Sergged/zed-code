@@ -55,24 +55,6 @@ use super::*;
 
 const DATA_RETENTION_LEARN_MORE_URL: &str = "https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models";
 
-/// Renders a queued message the way the message box does — as markdown — so
-/// mentions and inline code are formatted instead of shown as raw text.
-#[derive(IntoElement)]
-struct QueueMessagePreview {
-    source: SharedString,
-}
-
-impl RenderOnce for QueueMessagePreview {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let markdown = cx.new(|cx| Markdown::new(self.source, None, None, cx));
-        let style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
-        div()
-            .text_xs()
-            .line_clamp(2)
-            .child(MarkdownElement::new(markdown, style))
-    }
-}
-
 #[derive(Default)]
 struct ThreadFeedbackState {
     feedback: Option<ThreadFeedback>,
@@ -2158,12 +2140,18 @@ impl ThreadView {
                 this.handle_queue_editor_event(id, event, window, cx);
             });
 
+        let markdown = cx.new(|cx| {
+            let source: SharedString = editor.read(cx).text(cx).trim().to_string().into();
+            Markdown::new(source, None, None, cx)
+        });
+
         self.message_queue.enqueue(QueueEntry {
             id,
             content,
             tracked_buffers,
             steer: false,
             editor,
+            markdown,
             _subscription: subscription,
         });
         self.sync_queue_flag_to_native_thread(cx);
@@ -4635,20 +4623,13 @@ impl ThreadView {
                             .pr_0p5()
                             .min_h(2. * window.line_height())
                             .cursor_default()
-                            .tooltip({
-                                let message_text = message_text.clone();
-                                move |_, cx| {
-                                    Tooltip::with_meta(
-                                        "Queued message",
-                                        None,
-                                        message_text.clone(),
-                                        cx,
-                                    )
-                                }
+                            .tooltip(move |_, cx| {
+                                Tooltip::with_meta("Queued message", None, message_text.clone(), cx)
                             })
-                            .child(QueueMessagePreview {
-                                source: message_text.into(),
-                            }),
+                            .child(div().text_xs().line_clamp(2).child(MarkdownElement::new(
+                                entry.markdown.clone(),
+                                MarkdownStyle::themed(MarkdownFont::Agent, window, cx),
+                            ))),
                     )
                     .child(
                         div()
